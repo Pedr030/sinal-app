@@ -1,7 +1,7 @@
 {
   "name": "Sinal — transmissão de tela",
   "short_name": "Sinal",
-  "description": "Compartilhamento de tela ponto a ponto entre amigos",
+  "description": "Compartilhamento de tela ao vivo entre amigos",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
