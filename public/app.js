@@ -700,13 +700,43 @@ function renderAvatars(){
     av.innerHTML = `${escapeHtml(initials(displayName))}<span class="tip">${escapeHtml(displayName)}${isYou ? ' (você)':''}</span>`;
     row.appendChild(av);
   });
+  if(rosterOpen) renderRosterPanel();
 }
+
+let rosterOpen = false;
+
+function toggleRosterPanel(force){
+  rosterOpen = typeof force === 'boolean' ? force : !rosterOpen;
+  document.getElementById('rosterPanel').classList.toggle('open', rosterOpen);
+  if(rosterOpen) renderRosterPanel();
+}
+
+function renderRosterPanel(){
+  if(!room) return;
+  const { Track } = LivekitClient;
+  const panel = document.getElementById('rosterPanel');
+  const all = [room.localParticipant, ...room.remoteParticipants.values()];
+  const items = all.map((p) => {
+    const isSharing = !!(p.getTrackPublication(Track.Source.ScreenShare) || p.getTrackPublication(Track.Source.Camera));
+    const isYou = p === room.localParticipant;
+    const displayName = p.name || p.identity;
+    return `<div class="roster-item${isSharing ? ' sharing' : ''}"><span class="roster-dot"></span>${escapeHtml(displayName)}${isYou ? ' (você)' : ''}</div>`;
+  }).join('');
+  panel.innerHTML = `<div class="roster-header">${all.length} na sala</div>${items}`;
+}
+
+document.addEventListener('click', (e) => {
+  if(!rosterOpen) return;
+  if(e.target.closest('.roster-wrap')) return;
+  toggleRosterPanel(false);
+});
 
 function leaveRoom(){
   if(room){
     try{ room.disconnect(); }catch(e){}
     room = null;
   }
+  toggleRosterPanel(false);
   tileStreams.clear();
   tileVideoTracks.clear();
   qualityBaseLabel.clear();
@@ -798,7 +828,7 @@ window.addEventListener('beforeunload', () => {
 });
 
 // PWA: versão, registro do service worker, detecção de atualização e botão de instalação
-const APP_VERSION = '0.8.5'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
+const APP_VERSION = '0.8.6'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
 document.getElementById('versionLabel').textContent = 'v' + APP_VERSION;
 
 if('serviceWorker' in navigator){

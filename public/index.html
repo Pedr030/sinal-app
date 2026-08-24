@@ -83,6 +83,12 @@
       </div>
       <div class="avatars" id="avatarsRow"></div>
       <div class="end">
+        <div class="roster-wrap">
+          <button class="icon-btn" id="rosterBtn" onclick="toggleRosterPanel()" title="Ver quem está na sala" aria-label="Ver quem está na sala">
+            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+          </button>
+          <div class="roster-panel" id="rosterPanel"></div>
+        </div>
         <button class="icon-btn" id="chatToggleBtn" onclick="toggleChatPanel()" title="Chat" aria-label="Abrir chat">
           <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
           <span class="chat-badge" id="chatBadge">0</span>
