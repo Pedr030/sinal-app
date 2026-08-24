@@ -36,6 +36,7 @@ let room = null;           // LivekitClient.Room atual
 let myName = 'Você';
 let roomCode = null;
 const tileStreams = new Map(); // tileId -> MediaStream (junta vídeo+áudio da mesma fonte, ex: tela+áudio da guia)
+const tileVideoTracks = new Map(); // tileId -> Track de vídeo do LiveKit (pra amostrar getRTCStatsReport())
 
 function setEntryStatus(msg){ document.getElementById('entryStatus').textContent = msg || ''; }
 function setRoomStatus(msg, isError){
@@ -240,6 +241,7 @@ function handleTrackAdded(track, publication, participant){
     const displayName = participant.name || participant.identity;
     const label = isCamera ? displayName + ' (câmera)' : displayName;
     addTile(tileId, label, stream);
+    tileVideoTracks.set(tileId, track); // pra amostrar getRTCStatsReport() periodicamente
   }
 }
 
@@ -253,7 +255,14 @@ function handleTrackRemoved(track, publication, participant){
 
   const stream = tileStreams.get(tileId);
   if(stream) stream.removeTrack(track.mediaStreamTrack);
-  if(track.kind === 'video'){ tileStreams.delete(tileId); removeTile(tileId); }
+  if(track.kind === 'video'){
+    tileStreams.delete(tileId);
+    tileVideoTracks.delete(tileId);
+    qualityDetails.delete(tileId);
+    qualityBaseLabel.delete(tileId);
+    qualityStatsPrev.delete(tileId);
+    removeTile(tileId);
+  }
 }
 
 function enterRoomUI(){
@@ -481,10 +490,26 @@ function resetCameraButton(){
 }
 
 // ---------------- QUALIDADE DE CONEXÃO ----------------
-// Usa o indicador nativo do LiveKit (ConnectionQualityChanged) em vez de
-// medir na unha via getStats() — o servidor já sabe disso de sobra, e é por
-// participante (não por track), então atualiza os dois tiles possíveis
-// (tela e câmera) da mesma pessoa juntos.
+// A cor da bolinha vem do indicador nativo do LiveKit (ConnectionQualityChanged)
+// — o servidor já calcula isso de sobra a partir de perda/latência/jitter,
+// mais simples e confiável que medir na unha. O texto do tooltip é
+// enriquecido à parte com números reais (perda %, jitter em ms), via
+// track.getRTCStatsReport() amostrado periodicamente — só cosmético, não
+// influencia a cor nem nada do envio/recebimento.
+const qualityBaseLabel = new Map(); // tileId -> "Boa conexão" etc (do evento nativo)
+const qualityDetails = new Map();   // tileId -> "perda: 0.5% · jitter: 12ms" (amostrado)
+
+function renderQualityTooltip(tileId){
+  const tile = tiles.get(tileId);
+  const dot = tile && tile.querySelector('.quality-dot');
+  if(!dot) return;
+  const base = qualityBaseLabel.get(tileId) || 'Medindo conexão...';
+  const detail = qualityDetails.get(tileId);
+  dot.title = detail ? `${base} · ${detail}` : base;
+}
+
+// Qualidade é por participante, não por track — atualiza os dois tiles
+// possíveis (tela e câmera) da mesma pessoa juntos.
 function updateQualityDot(identity, quality){
   const { ConnectionQuality } = LivekitClient;
   let level = 'good', label = 'Boa conexão';
@@ -493,9 +518,48 @@ function updateQualityDot(identity, quality){
   [identity, identity + ':cam'].forEach((tileId) => {
     const tile = tiles.get(tileId);
     const dot = tile && tile.querySelector('.quality-dot');
-    if(dot){ dot.className = 'quality-dot ' + level; dot.title = label; }
+    if(dot) dot.className = 'quality-dot ' + level;
+    qualityBaseLabel.set(tileId, label);
+    renderQualityTooltip(tileId);
   });
 }
+
+// Extrai perda de pacote (delta desde a última amostra, não acumulado — um
+// valor acumulado desde o início da chamada fica cada vez menos
+// representativo do estado ATUAL) e jitter do inbound-rtp de vídeo.
+const qualityStatsPrev = new Map(); // tileId -> { lost, received } acumulados na última amostra
+
+async function sampleTileDetailedStats(tileId, track){
+  if(!track || typeof track.getRTCStatsReport !== 'function') return;
+  let report;
+  try{ report = await track.getRTCStatsReport(); }catch(e){ return; }
+  if(!report) return;
+  let inbound = null;
+  report.forEach((stat) => {
+    if(stat.type === 'inbound-rtp' && stat.kind === 'video') inbound = stat;
+  });
+  if(!inbound) return;
+
+  const prev = qualityStatsPrev.get(tileId) || { lost: 0, received: 0 };
+  const deltaLost = Math.max(0, (inbound.packetsLost || 0) - prev.lost);
+  const deltaReceived = Math.max(0, (inbound.packetsReceived || 0) - prev.received);
+  qualityStatsPrev.set(tileId, { lost: inbound.packetsLost || 0, received: inbound.packetsReceived || 0 });
+
+  const total = deltaLost + deltaReceived;
+  const lossPct = total > 0 ? (deltaLost / total) * 100 : 0;
+  // jitter do WebRTC vem em segundos, por padrão — convertendo pra ms, que é
+  // a unidade que faz sentido mostrar pra gente.
+  const jitterMs = inbound.jitter != null ? Math.round(inbound.jitter * 1000) : null;
+
+  const parts = [`perda: ${lossPct.toFixed(1)}%`];
+  if(jitterMs != null) parts.push(`jitter: ${jitterMs}ms`);
+  qualityDetails.set(tileId, parts.join(' · '));
+  renderQualityTooltip(tileId);
+}
+
+setInterval(() => {
+  tileVideoTracks.forEach((track, tileId) => sampleTileDetailedStats(tileId, track));
+}, 4000);
 
 // ---------------- UI: palco (destaque) + fileira (minimizados) ----------------
 let tiles = new Map();     // id -> elemento .tile
@@ -644,6 +708,10 @@ function leaveRoom(){
     room = null;
   }
   tileStreams.clear();
+  tileVideoTracks.clear();
+  qualityBaseLabel.clear();
+  qualityDetails.clear();
+  qualityStatsPrev.clear();
   tiles.forEach(el => el.remove());
   tiles.clear();
   pinnedOrder = [];
@@ -730,7 +798,7 @@ window.addEventListener('beforeunload', () => {
 });
 
 // PWA: versão, registro do service worker, detecção de atualização e botão de instalação
-const APP_VERSION = '0.8.4'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
+const APP_VERSION = '0.8.5'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
 document.getElementById('versionLabel').textContent = 'v' + APP_VERSION;
 
 if('serviceWorker' in navigator){
