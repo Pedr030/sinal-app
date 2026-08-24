@@ -18,6 +18,11 @@ export async function GET(request){
   const url = new URL(request.url);
   const room = (url.searchParams.get('room') || '').trim().toUpperCase().slice(0, 32);
   const name = (url.searchParams.get('name') || '').trim().slice(0, 40);
+  // Opcional — vem preenchido só quando a pessoa logou com Discord (ver
+  // api/discord-callback.js). Vai pro metadata do participante no LiveKit,
+  // que é como os OUTROS participantes enxergam o avatar de verdade (não só
+  // quem logou).
+  const avatar = (url.searchParams.get('avatar') || '').trim().slice(0, 300);
   // "join" é o padrão de propósito se vier ausente/inesperado — é o modo
   // mais restrito (dá erro em vez de criar sala à toa), falha mais seguro.
   const mode = url.searchParams.get('mode') === 'create' ? 'create' : 'join';
@@ -96,7 +101,11 @@ export async function GET(request){
 
     // Sem "ttl" explícito: usa o padrão do SDK (6h), tempo de sobra pra uma
     // sessão longa de call/jogo sem cair no meio.
-    const at = new AccessToken(apiKey, apiSecret, { identity, name });
+    const at = new AccessToken(apiKey, apiSecret, {
+      identity,
+      name,
+      metadata: avatar ? JSON.stringify({ avatarUrl: avatar }) : undefined
+    });
     at.addGrant({
       room,
       roomJoin: true,

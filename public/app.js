@@ -136,7 +136,8 @@ async function connectToRoom(code, name, mode){
 
   let token, url;
   try{
-    const res = await fetch(`/api/get-token?room=${encodeURIComponent(code)}&name=${encodeURIComponent(name)}&mode=${encodeURIComponent(mode)}`);
+    const avatarParam = discordUser && discordUser.avatar ? `&avatar=${encodeURIComponent(discordUser.avatar)}` : '';
+    const res = await fetch(`/api/get-token?room=${encodeURIComponent(code)}&name=${encodeURIComponent(name)}&mode=${encodeURIComponent(mode)}${avatarParam}`);
     if(res.status === 404){
       setEntryStatus('Sala não encontrada. Confira o código.');
       return;
@@ -686,6 +687,18 @@ function updateStageVisibility(){
   document.getElementById('filmstrip').style.display = (total - pinnedOrder.length) > 0 ? 'flex' : 'none';
 }
 
+// Quem logou com Discord tem o avatar de verdade gravado no metadata do
+// participante do LiveKit (ver api/get-token.js) — assim os OUTROS
+// participantes também enxergam, não só quem logou. Sem isso, cai nas
+// iniciais de sempre.
+function participantAvatarUrl(p){
+  if(!p.metadata) return null;
+  try{
+    const meta = JSON.parse(p.metadata);
+    return (meta && meta.avatarUrl) || null;
+  }catch(e){ return null; }
+}
+
 function renderAvatars(){
   if(!room) return;
   const { Track } = LivekitClient;
@@ -698,7 +711,9 @@ function renderAvatars(){
     const av = document.createElement('div');
     av.className = 'avatar' + (isSharing ? ' sharing' : '');
     const isYou = p === room.localParticipant;
-    av.innerHTML = `${escapeHtml(initials(displayName))}<span class="tip">${escapeHtml(displayName)}${isYou ? ' (você)':''}</span>`;
+    const avatarUrl = participantAvatarUrl(p);
+    const inner = avatarUrl ? `<img src="${escapeHtml(avatarUrl)}" alt="">` : escapeHtml(initials(displayName));
+    av.innerHTML = `${inner}<span class="tip">${escapeHtml(displayName)}${isYou ? ' (você)':''}</span>`;
     row.appendChild(av);
   });
   if(rosterOpen) renderRosterPanel();
@@ -724,8 +739,10 @@ function renderRosterPanel(){
     const isSharing = !!(p.getTrackPublication(Track.Source.ScreenShare) || p.getTrackPublication(Track.Source.Camera));
     const isYou = p === room.localParticipant;
     const displayName = p.name || p.identity;
+    const avatarUrl = participantAvatarUrl(p);
+    const avatarInner = avatarUrl ? `<img src="${escapeHtml(avatarUrl)}" alt="">` : escapeHtml(initials(displayName));
     return `<div class="roster-row${isSharing ? ' sharing' : ''}">
-      <div class="roster-avatar">${escapeHtml(initials(displayName))}</div>
+      <div class="roster-avatar">${avatarInner}</div>
       <div><div class="name">${escapeHtml(displayName)}${isYou ? ' (você)' : ''}</div>${isSharing ? '<div class="tag">Compartilhando</div>' : ''}</div>
     </div>`;
   }).join('');
@@ -798,11 +815,95 @@ function prefillJoinCode(){
 // sala. Só precisa rodar no carregamento inicial — diferente do código da
 // sala, o campo de nome não é tocado em nenhum outro momento da sessão, então
 // não some/precisa ser re-sincronizado ao sair de uma sala.
+// Se a pessoa já logou com Discord antes (discordUser, carregado do
+// localStorage), o nome dele tem prioridade — é assim que o login "fica
+// salvo" sem precisar refazer o OAuth toda visita.
 function prefillLastName(){
+  if(discordUser && discordUser.name){
+    document.getElementById('nameInput').value = discordUser.name;
+    return;
+  }
   try{
     const lastName = localStorage.getItem('sinal:lastName');
     if(lastName) document.getElementById('nameInput').value = lastName;
   }catch(e){ /* localStorage indisponível — sem problema, só não pré-preenche */ }
+}
+
+// ---------------- LOGIN OPCIONAL COM DISCORD ----------------
+// Não guarda sessão nenhuma no servidor — só usa o OAuth do Discord uma vez
+// pra perguntar "quem é essa pessoa" (nome + avatar) e guarda a resposta
+// aqui no navegador, igual sinal:lastName. Totalmente opcional: quem não usa
+// isso continua com o fluxo de sempre (digitar o nome).
+let discordUser = null; // { name, avatar } ou null
+
+function loadDiscordUser(){
+  try{
+    const raw = localStorage.getItem('sinal:discordUser');
+    if(raw) discordUser = JSON.parse(raw);
+  }catch(e){ /* localStorage indisponível ou dado corrompido — segue sem Discord */ }
+}
+
+function saveDiscordUser(user){
+  discordUser = user;
+  try{ localStorage.setItem('sinal:discordUser', JSON.stringify(user)); }catch(e){}
+}
+
+function clearDiscordUser(){
+  discordUser = null;
+  try{ localStorage.removeItem('sinal:discordUser'); }catch(e){}
+  document.getElementById('nameInput').value = '';
+  renderDiscordStatus();
+}
+
+function renderDiscordStatus(){
+  const el = document.getElementById('discordStatus');
+  const btn = document.getElementById('discordLoginBtn');
+  if(discordUser && discordUser.name){
+    el.hidden = false;
+    el.innerHTML = `Conectado como <b>${escapeHtml(discordUser.name)}</b> (Discord) — `;
+    const swapBtn = document.createElement('button');
+    swapBtn.type = 'button';
+    swapBtn.className = 'ghost-btn';
+    swapBtn.style.display = 'inline';
+    swapBtn.style.marginTop = '0';
+    swapBtn.textContent = 'trocar';
+    swapBtn.onclick = clearDiscordUser;
+    el.appendChild(swapBtn);
+    btn.style.display = 'none';
+  } else {
+    el.hidden = true;
+    btn.style.display = '';
+  }
+}
+
+// Manda pra função serverless que redireciona pro Discord — leva junto o
+// código de sala já digitado (se tiver algum), pra não se perder no
+// vai-e-volta do login.
+function loginWithDiscord(){
+  const sala = document.getElementById('joinCodeInput').value.trim().toUpperCase();
+  window.location.href = '/api/discord-login' + (sala ? ('?sala=' + encodeURIComponent(sala)) : '');
+}
+
+// Roda no carregamento da página — detecta se acabamos de voltar do
+// callback do Discord (api/discord-callback.js) via query string.
+function handleDiscordCallback(){
+  const params = new URLSearchParams(window.location.search);
+  if(params.get('discord_error')){
+    setEntryStatus('Não foi possível entrar com Discord. Tente de novo ou use seu nome normalmente.');
+  }
+  const name = params.get('discord_name');
+  const avatar = params.get('discord_avatar');
+  if(name){
+    saveDiscordUser({ name, avatar: avatar || null });
+    try{ localStorage.setItem('sinal:lastName', name); }catch(e){}
+  }
+  if(params.has('discord_name') || params.has('discord_avatar') || params.has('discord_error')){
+    const clean = new URL(window.location.href);
+    clean.searchParams.delete('discord_name');
+    clean.searchParams.delete('discord_avatar');
+    clean.searchParams.delete('discord_error');
+    history.replaceState(null, '', clean.pathname + clean.search);
+  }
 }
 
 // pré-preenche a preferência de qualidade de compartilhamento salva (§
@@ -816,9 +917,12 @@ function prefillShareQuality(){
 }
 
 window.addEventListener('DOMContentLoaded', () => {
+  loadDiscordUser();
+  handleDiscordCallback();
   prefillJoinCode();
   prefillLastName();
   prefillShareQuality();
+  renderDiscordStatus();
 });
 
 // Tenta desconectar educadamente ao fechar/recarregar a aba, pra sumir na
@@ -828,7 +932,7 @@ window.addEventListener('beforeunload', () => {
 });
 
 // PWA: versão, registro do service worker, detecção de atualização e botão de instalação
-const APP_VERSION = '0.8.6'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
+const APP_VERSION = '0.8.7'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
 document.getElementById('versionLabel').textContent = 'v' + APP_VERSION;
 
 if('serviceWorker' in navigator){

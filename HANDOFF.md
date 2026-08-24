@@ -12,7 +12,7 @@ Em agosto de 2026, a ANPD determinou que o Discord suspendesse compartilhamento 
 
 - **Frontend estático sem build step**: `index.html` (marcação), `style.css` e `app.js` — três arquivos simples, sem framework, sem bundler, sem npm. Era um `index.html` único até a v0.7.1; separado na v0.8.0 a pedido do usuário (achava o arquivo único confuso demais de mexer).
 - **Transporte de vídeo/áudio: [LiveKit Cloud](https://livekit.io/cloud)** — um SFU (Selective Forwarding Unit) gerenciado. Desde a v0.8.0 (2026-08-24), **não é mais P2P/malha** — era PeerJS puro antes disso (ver §11 pra motivo da troca).
-- **Uma peça de backend, só ela**: `api/get-token.js`, uma função serverless que gera o token de acesso do LiveKit (assinado com uma API secret que nunca pode chegar ao navegador). É a única parte do projeto com dependência npm (`livekit-server-sdk`, ver `package.json`) — o site em si continua sem build step nenhum.
+- **Backend**: `api/get-token.js` (gera o token de acesso do LiveKit) + `api/discord-login.js`/`api/discord-callback.js` (login opcional com Discord, v0.8.7, ver §8.1). Só `livekit-server-sdk` é dependência npm de verdade (ver `package.json`) — os dois arquivos do Discord não precisam de nenhuma lib, só `fetch` (nativo no runtime Node do Vercel). O site em si continua sem build step nenhum.
 - **Hospedagem: Vercel**. Site: `https://sinal-app-stream.vercel.app`. Deploy automático via GitHub (`git push` na `main` → produção; push em qualquer outra branch, ex: `development` → *preview deploy* com URL própria, não mexe em produção — ver §10). Antes disso o projeto passou por uma versão hospedada no Netlify (~1 dia, v0.8.0–v0.8.2) — migrado depois de bater no limite de créditos grátis de build do mês (não era um problema estrutural do Netlify, foi consumo de uma sessão de iteração rápida, ~4 deploys de produção num dia só). Os arquivos específicos do Netlify (`netlify/`, `netlify.toml`) foram removidos do projeto — ver §11 se precisar do histórico completo.
 - **PWA instalável** (manifest + service worker) — dá pra "instalar" como app, sem barra de navegador, ícone próprio.
 
@@ -35,10 +35,12 @@ sinal-app/
 │       ├── icon-192.png
 │       └── icon-512.png
 ├── api/
-│   └── get-token.js                 # função do Vercel, gera o token de acesso do LiveKit (server-side)
+│   ├── get-token.js                 # função do Vercel, gera o token de acesso do LiveKit (server-side)
+│   ├── discord-login.js             # login opcional c/ Discord: redireciona pra tela de autorização
+│   └── discord-callback.js          # troca o code por nome+avatar do Discord, redireciona de volta
 ├── vercel.json                      # outputDirectory="public"
 ├── package.json                     # dependência da função (livekit-server-sdk)
-├── .env                             # LIVEKIT_URL/API_KEY/API_SECRET locais — NUNCA dentro de public/
+├── .env                             # LIVEKIT_*/DISCORD_CLIENT_ID/DISCORD_CLIENT_SECRET locais — NUNCA dentro de public/
 ├── .gitignore                       # exclui .env, node_modules, .vercel, o zip antigo do Netlify Drop
 └── HANDOFF.md
 ```
@@ -127,6 +129,23 @@ Todos os botões de ação da tela da sala — copiar código, copiar convite, c
 - `RoomServiceClient` (API HTTP administrativa) precisa de `http(s)://`, diferente do `wss://` que o cliente usa — a função converte o esquema da `LIVEKIT_URL` antes de instanciar. Erros de `createRoom`/`listRooms` são logados (`console.error`, aparecem nos logs de função da plataforma) em vez de engolidos em silêncio — já causou um bug real escondido antes disso (ver §11).
 - TTL do token: sem valor customizado, usa o padrão do SDK (6h) — de propósito, pra não cair no meio de uma sessão longa de call/jogo.
 - **STUN/TURN não é mais responsabilidade nossa** — o LiveKit Cloud cuida disso internamente pros participantes se conectarem ao SFU. Toda a config antiga (`STATIC_ICE_SERVERS`, busca de TURN dinâmico em `elixir-webrtc.org`, o botão de "testar minha conexão") foi removida na v0.8.0 junto com o PeerJS.
+
+### 8.1. Login opcional com Discord (v0.8.7)
+
+- **Por quê**: o grupo já vive no Discord (voz fica lá, só a tela é compartilhada pelo Sinal) — dá pra puxar nome + avatar reais em vez de digitar nome à mão toda vez. **Explicitamente opcional** (pedido do usuário) — o fluxo de sempre (campo de nome livre) continua existindo do lado, sem nenhuma obrigatoriedade.
+- **Sem sessão no servidor**: o Sinal continua sem banco de dados/estado. O OAuth só é usado uma vez pra perguntar ao Discord "quem é essa pessoa" (nome + avatar); a resposta fica salva no `localStorage` do navegador (`sinal:discordUser`), igual `sinal:lastName` já funcionava. Não tem refresh token, não revalida com o Discord depois — é só uma foto do perfil no momento do login. É por isso que "fica salvo" sem precisar refazer o login toda visita (até a pessoa clicar em "trocar" ou limpar os dados do site).
+- **Fluxo (OAuth2 Authorization Code padrão)**:
+  1. Botão "Entrar com Discord" na tela inicial (`loginWithDiscord()` em `app.js`) manda o navegador pra `/api/discord-login`, levando o código de sala já digitado (se tinha algum) como query `?sala=`.
+  2. **`api/discord-login.js`**: monta a URL de autorização do Discord (`client_id` do env `DISCORD_CLIENT_ID`, `redirect_uri` **derivado da própria origem da requisição** — `new URL(request.url).origin + '/api/discord-callback'`, igual o truque de conversão de esquema da `LIVEKIT_URL` — não fixo em código) e redireciona. O `sala` (se veio) vira o `state` do OAuth, só pra sobreviver o vai-e-volta. A pessoa loga **no site do Discord**, a senha nunca passa pelo Sinal.
+  3. **`api/discord-callback.js`**: troca o `code` pelo `access_token` (`POST discord.com/api/oauth2/token`, usando `DISCORD_CLIENT_SECRET` — só aqui, nunca no navegador, mesma cautela da `LIVEKIT_API_SECRET`), busca o perfil (`GET discord.com/api/users/@me`), monta a URL do avatar (`cdn.discordapp.com/avatars/{id}/{avatar}.png`, com fallback pro avatar padrão do Discord via fórmula `(id >> 22) % 6` quando a pessoa não tem avatar customizado — precisa de `BigInt` porque o ID do Discord estoura a precisão segura de `Number`), e redireciona de volta pra `/` com `?discord_name=...&discord_avatar=...` (+ `sala=...` se tinha).
+  4. `app.js`: `handleDiscordCallback()` roda no `DOMContentLoaded` (antes de `prefillLastName()`), detecta esses parâmetros, salva em `sinal:discordUser`, e limpa a URL (`history.replaceState`) sem perder o `?sala=`.
+- **Sem assinatura/criptografia no round-trip** — de propósito, não por descuido: o nome/avatar que voltam do callback só controlam o que a **própria pessoa** vê como identidade dela no Sinal, exatamente como o campo de nome livre já funcionava antes. Não é um token de acesso a nada — ninguém ganha permissão de mais nada só "forjando" esses parâmetros.
+- **Avatar de verdade pros OUTROS participantes, não só localmente**: `connectToRoom()` manda o avatar salvo junto com `room`/`name`/`mode` pra `/api/get-token`, que grava isso no campo `metadata` do `AccessToken` do LiveKit (`{ avatarUrl }` em JSON) — assim todo mundo na sala recebe o avatar via `participant.metadata`, não só quem logou. `renderAvatars()` (avatares do topo) e `renderRosterPanel()` (barra lateral) checam `participantAvatarUrl(p)` e trocam as iniciais por `<img>` quando tem avatar; sem Discord, cai nas iniciais de sempre — nada quebra pra quem não usa.
+- **Checklist de setup** (contas/infra do usuário, não dá pra eu fazer por ele):
+  1. Criar uma aplicação em https://discord.com/developers/applications, pegar **Client ID** e gerar um **Client Secret**.
+  2. Na aba OAuth2 dessa aplicação, registrar os **Redirects** exatos (Discord exige correspondência exata, não aceita coringa): `https://sinal-app-stream.vercel.app/api/discord-callback` (produção) e o domínio do preview da `development` (ex: `https://sinal-app-git-development-<algo>.vercel.app/api/discord-callback`) — e opcionalmente `http://localhost:3000/api/discord-callback` pra testar com `vercel dev` (Discord permite `http://localhost` como exceção pra desenvolvimento local).
+  3. Configurar `DISCORD_CLIENT_ID`/`DISCORD_CLIENT_SECRET` no `.env` local e no painel do Vercel (Environment Variables), mesmo padrão das 3 variáveis do LiveKit.
+  4. **Ainda não testado ponta a ponta** (precisa das chaves reais configuradas, que só o usuário pode fazer) — só validado localmente com mocks (ver testes na sessão que implementou isso): prefill de nome/avatar a partir de query string, persistência entre visitas, botão "trocar", fallback pra iniciais quando não tem avatar, mensagem de erro quando `discord_error=1`.
 - **Formato Vercel**: `export async function GET(request) { ... return new Response(...); }` — Web Handler padrão (`Request` in, `Response` out), export nomeado pelo verbo HTTP. Cada arquivo em `api/` vira uma rota (`api/get-token.js` → `/api/get-token`).
 
 ## 9. PWA e versionamento
@@ -201,9 +220,11 @@ Pra não reabrir debates já fechados:
 ## 13. Próximos passos sugeridos (não decididos, só ideias soltas na conversa)
 
 Nada disso foi pedido formalmente ainda — só contexto se surgir:
-- Login/integração com Discord foi cogitado uma vez; o usuário disse que não é prioridade. Com backend já existindo agora (função serverless), isso ficou tecnicamente mais fácil de encaixar do que era na era "zero backend" — mas ainda não foi pedido de verdade, não adiantar sozinho.
-- **Roadmap conversado em 2026-08-24, sem nada decidido**:
+- **Roadmap conversado em 2026-08-24, sem nada decidido** (itens ✅ já implementados nesse mesmo dia, ficam aqui só de histórico):
+  - ✅ Toggle manual de qualidade (720p "leve" vs 1080p padrão) — implementado (v0.8.4).
+  - ✅ Métricas detalhadas no indicador de qualidade (perda de pacote/jitter via `getRTCStatsReport()`) — implementado (v0.8.5).
+  - ✅ Painel "quem está na sala" (barra lateral com avatar + nome + indicador de compartilhamento) — implementado (v0.8.6).
+  - ✅ Login opcional com Discord (nome + avatar reais, via OAuth) — implementado (v0.8.7, ver §8.1). **Falta o usuário configurar as chaves reais (`DISCORD_CLIENT_ID`/`DISCORD_CLIENT_SECRET`) e testar ponta a ponta** antes de considerar validado em produção.
   - Testar com 3+ amigos reais em redes diferentes (só rodou com 2 abas do próprio usuário até agora) — é o que realmente valida a migração pro LiveKit.
-  - Toggle manual de qualidade (720p "leve" vs 1080p padrão) pra quem tiver internet mais fraca — hoje é fixo em 1080p/30 (v0.8.1).
   - Gravação de sessão via Egress nativo do LiveKit — só cogitado, não pedido.
   - Acompanhar o painel do LiveKit (Sessions/Observability) nas primeiras sessões reais, pra pegar erro cedo se aparecer.
