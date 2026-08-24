@@ -355,6 +355,40 @@ document.getElementById('chatForm').addEventListener('submit', (e) => {
 });
 
 // ---------------- COMPARTILHAR TELA / CÂMERA ----------------
+// Dois presets de qualidade pra tela — 1080p virou padrão depois que o SFU
+// resolveu o multiplicador de CPU por espectador (ver HANDOFF §6/§12), mas
+// upload de 4.5 Mbps sustentado não é realidade pra todo mundo no grupo.
+// "leve" existe pra quem precisar (upload fraco, ou só quer economizar).
+const SHARE_QUALITY_PRESETS = {
+  high: {
+    resolution: { width: 1920, height: 1080, frameRate: 30 },
+    encoding: { maxBitrate: 4_500_000, maxFramerate: 30 },
+    label: 'HD',
+    title: 'Qualidade: HD (1080p, ~4.5 Mbps de upload) — clique pra mudar pra leve (720p)'
+  },
+  low: {
+    resolution: { width: 1280, height: 720, frameRate: 24 },
+    encoding: { maxBitrate: 2_500_000, maxFramerate: 24 },
+    label: '720',
+    title: 'Qualidade: leve (720p, ~2.5 Mbps de upload) — clique pra voltar pra HD (1080p)'
+  }
+};
+let shareQuality = 'high';
+
+function updateQualityBtn(){
+  const btn = document.getElementById('qualityBtn');
+  if(!btn) return;
+  const preset = SHARE_QUALITY_PRESETS[shareQuality];
+  btn.textContent = preset.label;
+  setBtnLabel(btn, preset.title);
+}
+
+function toggleShareQuality(){
+  shareQuality = shareQuality === 'high' ? 'low' : 'high';
+  try{ localStorage.setItem('sinal:shareQuality', shareQuality); }catch(e){ /* modo privado etc — sem problema, só não vai lembrar da próxima vez */ }
+  updateQualityBtn();
+}
+
 async function toggleShare(){
   if(!room) return;
   const { Track } = LivekitClient;
@@ -364,24 +398,19 @@ async function toggleShare(){
     resetShareButton();
     return;
   }
+  // Aplica o preset escolhido no botão de qualidade (§ acima) — muda só na
+  // PRÓXIMA vez que começar a compartilhar, não afeta uma sessão já ativa.
+  const preset = SHARE_QUALITY_PRESETS[shareQuality];
   try{
-    // 1080p/30fps: o 720p/24fps era mitigação pro problema de CPU da era
-    // malha P2P (quem compartilha recodificava uma vez por espectador). Com
-    // o SFU (LiveKit) isso não escala mais com o número de gente assistindo
-    // — codificar uma vez continua tendo custo, mas não multiplica mais.
-    // Voltado pro padrão de qualidade original a pedido do usuário, já que o
-    // motivo original de baixar não existe mais (ver HANDOFF §6/§12).
-    //
     // screenShareEncoding (2º "publishOptions", separado das opções de
     // captura): sem isso, o LiveKit usa um bitrate automático pensado pra
     // vídeo de câmera parada, baixo demais pra jogo (muito movimento/detalhe)
-    // em 1080p30 — dava pra ver pixelização/bloco em teste real. 4.5 Mbps é
-    // generoso o suficiente pra ficar nítido sem exigir upload absurdo.
+    // em 1080p30 — dava pra ver pixelização/bloco em teste real.
     await room.localParticipant.setScreenShareEnabled(true, {
       audio: true, // só disponibiliza a opção; o navegador pergunta de verdade no seletor nativo
-      resolution: { width: 1920, height: 1080, frameRate: 30 }
+      resolution: preset.resolution
     }, {
-      screenShareEncoding: { maxBitrate: 4_500_000, maxFramerate: 30 }
+      screenShareEncoding: preset.encoding
     });
   }catch(e){
     setRoomStatus('Permissão de tela negada ou cancelada.', true);
@@ -391,6 +420,7 @@ async function toggleShare(){
   const btn = document.getElementById('shareBtn');
   setBtnLabel(btn, 'Parar compartilhamento');
   btn.classList.add('active-share');
+  document.getElementById('qualityBtn').disabled = true; // só faz sentido trocar antes de começar
 
   const screenPub = room.localParticipant.getTrackPublication(Track.Source.ScreenShare);
   const selfStream = new MediaStream([screenPub.videoTrack.mediaStreamTrack]);
@@ -410,6 +440,7 @@ function resetShareButton(){
   const btn = document.getElementById('shareBtn');
   setBtnLabel(btn, 'Compartilhar minha tela');
   btn.classList.remove('active-share');
+  document.getElementById('qualityBtn').disabled = false;
   document.getElementById('selfPreview').style.display = 'none';
   document.getElementById('selfStatus').textContent = 'Assistindo';
   if(room) removeTile(room.localParticipant.identity);
@@ -626,6 +657,7 @@ function leaveRoom(){
   const shareBtn = document.getElementById('shareBtn');
   setBtnLabel(shareBtn, 'Compartilhar minha tela');
   shareBtn.classList.remove('active-share');
+  document.getElementById('qualityBtn').disabled = false;
   const cameraBtn = document.getElementById('cameraBtn');
   setBtnLabel(cameraBtn, 'Ligar câmera');
   cameraBtn.classList.remove('active-share');
@@ -675,9 +707,20 @@ function prefillLastName(){
   }catch(e){ /* localStorage indisponível — sem problema, só não pré-preenche */ }
 }
 
+// pré-preenche a preferência de qualidade de compartilhamento salva (§
+// SHARE_QUALITY_PRESETS) — mesma lógica de nome/código, lembrada entre visitas.
+function prefillShareQuality(){
+  try{
+    const saved = localStorage.getItem('sinal:shareQuality');
+    if(saved === 'low' || saved === 'high') shareQuality = saved;
+  }catch(e){ /* localStorage indisponível — sem problema, fica no padrão (HD) */ }
+  updateQualityBtn();
+}
+
 window.addEventListener('DOMContentLoaded', () => {
   prefillJoinCode();
   prefillLastName();
+  prefillShareQuality();
 });
 
 // Tenta desconectar educadamente ao fechar/recarregar a aba, pra sumir na
@@ -687,7 +730,7 @@ window.addEventListener('beforeunload', () => {
 });
 
 // PWA: versão, registro do service worker, detecção de atualização e botão de instalação
-const APP_VERSION = '0.8.3'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
+const APP_VERSION = '0.8.4'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
 document.getElementById('versionLabel').textContent = 'v' + APP_VERSION;
 
 if('serviceWorker' in navigator){

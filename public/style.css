@@ -146,6 +146,7 @@ main{width:100%; max-width:1440px; flex:1; display:flex; flex-direction:column;}
 .icon-btn .icon-check{ display:none; color:var(--tune); }
 .icon-btn.copied .icon-copy{ display:none; }
 .icon-btn.copied .icon-check{ display:block; }
+.icon-btn.mono{ font-size:12px; font-weight:700; letter-spacing:.5px; color:var(--fog); }
 .chat-badge{
   position:absolute; top:3px; right:3px; min-width:16px; height:16px; padding:0 4px;
   border-radius:8px; background:var(--rec); color:#fff; font-size:10px; font-weight:700;
