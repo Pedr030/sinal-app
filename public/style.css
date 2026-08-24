@@ -228,8 +228,10 @@ main{width:100%; max-width:1440px; flex:1; display:flex; flex-direction:column;}
 }
 .tile .label .led{width:6px;height:6px;border-radius:50%; background:var(--rec); animation:blink 1.8s ease-in-out infinite;}
 .quality-dot{
-  width:7px; height:7px; border-radius:50%; background:#4c5157; margin-left:2px; flex-shrink:0;
+  width:7px; height:7px; border-radius:50%; background:#4c5157; flex-shrink:0;
   transition:background .3s;
+  /* área de hover maior que o círculo visível (facilita passar o mouse sem mudar o layout) */
+  box-sizing:content-box; background-clip:content-box; padding:5px; margin:-5px -5px -5px -3px;
 }
 .quality-dot.good{ background:#3ecf6e; }
 .quality-dot.warn{ background:var(--tune); }
