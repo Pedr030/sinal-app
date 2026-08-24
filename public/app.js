@@ -315,6 +315,7 @@ function toggleChatPanel(force){
   chatOpen = typeof force === 'boolean' ? force : !chatOpen;
   document.getElementById('chatPanel').classList.toggle('open', chatOpen);
   if(chatOpen){
+    toggleRosterPanel(false);
     unreadChat = 0;
     updateChatBadge();
     document.getElementById('chatInput').focus();
@@ -708,28 +709,27 @@ let rosterOpen = false;
 function toggleRosterPanel(force){
   rosterOpen = typeof force === 'boolean' ? force : !rosterOpen;
   document.getElementById('rosterPanel').classList.toggle('open', rosterOpen);
-  if(rosterOpen) renderRosterPanel();
+  if(rosterOpen){
+    toggleChatPanel(false);
+    renderRosterPanel();
+  }
 }
 
 function renderRosterPanel(){
   if(!room) return;
   const { Track } = LivekitClient;
-  const panel = document.getElementById('rosterPanel');
+  const list = document.getElementById('rosterList');
   const all = [room.localParticipant, ...room.remoteParticipants.values()];
-  const items = all.map((p) => {
+  list.innerHTML = all.map((p) => {
     const isSharing = !!(p.getTrackPublication(Track.Source.ScreenShare) || p.getTrackPublication(Track.Source.Camera));
     const isYou = p === room.localParticipant;
     const displayName = p.name || p.identity;
-    return `<div class="roster-item${isSharing ? ' sharing' : ''}"><span class="roster-dot"></span>${escapeHtml(displayName)}${isYou ? ' (você)' : ''}</div>`;
+    return `<div class="roster-row${isSharing ? ' sharing' : ''}">
+      <div class="roster-avatar">${escapeHtml(initials(displayName))}</div>
+      <div><div class="name">${escapeHtml(displayName)}${isYou ? ' (você)' : ''}</div>${isSharing ? '<div class="tag">Compartilhando</div>' : ''}</div>
+    </div>`;
   }).join('');
-  panel.innerHTML = `<div class="roster-header">${all.length} na sala</div>${items}`;
 }
-
-document.addEventListener('click', (e) => {
-  if(!rosterOpen) return;
-  if(e.target.closest('.roster-wrap')) return;
-  toggleRosterPanel(false);
-});
 
 function leaveRoom(){
   if(room){

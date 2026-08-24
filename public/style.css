@@ -181,23 +181,32 @@ main{width:100%; max-width:1440px; flex:1; display:flex; flex-direction:column;}
 @media (max-width:640px){
   .chat-panel{ width:100vw; max-width:100vw; }
 }
-.roster-wrap{ position:relative; }
 .roster-panel{
-  position:absolute; top:130%; right:0; min-width:180px; max-width:240px;
-  background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:6px;
-  display:none; z-index:60; box-shadow:0 10px 30px rgba(0,0,0,.45);
+  position:fixed; top:0; right:0; height:100vh; width:280px; max-width:90vw;
+  background:var(--panel); border-left:1px solid var(--line);
+  display:flex; flex-direction:column; z-index:90;
+  transform:translateX(100%); transition:transform .2s ease;
 }
-.roster-panel.open{ display:block; }
-.roster-panel .roster-header{
-  font-size:10.5px; letter-spacing:1px; text-transform:uppercase; color:var(--fog);
-  padding:4px 8px 6px; font-family:'JetBrains Mono';
+.roster-panel.open{ transform:translateX(0); }
+.roster-panel-header{
+  display:flex; align-items:center; justify-content:space-between;
+  padding:10px 10px 10px 16px; border-bottom:1px solid var(--line); flex-shrink:0;
 }
-.roster-panel .roster-item{
-  display:flex; align-items:center; gap:8px; padding:6px 8px; border-radius:5px;
-  font-size:13px; font-family:'Inter';
+.roster-panel-header .icon-btn{ width:38px; height:38px; }
+.roster-panel-header .icon-btn .icon{ width:16px; height:16px; }
+.roster-list{ flex:1; overflow-y:auto; padding:14px 16px; display:flex; flex-direction:column; gap:14px; }
+.roster-row{ display:flex; align-items:center; gap:10px; }
+.roster-avatar{
+  width:36px; height:36px; border-radius:50%; background:var(--panel-2);
+  border:2px solid var(--panel); display:flex; align-items:center; justify-content:center;
+  font-family:'JetBrains Mono'; font-size:12px; font-weight:700; color:var(--ink); flex-shrink:0;
 }
-.roster-panel .roster-dot{ width:6px; height:6px; border-radius:50%; background:var(--rec); opacity:0; flex-shrink:0; }
-.roster-panel .roster-item.sharing .roster-dot{ opacity:1; }
+.roster-row.sharing .roster-avatar{ border-color:var(--rec); box-shadow:0 0 0 2px var(--rec-dim); }
+.roster-row .name{ font-size:13.5px; }
+.roster-row .tag{ font-size:10px; color:var(--rec); font-family:'JetBrains Mono'; text-transform:uppercase; letter-spacing:.5px; margin-top:2px; }
+@media (max-width:640px){
+  .roster-panel{ width:100vw; max-width:100vw; }
+}
 
 .avatars{display:flex; justify-self:center;}
 .avatar{
