@@ -150,6 +150,7 @@ Todos os botões de ação da tela da sala — copiar código, copiar convite, c
 - Ele tem um fluxo de **teste local** (servidor Python `http.server`) pra validar mudanças de UI/lógica sem gastar deploy — rodar de dentro de `public/` (ou `python -m http.server --directory public`), não mais da raiz do projeto. Atenção: isso não testa a função serverless nem a conexão real com o LiveKit — pra isso, `vercel dev` (equivalente ao `netlify dev` que usávamos antes) lê o `.env` local e roda site + função juntos.
 - Ele tem Python, Node, git e GitHub CLI (`gh`) instalados localmente.
 - Estilo de comunicação: gosta de explicação técnica honesta (inclusive "não sei", "não consigo garantir sem testar"), sem enrolação, em português informal.
+- **Mensagens de commit seguem Conventional Commits** (decidido em 2026-08-24): prefixo `feat:`, `fix:`, `style:`, `docs:`, `chore:`, `refactor:` etc antes da descrição (em português, curta). Ex.: `style: centraliza e aumenta o tile em destaque`, `feat: adiciona detalhamento de perda/jitter no indicador de qualidade`.
 
 ### Checklist de setup do LiveKit Cloud + Netlify (histórico — site legado, não recebe deploy novo)
 
