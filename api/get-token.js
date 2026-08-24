@@ -81,7 +81,14 @@ export async function GET(request){
       // do padrão da plataforma — sem isso, a sala continuava "viva" e
       // aceitando gente muito tempo depois de ficar vazia (mesmo relato).
       try{
-        await roomService.createRoom({ name: room, emptyTimeout: 60, departureTimeout: 60 });
+        const created = await roomService.createRoom({ name: room, emptyTimeout: 60, departureTimeout: 60 });
+        // Log de sucesso de propósito — a sala ainda não expirando depois de
+        // "1 min" foi relatada de verdade (2026-08-24) mesmo depois do fix da
+        // URL wss://→https://; isso aqui confirma se essa chamada realmente
+        // roda e o que o LiveKit devolveu (o objeto Room tem os campos
+        // emptyTimeout/departureTimeout ecoados de volta, dá pra conferir se
+        // bateram com o que pedimos).
+        console.log('createRoom OK:', JSON.stringify({ name: created.name, emptyTimeout: created.emptyTimeout, departureTimeout: created.departureTimeout }));
       }catch(e){
         console.error('createRoom falhou:', e && e.message, e);
       }
