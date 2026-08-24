@@ -369,7 +369,7 @@ const SHARE_QUALITY_PRESETS = {
   low: {
     resolution: { width: 1280, height: 720, frameRate: 24 },
     encoding: { maxBitrate: 2_500_000, maxFramerate: 24 },
-    label: '720',
+    label: '720p',
     title: 'Qualidade: leve (720p, ~2.5 Mbps de upload) — clique pra voltar pra HD (1080p)'
   }
 };
