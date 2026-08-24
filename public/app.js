@@ -170,23 +170,39 @@ async function connectToRoom(code, name, mode){
 function wireRoomEvents(liveRoom){
   const { RoomEvent, Track } = LivekitClient;
 
-  liveRoom.on(RoomEvent.TrackSubscribed, handleTrackAdded);
-  liveRoom.on(RoomEvent.TrackUnsubscribed, handleTrackRemoved);
-  liveRoom.on(RoomEvent.ParticipantConnected, () => renderAvatars());
+  // room.disconnect() (chamado em leaveRoom()) é assíncrono — se a pessoa
+  // sair e reentrar rápido (mesmo código ou outro), a sala NOVA já pode estar
+  // conectada e funcionando enquanto o evento "desconectei de verdade" da
+  // sala ANTIGA ainda está pra chegar. Como os handlers escrevem em elementos
+  // de UI compartilhados (ex: #roomStatus), um evento atrasado da sala velha
+  // conseguia aparecer por cima da conexão nova (relato real, 2026-08-24: "só
+  // que a mensagem 'Desconectado da sala' apareceu depois de eu sair e
+  // voltar pelo código, a sala nova tava funcionando"). Cada handler só age
+  // se `liveRoom` (a instância específica que ele pertence) ainda for a sala
+  // atual (`room`, a variável global) — evento de instância abandonada é
+  // ignorado.
+  const isCurrent = () => liveRoom === room;
+
+  liveRoom.on(RoomEvent.TrackSubscribed, (...args) => { if(isCurrent()) handleTrackAdded(...args); });
+  liveRoom.on(RoomEvent.TrackUnsubscribed, (...args) => { if(isCurrent()) handleTrackRemoved(...args); });
+  liveRoom.on(RoomEvent.ParticipantConnected, () => { if(isCurrent()) renderAvatars(); });
   liveRoom.on(RoomEvent.ParticipantDisconnected, (participant) => {
+    if(!isCurrent()) return;
     removeTile(participant.identity);
     removeTile(participant.identity + ':cam');
     renderAvatars();
   });
-  liveRoom.on(RoomEvent.TrackPublished, () => renderAvatars());
-  liveRoom.on(RoomEvent.TrackUnpublished, () => renderAvatars());
+  liveRoom.on(RoomEvent.TrackPublished, () => { if(isCurrent()) renderAvatars(); });
+  liveRoom.on(RoomEvent.TrackUnpublished, () => { if(isCurrent()) renderAvatars(); });
   // Cobre parar de compartilhar pelo controle nativo do navegador ("Parar
   // apresentação"), não só pelo nosso próprio botão.
   liveRoom.on(RoomEvent.LocalTrackUnpublished, (publication) => {
+    if(!isCurrent()) return;
     if(publication.source === Track.Source.ScreenShare) resetShareButton();
     if(publication.source === Track.Source.Camera) resetCameraButton();
   });
   liveRoom.on(RoomEvent.DataReceived, (payload, participant) => {
+    if(!isCurrent()) return;
     try{
       const msg = JSON.parse(new TextDecoder().decode(payload));
       if(msg && msg.type === 'chat'){
@@ -195,9 +211,11 @@ function wireRoomEvents(liveRoom){
     }catch(e){ /* payload em formato inesperado, ignora */ }
   });
   liveRoom.on(RoomEvent.ConnectionQualityChanged, (quality, participant) => {
+    if(!isCurrent()) return;
     if(participant) updateQualityDot(participant.identity, quality);
   });
   liveRoom.on(RoomEvent.Disconnected, () => {
+    if(!isCurrent()) return;
     setRoomStatus('Desconectado da sala.', true);
   });
 }
