@@ -1,0 +1,200 @@
+# Sinal — handoff completo do projeto
+
+Este documento existe pra te (ou a outra instância de IA que for mexer nisso) colocar 100% a par do projeto sem precisar reconstruir o histórico. Leia antes de tocar em qualquer coisa.
+
+## 1. Por que esse projeto existe
+
+Em agosto de 2026, a ANPD determinou que o Discord suspendesse compartilhamento de tela e vídeo no Brasil (voz e texto continuaram funcionando normalmente). O dono desse projeto joga com um grupo de amigos e usava o compartilhamento de tela do Discord pra assistir jogo/vídeo junto. Como alternativa, pediu pra eu construir uma ferramenta própria de compartilhamento de tela, pra usar **em paralelo** com a call de voz do Discord (que continua sendo usada normalmente pra conversar — o app só cuida da parte visual).
+
+**Não é (e não deve virar) um clone do Discord.** É uma ferramenta bem pontual, pra um grupo pequeno de amigos, sem conta de usuário pros amigos, sem persistência de dados.
+
+## 2. Stack e princípio de arquitetura
+
+- **Frontend estático sem build step**: `index.html` (marcação), `style.css` e `app.js` — três arquivos simples, sem framework, sem bundler, sem npm. Era um `index.html` único até a v0.7.1; separado na v0.8.0 a pedido do usuário (achava o arquivo único confuso demais de mexer).
+- **Transporte de vídeo/áudio: [LiveKit Cloud](https://livekit.io/cloud)** — um SFU (Selective Forwarding Unit) gerenciado. Desde a v0.8.0 (2026-08-24), **não é mais P2P/malha** — era PeerJS puro antes disso (ver §11 pra motivo da troca).
+- **Uma peça de backend, só ela**: `api/get-token.js`, uma função serverless que gera o token de acesso do LiveKit (assinado com uma API secret que nunca pode chegar ao navegador). É a única parte do projeto com dependência npm (`livekit-server-sdk`, ver `package.json`) — o site em si continua sem build step nenhum.
+- **Hospedagem: Vercel**, deploy automático via GitHub (`git push` → Vercel publica sozinho). Antes disso o projeto passou por uma versão hospedada no Netlify (~1 dia, v0.8.0–v0.8.2) — migrado depois de bater no limite de créditos grátis de build do mês (não era um problema estrutural do Netlify, foi consumo de uma sessão de iteração rápida, ~4 deploys de produção num dia só). Os arquivos específicos do Netlify (`netlify/`, `netlify.toml`) foram removidos do projeto — ver §11 se precisar do histórico completo.
+- **PWA instalável** (manifest + service worker) — dá pra "instalar" como app, sem barra de navegador, ícone próprio.
+
+Por que não Electron/app nativo (motivo que não mudou com a migração pro LiveKit): o ambiente onde eu rodo (Claude/Anthropic) não tem acesso à internet pra baixar/compilar toolchains como Electron, e mesmo que desse, não seria prudente entregar um `.exe` de uma conversa de IA pro usuário rodar. Web + PWA continua sendo o equilíbrio certo.
+
+**O que "backend" significa aqui, na prática, pros amigos**: nada muda pra quem usa — continuam só abrindo um link, sem conta, sem instalar nada. O backend é infraestrutura que só o dono do projeto configura uma vez (conta no LiveKit Cloud + variáveis de ambiente na plataforma de hospedagem).
+
+## 3. Estrutura de arquivos
+
+```
+sinal-app/
+├── public/                          # ⚠️ ÚNICA pasta publicada de verdade (vercel.json: outputDirectory="public")
+│   ├── index.html                   # marcação
+│   ├── style.css                    # todo o CSS
+│   ├── app.js                       # toda a lógica do cliente
+│   ├── manifest.json                # manifesto do PWA
+│   ├── sw.js                        # service worker (cache do app shell + versionamento)
+│   ├── og-preview.png               # imagem 1200x630 pra preview de link (Discord, WhatsApp etc)
+│   └── icons/
+│       ├── icon-192.png
+│       └── icon-512.png
+├── api/
+│   └── get-token.js                 # função do Vercel, gera o token de acesso do LiveKit (server-side)
+├── vercel.json                      # outputDirectory="public"
+├── package.json                     # dependência da função (livekit-server-sdk)
+├── .env                             # LIVEKIT_URL/API_KEY/API_SECRET locais — NUNCA dentro de public/
+├── .gitignore                       # exclui .env, node_modules, .vercel, o zip antigo do Netlify Drop
+└── HANDOFF.md
+```
+
+Editar os arquivos dentro de `public/` diretamente continua sendo o fluxo normal pro site. `api/get-token.js` é o único arquivo que roda em Node (servidor).
+
+**Por que `public/` existe (não é capricho de organização)**: o `.env` guarda a API secret do LiveKit em texto puro. Na época em que o projeto era hospedado no Netlify, a primeira versão do `netlify.toml` publicava a pasta inteira do projeto (`publish = "."`) — testei e confirmei que o Netlify CLI **não** respeita `.gitignore`/`.netlifyignore` de forma confiável pra excluir arquivos do publish. Só ficar de fora fisicamente do diretório publicado garante que o `.env` nunca vira um arquivo estático público, não importa a versão do CLI ou config de ignore. Bônus: essa mesma estrutura (`public/` na raiz) é **exatamente** a convenção zero-config do Vercel pra site estático sem framework ("Other" preset) — não precisou reestruturar nada na migração de hospedagem. **Todo arquivo novo que precisa ir pro site tem que nascer dentro de `public/`; todo arquivo sensível (segredo, config local) tem que ficar fora.**
+
+## 4. Identidade visual (pra manter consistência em qualquer mudança futura)
+
+- **Conceito**: estética de transmissão/sintonia de TV analógica — o nome "Sinal" brinca com a tela de "SEM SINAL" que todo brasileiro conhece de TV a cabo, só que aqui o sinal *voltou*.
+- **Paleta**: fundo quase preto (`--void: #0b0c0e`), painel (`--panel: #17191c`), texto (`--ink: #eef1f0`), texto apagado (`--fog: #8b9090`), **âmbar** como cor de ação/foco (`--tune: #ffb020`), **vermelho** só pra "ao vivo"/perigo (`--rec: #ff4438`).
+- **Tipografia**: `Bebas Neue` pra wordmark/display (condensada, grande), `JetBrains Mono` pra códigos/status/labels técnicos, `Inter` pro corpo do texto normal.
+- **Assinatura visual**: textura sutil de scanlines no fundo, LED vermelho piscando no logo (`.rec-led`), moldura com cantos "abertos" nos painéis (efeito de enquadramento de câmera/monitor).
+- **Ícone do app**: barras de sinal ascendentes em âmbar + ponto vermelho, num quadrado arredondado preto.
+
+## 5. Modelo de sala
+
+Desde a v0.8.0, o modelo de sala é bem mais simples do que era: **não existe mais "anchor"/eleição/sucessão** — isso tudo foi a peça mais frágil e complexa do projeto quando era PeerJS puro (a v0.7.x inteira documentava um sistema de "corrida oportunista" pra decidir quem segurava o código da sala; ver §11 se precisar entender o histórico). O servidor do LiveKit **sempre está de pé** — não tem "quem segura o código", então não tem nada pra suceder.
+
+- O código de 6 letras (`genCode()`) vira o **nome da sala** no LiveKit.
+- Entrar numa sala (criando ou com um código existente) pede um token pra `api/get-token.js` (`fetch('/api/get-token?room=CODE&name=NOME&mode=create|join')`), depois conecta com `new LivekitClient.Room().connect(url, token)`.
+- `get-token.js` recebe um parâmetro `mode` (`create` ou `join`, o cliente manda de acordo com qual botão foi clicado — `?mode=create|join` na query string) e trata os dois de forma diferente:
+  - **`join`**: checa de verdade se a sala existe (`roomService.listRooms([room])`) antes de gerar o token. Se não existir, devolve **404** e o cliente mostra "Sala não encontrada. Confira o código." — igual sempre foi. **Corrigido em 2026-08-24** depois de um relato real: sem essa checagem, `roomJoin: true` no grant deixava o LiveKit criar uma sala vazia silenciosa pra **qualquer** código digitado (inclusive errado por engano), e a pessoa ficava sozinha achando que estava esperando o resto da galera aparecer, sem nenhum aviso do erro. Não reintroduzir essa simplificação sem pensar de novo no problema de UX que ela causava.
+  - **`create`**: chama `roomService.createRoom({ name, emptyTimeout: 60, departureTimeout: 60 })` explicitamente, garantindo que a sala nasce com timeout curto (ver nota sobre `departureTimeout` logo abaixo) em vez do padrão da plataforma.
+  - Se `mode` vier ausente/inesperado, o servidor trata como `join` de propósito (falha mais seguro — dá erro em vez de criar sala à toa).
+- Participantes: `room.remoteParticipants` (Map identity → `RemoteParticipant`) + `room.localParticipant`. Eventos principais: `RoomEvent.ParticipantConnected`/`ParticipantDisconnected`, `RoomEvent.TrackSubscribed`/`TrackUnsubscribed` (vídeo/áudio de outros), `RoomEvent.LocalTrackUnpublished` (cobre parar de compartilhar pelo controle nativo do navegador, não só pelo nosso botão), `RoomEvent.DataReceived` (chat), `RoomEvent.ConnectionQualityChanged` (indicador de qualidade, ver §7).
+- **Vídeo/áudio passa pelo servidor do LiveKit** (é um SFU, não é mais P2P direto) — cada participante manda **uma** cópia codificada pro servidor, que retransmite (sem recodificar) pra todo mundo. Isso é o que resolve o problema de CPU documentado em §11/§12: antes (malha), quem compartilhava recodificava uma vez por espectador; agora, uma vez só, não importa quantos assistem.
+
+### 5.1 Sala morre quando fica vazia (`emptyTimeout`/`departureTimeout`)
+
+Sem persistência de sala (igual antes): a intenção sempre foi "todo mundo sai, a sala morre". Isso **não acontecia sozinho** só com `roomJoin: true` no token — descoberto por relato real (2026-08-24): usuário e amigo saíram da sala, e o código continuou funcionando pra entrar bem depois. O comportamento padrão da plataforma pra salas criadas implicitamente (sem chamar `RoomServiceClient.createRoom()` antes) parece deixar a sala viva por bem mais tempo do que o esperado — não documentado com um número exato pelo LiveKit.
+
+Corrigido em `get-token.js`, só no fluxo `mode=create` (ver §5): chama `roomService.createRoom({ name: room, emptyTimeout: 60, departureTimeout: 60 })` (60s = tempo de tolerância pra reload de página/reconexão rápida, sem deixar a sala "pendurada" por muito tempo). Erro nessa chamada é logado (`console.error`, aparece nos *Function Logs* do painel do Vercel) mas não interrompe o login — pior caso é a sala não ter o timeout customizado.
+
+**Dois bugs em cadeia encontrados nisso, por um teste real (2026-08-24)**: (1) `RoomServiceClient` é uma API HTTP administrativa, precisa de `http(s)://` — a primeira versão passava `LIVEKIT_URL` (`wss://...`) direto, o que provavelmente fazia `createRoom` falhar sempre; corrigido convertendo o esquema (`wss://`→`https://`) antes de instanciar o client. (2) O erro tava sendo engolido em silêncio (`catch(e){}` vazio), então nem dava pra perceber que estava falhando — trocado por `console.error` de propósito. **Se um bug parecido acontecer nessa função de novo, checar os Function logs primeiro antes de tentar adivinhar a causa.**
+
+**Não guardamos nada em banco de dados**, então não tem "retomar sala antiga" nem histórico — só o timeout de vida da sala em si mudou.
+
+## 6. Compartilhamento de tela e câmera
+
+- **Tela**: `room.localParticipant.setScreenShareEnabled(true, captureOptions, publishOptions)`. `captureOptions` = `{ audio: true, resolution: { width: 1920, height: 1080, frameRate: 30 } }` (`audio: true` só faz o navegador **oferecer** a opção de compartilhar áudio no seletor nativo dele — não força nada). `publishOptions` = `{ screenShareEncoding: { maxBitrate: 4_500_000, maxFramerate: 30 } }` — **necessário à parte da resolução de captura**: sem isso, o LiveKit usa um bitrate automático baixo demais pra conteúdo de jogo em 1080p30 (muito movimento/detalhe), causando pixelização visível mesmo captando em 1080p de verdade. Descoberto num teste real com amigo (2026-08-24) — a resolução de captura sozinha não garante nitidez, o `screenShareEncoding` é o que efetivamente controla o bitrate de saída.
+- **Câmera**: `room.localParticipant.setCameraEnabled(true)` — sem áudio (nunca chamamos `setMicrophoneEnabled`), porque a voz já vai 100% pelo Discord; duplicar geraria eco.
+- Convenção de id de tile: tela usa `participant.identity` puro; câmera usa `identity + ':cam'`. Isso evita colisão quando as duas estão ativas ao mesmo tempo. A diferenciação vem de `publication.source` (`Track.Source.Camera` vs `Track.Source.ScreenShare`/`ScreenShareAudio`).
+- Vídeo e áudio de uma mesma fonte (ex: tela + "áudio da guia") podem chegar como tracks **separados** do LiveKit, em qualquer ordem — `handleTrackAdded`/`handleTrackRemoved` em `app.js` juntam os dois no mesmo `MediaStream` (`tileStreams`, Map tileId → MediaStream) antes de tocar no `<video>`, sem depender de qual chega primeiro.
+
+  **Histórico da resolução (pra não reabrir esse debate à toa)**: em 2026-08-24, um amigo do usuário compartilhando Terraria viu o próprio jogo lagar, CPU consumida pelo Sinal — na época (v0.7.x, malha P2P), quem compartilha recodificava o vídeo uma vez por pessoa assistindo. Mitigação imediata: baixar pra 720p/24fps. Depois, a migração pro LiveKit (v0.8.0, §5) resolveu o problema de raiz — o multiplicador por número de espectadores não existe mais, já que o SFU só recodifica uma vez, não importa quantos assistem. Na v0.8.1, **voltado pro padrão 1080p/30fps** a pedido do usuário, já que o motivo original de baixar (escalar com espectadores) não existe mais nessa arquitetura. Resolução×framerate ainda importa pro custo de codificar **uma vez** (isso não muda com SFU nenhum) — se precisar economizar CPU de novo no futuro por algum motivo novo, esse é o objeto (`resolution` dentro de `setScreenShareEnabled` em `toggleShare()`) que se ajusta.
+
+### 6.1 Chat de texto
+
+Vai pelo canal de dados nativo do LiveKit: `room.localParticipant.publishData(bytes, { reliable: true, topic: 'chat' })` pra mandar, `RoomEvent.DataReceived` pra receber. Mensagem é `{type:'chat', text, ts}` (o remetente já vem separado, como o `participant` do próprio evento — não precisa embutir `id`/`name` no payload). Quem manda uma mensagem já renderiza a própria localmente (otimista) antes de mandar. Sem histórico persistido (some ao sair da sala), consistente com o resto do app.
+
+Diferente da era PeerJS/anchor, **não existe mais risco de mensagem se perder numa troca de anchor** — o LiveKit é sempre o mesmo servidor durante toda a sessão, não tem "troca" nenhuma pra perder mensagem no meio.
+
+**Nomes e textos vêm de outros participantes e não são confiáveis** — sempre inseridos via `escapeHtml()` (ou `textContent` direto), nunca via `innerHTML` cru. Isso vale pra qualquer lugar que mostra nome de gente (chat, tile, avatar) — não reintroduzir interpolação direta em template string dentro de `innerHTML` (era uma falha de XSS real, corrigida na v0.7.0 — ver §11). O nome de exibição (`participant.name`) é passado pro token via `AccessTokenOptions.name` (ver §8) — continua vindo de fora, continua não confiável, mesma regra vale.
+
+### 6.2 Conveniências pequenas
+
+- **Notificação sonora**: quando alguém (que não seja você) começa a compartilhar tela/câmera, toca um "blip" curto gerado via WebAudio (`playNotifyChime()`), sem depender de arquivo de áudio externo. Como o navegador só libera som automático depois de algum gesto do usuário, o `AudioContext` é "aquecido" (`getAudioCtx()`) já no clique de "Criar sala"/"Entrar". Disparado de dentro de `addTile()` quando `!isSelf`.
+- **Aviso no título da aba**: junto com o som acima, se a aba estiver em segundo plano (`document.hidden`) quando alguém começa a compartilhar, o título vira "🔴 Nova transmissão — SINAL" (`flashTabTitle()`) até você voltar a olhar pra ela. `leaveRoom()` também restaura, pra não ficar um título "preso".
+- **Lembrar último código**: ao entrar numa sala (criando ou entrando), o código vai pro `localStorage` (`sinal:lastRoomCode`) e pré-preenche o campo "entrar em sala existente" na próxima visita. Link de convite (`?sala=CODE`) sempre tem prioridade sobre esse valor salvo. Chamado tanto no carregamento da página quanto ao sair de uma sala (SPA, sair não recarrega a página).
+- **Lembrar último nome**: mesma lógica, pro campo "Seu nome" (`sinal:lastName`, salvo dentro de `getName()`). Só precisa pré-preencher no carregamento inicial.
+
+### 6.3 Controles em ícone
+
+Todos os botões de ação da tela da sala — copiar código, copiar convite, chat, câmera, compartilhar tela, sair da sala — são botões só de ícone (`.icon-btn`, 46×46px, sem texto visível), tipo barra de controle de chamada (Discord/Zoom/Meet). Rótulo acessível vira `title`/`aria-label`; pros botões que trocam de estado (câmera/compartilhar), isso é atualizado via `setBtnLabel(btn, texto)`. Feedback visual de "ligado" é só a cor (classe `.active-share`).
+
+## 7. Grid, destaque e minimizado
+
+- `tiles` (Map id → elemento DOM) e `pinnedOrder` (array, no máximo 2 ids) controlam o layout.
+- A primeira transmissão a aparecer entra automaticamente em destaque (`.spotlight`).
+- Clicar num quadro alterna fixar/desfixar (`togglePin`/`pinTile`/`unpinTile`). Máximo 2 fixados; ao fixar um terceiro, o mais antigo desce pra fileira minimizada (`.filmstrip`) automaticamente.
+- Mover entre destaque e minimizado é feito com `moveTileTo`, que **reaproveita o elemento `<video>` existente** (não recria), então o stream não pausa/pisca ao trocar de posição.
+- Cada tile (exceto o seu próprio) tem controles no hover: mute/desmute, slider de volume (0-100, ajusta `video.volume`/`video.muted` — só afeta o que **você** ouve, local), e "desativar vídeo" (`.render-off`, dá `video.pause()` + oculta visualmente, pra economizar decodificação/CPU sem sair da chamada).
+- **Indicador de qualidade** (`.quality-dot`, ao lado do nome no label do tile, só em tiles que não são seus): desde a v0.8.0, vem direto do LiveKit — `RoomEvent.ConnectionQualityChanged` já entrega `Excellent`/`Good`/`Poor` por participante (o servidor calcula isso, não precisamos mais medir `getStats()` na unha via polling como na era PeerJS). `updateQualityDot()` mapeia pros três níveis visuais (verde/âmbar/vermelho) e atualiza os dois tiles possíveis da mesma pessoa (tela e câmera) juntos, já que qualidade é por participante, não por track.
+
+## 8. Backend: função serverless + LiveKit Cloud
+
+- **`api/get-token.js`** (função do Vercel, disponível em `/api/get-token`): recebe `room`, `name` e `mode` (`create`/`join`) via query string. Se `mode=join`, checa via `roomService.listRooms([room])` se a sala existe de verdade antes de gerar token (senão devolve 404 — ver §5). Se `mode=create`, chama `roomService.createRoom({ name, emptyTimeout: 60, departureTimeout: 60 })` pra garantir timeout curto (ver §5.1). Depois monta um `AccessToken` (SDK oficial `livekit-server-sdk`) com `identity` gerada (nome + sufixo aleatório, pra permitir nomes repetidos/reconexão em outra aba sem colidir), `name` = nome de exibição, grants `{ roomJoin: true, room, canPublish: true, canSubscribe: true, canPublishData: true }`, devolve `{ token, url }` em JSON. **Lê `LIVEKIT_API_KEY`/`LIVEKIT_API_SECRET`/`LIVEKIT_URL` de variáveis de ambiente** — a API secret nunca aparece no navegador, é exatamente o motivo dessa função existir (ver comentário no topo do arquivo).
+- `RoomServiceClient` (API HTTP administrativa) precisa de `http(s)://`, diferente do `wss://` que o cliente usa — a função converte o esquema da `LIVEKIT_URL` antes de instanciar. Erros de `createRoom`/`listRooms` são logados (`console.error`, aparecem nos logs de função da plataforma) em vez de engolidos em silêncio — já causou um bug real escondido antes disso (ver §11).
+- TTL do token: sem valor customizado, usa o padrão do SDK (6h) — de propósito, pra não cair no meio de uma sessão longa de call/jogo.
+- **STUN/TURN não é mais responsabilidade nossa** — o LiveKit Cloud cuida disso internamente pros participantes se conectarem ao SFU. Toda a config antiga (`STATIC_ICE_SERVERS`, busca de TURN dinâmico em `elixir-webrtc.org`, o botão de "testar minha conexão") foi removida na v0.8.0 junto com o PeerJS.
+- **Formato Vercel**: `export async function GET(request) { ... return new Response(...); }` — Web Handler padrão (`Request` in, `Response` out), export nomeado pelo verbo HTTP. Cada arquivo em `api/` vira uma rota (`api/get-token.js` → `/api/get-token`).
+
+## 9. PWA e versionamento
+
+- `manifest.json`: `start_url: "./"` (não usar `"./index.html"` — isso gerava link de convite feio com `/index.html` no final; já foi corrigido uma vez, não reintroduzir).
+- `sw.js`: estratégia **network-first** (tenta buscar da rede sempre; só cai pro cache se estiver offline). `SHELL` agora inclui `style.css` e `app.js` além de `index.html`/`manifest.json`/ícones — se adicionar mais arquivos estáticos no futuro, lembrar de incluir aqui também.
+- **Versionamento**: `APP_VERSION` (dentro de `app.js`) e `CACHE` (dentro do `sw.js`) precisam ser incrementados **juntos**, a cada mudança publicada. É assim que o navegador percebe que existe versão nova e mostra a barra "Nova versão disponível". **Se esquecer de mudar o `CACHE`, o mecanismo de atualização simplesmente não dispara.**
+- Convenção acordada com o usuário: semver simples `0.1.0`, `0.2.0`, `0.3.0`... — sobe a **minor** a cada leva de mudanças relevantes publicada, `1.0.0` fica reservado pra quando o usuário considerar o projeto "redondo".
+- `0.7.0` foi publicada (2026-08-24) — última versão da era PeerJS/malha.
+- `0.8.0` publicada (2026-08-24) — migração completa pro LiveKit Cloud (SFU) + separação HTML/CSS/JS + estrutura `public/`. Deploy via `netlify deploy --prod`, testado com 2 participantes reais antes de publicar (§12).
+- `0.8.1` publicada (2026-08-24) — resolução da tela voltada pra 1080p/30fps (era 720p/24fps, mitigação da era malha P2P que não faz mais sentido com o SFU — ver §6). **Testada com amigo real** — CPU caiu bastante como esperado, mas a transmissão saiu pixelada (motivou a `0.8.2`).
+- `0.8.2` publicada (2026-08-24) — adiciona `screenShareEncoding: { maxBitrate: 4_500_000, maxFramerate: 30 }` como `publishOptions` (ver §6) pra corrigir a pixelização da `0.8.1`. Ainda não confirmado se resolveu de verdade a pixelização (ver §12) — mas foi durante esse mesmo teste que o usuário notou o problema de sala não expirar (motivou a `0.8.3`).
+- Versão atual do código (ainda **não publicada**): `0.8.3` — `mode=create`/`mode=join` em `get-token.js` (agora em `api/get-token.js`, adaptado pro Vercel — ver §2/§3/§8), com checagem de sala existente de verdade no `join` (corrige tanto o "sala fantasma silenciosa" quanto reforça o fix de timeout — ver §5/§5.1/§12). Não chegou a ser publicada no Netlify (motivou a migração pro Vercel — ver §10/§11) — falta completar o checklist de setup do Vercel e publicar de lá.
+
+## 10. Fluxo de trabalho combinado com o usuário
+
+- O usuário **não quer gastar dinheiro** com nada relacionado a esse projeto — só soluções gratuitas, mesmo que isso signifique aceitar alguma limitação. Isso vale pro LiveKit Cloud também: plano free, sem cartão. **Confirmar o limite atual do plano free ao criar a conta** (muda com o tempo, não documentar um número fixo aqui).
+- Ele topou ter backend **desde que continue rodando 100% online e nenhum amigo precise baixar/configurar nada** — só ele (dono do projeto) faz setup de conta/infraestrutura, uma vez. Isso não muda a experiência de quem entra na sala: continua só abrir um link.
+- **Deploy hoje (desde 2026-08-24)**: git + GitHub + Vercel, deploy automático — `git add`/`commit`/`push` publica sozinho, sem comando manual. Escolhido no lugar de CLI direto porque o projeto está evoluindo rápido (menos fricção a cada mudança futura) e porque o git também vira histórico/backup do código. Esse projeto **nunca tinha tido git antes** dessa migração.
+- **Por que trocou de Netlify pra Vercel**: no meio da sessão de migração pro LiveKit, a conta Netlify bateu o limite de créditos grátis de build do mês (~4 deploys de produção num dia só, ritmo de iteração/debug, não uso normal) — `netlify deploy --prod` ficou bloqueado até o reset do ciclo (22/09) ou upgrade pago. O usuário tinha experiência prévia boa com Vercel (outro projeto, muitos deploys via GitHub, nunca bateu nesse tipo de teto) e preferiu migrar a esperar ou pagar. **Decisão já tomada, não reabrir** essa discussão à toa — se bater limite de novo no Vercel, aí sim vale reavaliar.
+- Cada deploy no Netlify consumia créditos da conta dele — no Vercel isso não é mais um fator do mesmo jeito (plano free bem mais folgado pro ritmo de uso real), mas o hábito de **acumular mudanças em vez de publicar a cada ajuste pequeno** continua sendo bom em geral, não só por causa de limite de plataforma.
+- Ele tem um fluxo de **teste local** (servidor Python `http.server`) pra validar mudanças de UI/lógica sem gastar deploy — rodar de dentro de `public/` (ou `python -m http.server --directory public`), não mais da raiz do projeto. Atenção: isso não testa a função serverless nem a conexão real com o LiveKit — pra isso, `vercel dev` (equivalente ao `netlify dev` que usávamos antes) lê o `.env` local e roda site + função juntos.
+- Ele tem Python, Node, git e GitHub CLI (`gh`) instalados localmente.
+- Estilo de comunicação: gosta de explicação técnica honesta (inclusive "não sei", "não consigo garantir sem testar"), sem enrolação, em português informal.
+
+### Checklist de setup do LiveKit Cloud + Netlify (histórico — site legado, não recebe deploy novo)
+
+1. ✅ Conta criada em https://cloud.livekit.io, projeto "sinal", API Key/Secret/URL geradas (2026-08-24) e salvas em `.env` na raiz do projeto (fora de `public/`, ver §3 — nunca comitar/publicar esse arquivo).
+2. ✅ `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`, `LIVEKIT_URL` importadas no painel do Netlify (Environment variables), marcadas como secret, escopo Builds/Functions/Runtime (2026-08-24).
+3. ✅ `netlify-cli` instalada, `netlify login`/`netlify link` feitos (conectado ao `stream-sinal-1b42cd`), `npm install` rodado na raiz (2026-08-24).
+4. ✅ **Testado de verdade com `netlify dev` (2 participantes, 2026-08-24)**: token gerado com sucesso pros dois, conexão com o LiveKit estabelecida, **compartilhamento de tela relayado de verdade pelo SFU** (confirmado visualmente na aba do segundo participante) e chat funcionando via `publishData`/`DataReceived`. A arquitetura inteira (§5, §6, §6.1) foi validada ponta a ponta contra o LiveKit real por essa via.
+5. ✅ `netlify deploy --prod` rodado com sucesso (2026-08-24) até a v0.8.2 (publicada). A v0.8.3 (fix de sala fantasma) ficou pronta mas **não chegou a ser publicada aqui** — a conta bateu o limite de créditos antes. Motivou a migração pro Vercel (ver §10 acima, §11).
+
+### Checklist de setup do Vercel (via GitHub) — fazer antes de publicar a v0.8.3
+
+1. `git init` na raiz do projeto, `.gitignore` já criado (`.env`, `node_modules`, `.vercel`, o zip antigo do Netlify Drop), `git add`/`commit` inicial.
+2. Criar o repositório no GitHub (`gh repo create` ou pelo site) e `git push`.
+3. Em vercel.com: "Import Project" → escolher o repo → Vercel detecta sozinho (preset "Other", serve `public/` — mesma pasta que já protegia o `.env` no Netlify, coincidência feliz, não precisou reestruturar nada).
+4. Configurar `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`, `LIVEKIT_URL` no painel do Vercel (Environment Variables) — mesmos valores do `.env` local.
+5. Depois do primeiro deploy, pegar a URL final (tipo `algo.vercel.app`) e avisar os amigos que o link mudou — atualizar também as meta tags Open Graph/Twitter em `public/index.html` (hoje ainda apontam pra URL antiga do Netlify).
+6. Testar de novo com o amigo real, incluindo o teste do fix de sala vazia (§5.1/§12) que não deu tempo de publicar no Netlify.
+
+## 11. Decisões e problemas já resolvidos (não repetir)
+
+Pra não reabrir debates já fechados:
+
+- **App instalável em vez de `.exe`**: decisão consciente — não dá pra compilar/testar um executável nesse ambiente sem internet, e não seria seguro entregar um binário de qualquer forma. PWA resolve "parece um programa" sem esse risco.
+- **Checkbox de áudio no app**: existiu, foi removido (v0.3.1) por ser redundante e confuso — a escolha real de áudio já acontece no seletor nativo do navegador.
+- **Vazamento de áudio do Discord ao compartilhar janela/tela**: é limitação real do navegador/SO, não bug do app. Solução aceita: não compartilhar áudio em jogos (voz continua 100% pelo Discord); pra vídeo/YouTube, usar "Guia do navegador" que isola de verdade. VB-Cable foi apresentado como alternativa mais robusta mas **recusado pelo usuário** (não quer que os amigos precisem instalar/configurar nada) — não insistir a menos que ele peça de novo.
+- **XSS armazenado via nome de exibição**: corrigido na v0.7.0 com `escapeHtml()`. Continua valendo depois da migração pro LiveKit (§6.1) — nome de participante ainda é fonte não confiável.
+- **Créditos gratuitos do Netlify Drop expiram em 1h se não reivindicados** — o usuário já reivindicou o site atual (irrelevante agora que o Netlify é legado, mas documentado por histórico).
+- **Migração de hospedagem Netlify → Vercel, 2026-08-24**: motivada por limite de créditos de build do Netlify batido no meio de uma sessão de deploy rápido (não um problema estrutural do Netlify em si — ver §10 pro racional completo). Trocou também o método de deploy: de comando manual (`netlify deploy --prod`) pra automático via GitHub (`git push`). Netlify não foi desativado, só parou de receber deploy novo. **Não reabrir "qual provedor usar" sem motivo novo real** — já foi decidido, com o usuário citando experiência prévia concreta com o Vercel aguentando ritmo de deploy parecido sem problema.
+- **Migração de malha P2P (PeerJS) pra SFU gerenciado (LiveKit Cloud), v0.8.0 (2026-08-24)**: motivada por um relato real — amigo compartilhando Terraria via CPU disparar, porque na malha quem compartilha recodifica uma vez por espectador. Eliminou de vez toda a máquina de "anchor"/eleição/sucessão (era a peça mais frágil do projeto — ver histórico da v0.5.0/v0.7.x se precisar entender o que existia antes) e a config de STUN/TURN próprio (agora é responsabilidade do LiveKit Cloud). Usuário escolheu explicitamente: SFU **gerenciado** (não auto-hospedado) e SDK **oficial** do LiveKit pra gerar token (não montado na mão) — ver plano de implementação salvo em `lazy-drifting-falcon.md` (histórico da conversa) se precisar do racional completo. **Não reintroduzir PeerJS nem a lógica de anchor** a menos que o usuário peça explicitamente pra voltar atrás.
+- **Separação em `index.html`/`style.css`/`app.js`, v0.8.0**: o usuário achava o arquivo único confuso — pedido dele, feito junto com a migração pro LiveKit já que era uma reescrita grande de qualquer jeito. Continua sem bundler/build step pro site.
+- **Arquivos do site movidos pra dentro de `public/`, v0.8.0**: a primeira versão do `netlify.toml` tinha `publish = "."` (raiz inteira), o que deixaria o `.env` (API secret do LiveKit em texto puro) exposto como arquivo estático público — descoberto e corrigido antes de qualquer deploy, depois de pesquisar e achar relatos de que o Netlify CLI não respeita `.gitignore`/`.netlifyignore` de forma confiável pra excluir arquivos do publish. Solução adotada: exclusão **estrutural**, não por config de ignore — só `public/` é publicado, `.env`/`netlify.toml`/`package.json`/`netlify/` ficam fora por definição. **Não voltar pra `publish = "."` com o `.env` na raiz do projeto** — se precisar reorganizar de novo, manter esse princípio (segredo sempre fora da árvore publicada, garantido pela estrutura de pastas, não por uma lista de exclusão).
+- Os bugs específicos de PeerJS/anchor documentados em versões anteriores deste arquivo (eleição em cascata, anchor se autodestruindo, avatar duplicado, timeout de sala vazia) **não se aplicam mais** — essa arquitetura inteira foi removida na v0.8.0. Não é preciso reaplicar essas correções numa reescrita futura pra PeerJS a menos que o projeto volte atrás conscientemente.
+
+## 12. Limitações conhecidas / o que ainda falta validar
+
+- ✅ **Migração pro LiveKit testada e validada contra o servidor real** (2026-08-24, via `netlify dev` com 2 participantes, quando ainda era hospedado no Netlify) — token, conexão, compartilhamento de tela retransmitido de verdade pelo SFU, e chat, tudo confirmado funcionando. A lógica de `get-token.js`/`api/get-token.js` não mudou na migração de hospedagem (só a casca da function — ver §8), então essa validação continua valendo. Falta confirmar o deploy de produção no Vercel — ver checklist (§10).
+- **Suporte a Functions com dependência via Netlify Drop puro (arrastar pasta) continua incerto** — não chegou a ser testado, porque o caminho usado desde o início foi `netlify dev`/`netlify deploy` via CLI (comprovado, funcionou). Não precisa investigar Drop puro a menos que surja um motivo real pra isso.
+- ✅ **Resolução voltada pra 1080p/30fps na v0.8.1** — item resolvido, ver §6.
+- **Limite do plano free do LiveKit Cloud**: plano **"Build"**, confirmado em 2026-08-24 na tela de planos: **"No credit card required"** — sem cartão cadastrado, fisicamente não tem como vir cobrança automática. O limite relevante pro Sinal é **"Concurrent participants": 100** (pico de uso nos últimos 7 dias: 2/100 = 2%) — folga enorme pro tamanho do grupo de amigos do usuário. Os outros limites listados na tela "Project limits" (Agents, Egress, Ingress, adaptive interruption, end-of-turn) são de features de voz/IA do LiveKit que o Sinal não usa — irrelevantes aqui. Esse número (100 participantes concorrentes) muda com o tempo/plano, não tratar como garantido pra sempre — conferir de novo se o grupo crescer muito ou se o LiveKit mudar os termos do plano free.
+- **Sem persistência de sala**: por design, não é bug.
+- **Sem suíte de testes automatizada**: qualquer mudança na lógica de sala/track merece teste manual com 2+ pessoas reais antes de publicar.
+- **Fix de `emptyTimeout`/`departureTimeout` + checagem de sala existente (§5, §5.1) — segunda rodada, ainda não confirmada testada** — a primeira tentativa (só `createRoom`, sem checar `join`) tinha dois bugs (URL `wss://` em vez de `https://`, erro engolido em silêncio) que fizeram o teste do usuário ("saí, esperei 1 min, ainda dava pra entrar") ser **inconclusivo** de qualquer jeito: como não existia diferenciação `create`/`join`, reentrar com o mesmo código sempre "funcionava" mesmo que a sala antiga tivesse morrido de verdade — só criava uma nova vazia sem avisar, indistinguível pro usuário. Agora com `mode=join` checando existência de verdade, o teste certo é: sair de uma sala **criada depois desse fix**, esperar mais de 1 minuto, tentar entrar com o mesmo código → esperado dar "Sala não encontrada".
+- **`screenShareEncoding.maxBitrate` de 4.5 Mbps (v0.8.2) não foi validado com upload real de quem compartilha** — 4.5 Mbps de upload é tranquilo pra maioria das conexões residenciais boas, mas se alguém do grupo tiver upload mais fraco, pode trocar "pixelado" por "engasgado/travando" em vez de resolver. Se isso acontecer, é só baixar esse número (ex: 3 Mbps) — não tem uma resposta única certa, depende da internet de quem compartilha.
+
+## 13. Próximos passos sugeridos (não decididos, só ideias soltas na conversa)
+
+Nada disso foi pedido formalmente ainda — só contexto se surgir:
+- Login/integração com Discord foi cogitado uma vez; o usuário disse que não é prioridade. Com backend já existindo agora (função serverless), isso ficou tecnicamente mais fácil de encaixar do que era na era "zero backend" — mas ainda não foi pedido de verdade, não adiantar sozinho.
+- **Roadmap conversado em 2026-08-24, sem nada decidido**:
+  - Testar com 3+ amigos reais em redes diferentes (só rodou com 2 abas do próprio usuário até agora) — é o que realmente valida a migração pro LiveKit.
+  - Toggle manual de qualidade (720p "leve" vs 1080p padrão) pra quem tiver internet mais fraca — hoje é fixo em 1080p/30 (v0.8.1).
+  - Gravação de sessão via Egress nativo do LiveKit — só cogitado, não pedido.
+  - Acompanhar o painel do LiveKit (Sessions/Observability) nas primeiras sessões reais, pra pegar erro cedo se aparecer.

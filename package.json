@@ -1,0 +1,9 @@
+{
+  "name": "sinal-app",
+  "private": true,
+  "type": "module",
+  "description": "Dependência só da função serverless (netlify/functions/get-token.js) que gera token de acesso do LiveKit. O site em si (index.html/style.css/app.js) continua sem build step.",
+  "dependencies": {
+    "livekit-server-sdk": "^2.13.1"
+  }
+}
