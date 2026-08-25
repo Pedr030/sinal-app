@@ -36,7 +36,6 @@ let room = null;           // LivekitClient.Room atual
 let myName = 'Você';
 let roomCode = null;
 let myAccessToken = null;  // token do LiveKit da sessão atual, reusado nas ações de moderação (api/moderate.js)
-let selfInitiatedDisable = false; // true durante toggleShare()/toggleCamera() desligando por conta própria — evita que o handler de TrackMuted (mute forçado por admin) reaja ao nosso próprio desligar normal
 const tileStreams = new Map(); // tileId -> MediaStream (junta vídeo+áudio da mesma fonte, ex: tela+áudio da guia)
 const tileVideoTracks = new Map(); // tileId -> Track de vídeo do LiveKit (pra amostrar getRTCStatsReport())
 
@@ -210,23 +209,18 @@ function wireRoomEvents(liveRoom){
     if(publication.source === Track.Source.ScreenShare) resetShareButton();
     if(publication.source === Track.Source.Camera) resetCameraButton();
   });
-  // Um admin pode forçar mutar minha tela/câmera do lado do servidor (ver
-  // api/moderate.js). O evento chega como "mutado", mas a captura local
-  // continua rodando se a gente não fizer nada — por isso desligamos de
-  // verdade (não só a UI), o que já dispara LocalTrackUnpublished acima e
-  // reseta os botões sozinho.
-  // IMPORTANTE: TrackMuted também dispara como efeito colateral do PRÓPRIO
-  // toggleShare()/toggleCamera() desligando normalmente — sem o guard
-  // `selfInitiatedDisable`, isso reentra em cima da chamada original e
-  // deixa o botão travado (bug real, achado em teste: desligar câmera
-  // manualmente parava de funcionar depois dessa mudança).
-  liveRoom.on(RoomEvent.TrackMuted, (publication, participant) => {
-    if(!isCurrent()) return;
-    if(participant !== liveRoom.localParticipant) return;
-    if(selfInitiatedDisable) return;
-    if(publication.source === Track.Source.ScreenShare) liveRoom.localParticipant.setScreenShareEnabled(false).catch(() => {});
-    if(publication.source === Track.Source.Camera) liveRoom.localParticipant.setCameraEnabled(false).catch(() => {});
-  });
+  // NÃO reagimos a RoomEvent.TrackMuted chamando setCameraEnabled(false)/
+  // setScreenShareEnabled(false) de volta — uma tentativa anterior fazia
+  // isso pra reagir a um mute forçado por admin (api/moderate.js), mas
+  // TrackMuted também dispara (com timing pouco previsível) como efeito
+  // colateral do PRÓPRIO toggleShare()/toggleCamera() desligando
+  // normalmente, e a chamada reativa entrava em conflito com a chamada
+  // original — bug real, achado em teste (2026-08-24): desligar a câmera
+  // manualmente travava o botão e a câmera continuava "presa" ligada pros
+  // outros. Revertido de propósito — ver §8.2/§11 no HANDOFF.md. Quem é
+  // mutado à força pelo admin não recebe feedback visual automático (o
+  // próprio botão não reseta sozinho), mas a moderação em si funciona pros
+  // outros participantes (o LiveKit para de retransmitir a track mutada).
   liveRoom.on(RoomEvent.DataReceived, (payload, participant) => {
     if(!isCurrent()) return;
     try{
@@ -436,9 +430,7 @@ async function toggleShare(){
   const { Track } = LivekitClient;
   const pub = room.localParticipant.getTrackPublication(Track.Source.ScreenShare);
   if(pub){
-    selfInitiatedDisable = true;
-    try{ await room.localParticipant.setScreenShareEnabled(false); }
-    finally{ selfInitiatedDisable = false; }
+    await room.localParticipant.setScreenShareEnabled(false);
     resetShareButton();
     return;
   }
@@ -496,9 +488,7 @@ async function toggleCamera(){
   const { Track } = LivekitClient;
   const pub = room.localParticipant.getTrackPublication(Track.Source.Camera);
   if(pub){
-    selfInitiatedDisable = true;
-    try{ await room.localParticipant.setCameraEnabled(false); }
-    finally{ selfInitiatedDisable = false; }
+    await room.localParticipant.setCameraEnabled(false);
     resetCameraButton();
     return;
   }
@@ -1047,7 +1037,7 @@ window.addEventListener('beforeunload', () => {
 });
 
 // PWA: versão, registro do service worker, detecção de atualização e botão de instalação
-const APP_VERSION = '0.8.9'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
+const APP_VERSION = '0.8.10'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
 document.getElementById('versionLabel').textContent = 'v' + APP_VERSION;
 
 if('serviceWorker' in navigator){
