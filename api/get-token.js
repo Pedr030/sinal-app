@@ -104,18 +104,20 @@ export async function GET(request){
       }
     }
 
-    // Sem "ttl" explícito: usa o padrão do SDK (6h), tempo de sobra pra uma
-    // sessão longa de call/jogo sem cair no meio.
-    const at = new AccessToken(apiKey, apiSecret, {
-      identity,
-      name,
-      metadata: avatar ? JSON.stringify({ avatarUrl: avatar }) : undefined
-    });
     // roomAdmin só é concedido se o comprovante do Discord vier válido (ver
     // lib/adminProof.js) — sem isso, o grant fica de fora por padrão, igual
     // sempre foi.
     const clientSecret = process.env.DISCORD_CLIENT_SECRET;
     const isAdmin = !!(adminProof && clientSecret && verifyAdminProof(adminProof, clientSecret));
+
+    // metadata vai pro participante — é assim que os OUTROS enxergam o
+    // avatar de verdade (ver §8.1) e agora também se essa pessoa é admin
+    // (pra mostrar a coroa pra todo mundo, não só pra quem logou).
+    const metadata = (avatar || isAdmin) ? JSON.stringify({ avatarUrl: avatar || undefined, isAdmin: isAdmin || undefined }) : undefined;
+
+    // Sem "ttl" explícito: usa o padrão do SDK (6h), tempo de sobra pra uma
+    // sessão longa de call/jogo sem cair no meio.
+    const at = new AccessToken(apiKey, apiSecret, { identity, name, metadata });
     at.addGrant({
       room,
       roomJoin: true,

@@ -656,6 +656,9 @@ const ICON_DOTS = '<svg viewBox="0 0 24 24" width="14" height="14" fill="current
 function addTile(id, name, stream){
   removeTile(id);
   const isSelf = !!(room && room.localParticipant && (id === room.localParticipant.identity || id === room.localParticipant.identity + ':cam'));
+  const ownerIdentity = id.endsWith(':cam') ? id.slice(0, -4) : id;
+  const owner = room && (ownerIdentity === room.localParticipant.identity ? room.localParticipant : room.remoteParticipants.get(ownerIdentity));
+  const crown = owner && participantIsAdmin(owner) ? '<span class="admin-crown" title="Admin da sala">👑</span>' : '';
   const tile = document.createElement('div');
   tile.className = 'tile';
   tile.dataset.id = id;
@@ -674,7 +677,7 @@ function addTile(id, name, stream){
         <button type="button" class="mod-menu-item">${id.endsWith(':cam') ? 'Desligar câmera' : 'Desligar tela'}</button>
       </div>` : ''}
     </div>`}
-    <div class="label"><span class="led"></span>${escapeHtml(name)}${isSelf ? '' : '<span class="quality-dot" title="Medindo conexão..."></span>'}</div>
+    <div class="label"><span class="led"></span>${crown}${escapeHtml(name)}${isSelf ? '' : '<span class="quality-dot" title="Medindo conexão..."></span>'}</div>
     <div class="pin-hint"></div>
   `;
   const video = tile.querySelector('video');
@@ -830,12 +833,17 @@ async function moderateAction(action, targetIdentity, trackSid){
 // participante do LiveKit (ver api/get-token.js) — assim os OUTROS
 // participantes também enxergam, não só quem logou. Sem isso, cai nas
 // iniciais de sempre.
-function participantAvatarUrl(p){
+function participantMeta(p){
   if(!p.metadata) return null;
-  try{
-    const meta = JSON.parse(p.metadata);
-    return (meta && meta.avatarUrl) || null;
-  }catch(e){ return null; }
+  try{ return JSON.parse(p.metadata); }catch(e){ return null; }
+}
+function participantAvatarUrl(p){
+  const meta = participantMeta(p);
+  return (meta && meta.avatarUrl) || null;
+}
+function participantIsAdmin(p){
+  const meta = participantMeta(p);
+  return !!(meta && meta.isAdmin);
 }
 
 function renderAvatars(){
@@ -852,7 +860,8 @@ function renderAvatars(){
     const isYou = p === room.localParticipant;
     const avatarUrl = participantAvatarUrl(p);
     const inner = avatarUrl ? `<img src="${escapeHtml(avatarUrl)}" alt="">` : escapeHtml(initials(displayName));
-    av.innerHTML = `${inner}<span class="tip">${escapeHtml(displayName)}${isYou ? ' (você)':''}</span>`;
+    const crownTip = participantIsAdmin(p) ? ' 👑' : '';
+    av.innerHTML = `${inner}<span class="tip">${escapeHtml(displayName)}${isYou ? ' (você)':''}${crownTip}</span>`;
     row.appendChild(av);
   });
   if(rosterOpen) renderRosterPanel();
@@ -874,24 +883,25 @@ function renderRosterPanel(){
   const { Track } = LivekitClient;
   const list = document.getElementById('rosterList');
   const all = [room.localParticipant, ...room.remoteParticipants.values()];
-  const isAdmin = !!(discordUser && discordUser.adminProof);
+  const viewerIsAdmin = !!(discordUser && discordUser.adminProof);
   list.innerHTML = all.map((p) => {
     const isSharing = !!(p.getTrackPublication(Track.Source.ScreenShare) || p.getTrackPublication(Track.Source.Camera));
     const isYou = p === room.localParticipant;
     const displayName = p.name || p.identity;
     const avatarUrl = participantAvatarUrl(p);
     const avatarInner = avatarUrl ? `<img src="${escapeHtml(avatarUrl)}" alt="">` : escapeHtml(initials(displayName));
-    const kickBtn = (isAdmin && !isYou)
+    const crown = participantIsAdmin(p) ? '<span class="admin-crown" title="Admin da sala">👑</span>' : '';
+    const kickBtn = (viewerIsAdmin && !isYou)
       ? `<button type="button" class="roster-kick-btn" data-identity="${escapeHtml(p.identity)}" data-name="${escapeHtml(displayName)}" title="Expulsar da sala">${ICON_KICK}</button>`
       : '';
     return `<div class="roster-row${isSharing ? ' sharing' : ''}">
       <div class="roster-avatar">${avatarInner}</div>
-      <div><div class="name">${escapeHtml(displayName)}${isYou ? ' (você)' : ''}</div>${isSharing ? '<div class="tag">Compartilhando</div>' : ''}</div>
+      <div><div class="name">${crown}${escapeHtml(displayName)}${isYou ? ' (você)' : ''}</div>${isSharing ? '<div class="tag">Compartilhando</div>' : ''}</div>
       ${kickBtn}
     </div>`;
   }).join('');
 
-  if(isAdmin){
+  if(viewerIsAdmin){
     list.querySelectorAll('.roster-kick-btn').forEach((btn) => {
       btn.addEventListener('click', () => {
         const identity = btn.dataset.identity;
@@ -1094,7 +1104,7 @@ window.addEventListener('beforeunload', () => {
 });
 
 // PWA: versão, registro do service worker, detecção de atualização e botão de instalação
-const APP_VERSION = '0.8.13'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
+const APP_VERSION = '0.8.14'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
 document.getElementById('versionLabel').textContent = 'v' + APP_VERSION;
 
 if('serviceWorker' in navigator){
