@@ -222,25 +222,31 @@ function wireRoomEvents(liveRoom){
   // próprio botão não reseta sozinho), mas a moderação em si funciona pros
   // outros participantes (o LiveKit para de retransmitir a track mutada).
   //
-  // Listener só de observação (não reage a nada, não chama método nenhum)
-  // pra diagnosticar de verdade quando/como TrackMuted dispara — temporário,
-  // enquanto o bug de câmera/tela travando não está resolvido.
+  // Quando um admin muta a tela/câmera de ALGUÉM (api/moderate.js), a track
+  // continua publicada (só muted:true) — sem isso, o tile de quem foi
+  // mutado ficava congelado indefinidamente pros outros, sem nenhum sinal
+  // visual de que foi desligada. Reaproveita o mesmo mecanismo visual do
+  // botão "desativar vídeo" (render-off) que cada um já podia aplicar
+  // manualmente — só que agora automático quando a origem é remota.
   liveRoom.on(RoomEvent.TrackMuted, (publication, participant) => {
     if(!isCurrent()) return;
-    console.log('[sinal] TrackMuted observado:', {
-      source: publication.source,
-      isLocal: participant === liveRoom.localParticipant,
-      participant: participant.identity,
-      isMuted: publication.isMuted
-    });
+    if(participant === liveRoom.localParticipant) return;
+    const tileId = publication.source === Track.Source.Camera ? participant.identity + ':cam' : participant.identity;
+    const tile = tiles.get(tileId);
+    if(!tile) return;
+    tile.classList.add('render-off');
+    const video = tile.querySelector('video');
+    if(video) video.pause();
   });
   liveRoom.on(RoomEvent.TrackUnmuted, (publication, participant) => {
     if(!isCurrent()) return;
-    console.log('[sinal] TrackUnmuted observado:', {
-      source: publication.source,
-      isLocal: participant === liveRoom.localParticipant,
-      participant: participant.identity
-    });
+    if(participant === liveRoom.localParticipant) return;
+    const tileId = publication.source === Track.Source.Camera ? participant.identity + ':cam' : participant.identity;
+    const tile = tiles.get(tileId);
+    if(!tile) return;
+    tile.classList.remove('render-off');
+    const video = tile.querySelector('video');
+    if(video) video.play().catch(() => {});
   });
   liveRoom.on(RoomEvent.DataReceived, (payload, participant) => {
     if(!isCurrent()) return;
@@ -451,15 +457,21 @@ async function toggleShare(){
   const { Track } = LivekitClient;
   const pub = room.localParticipant.getTrackPublication(Track.Source.ScreenShare);
   if(pub){
-    console.log('[sinal] desligando tela — pub antes:', { muted: pub.isMuted, trackSid: pub.trackSid });
+    // setScreenShareEnabled(false) só MUTA a track (ela continua publicada,
+    // com o mesmo trackSid) — confirmado em log real (2026-08-24): isso
+    // deixava getTrackPublication() sempre "verdadeiro", então o próximo
+    // clique caía de novo aqui (desligar já-mutado) em vez de religar, e a
+    // tela ficava "presa" aberta pros outros (nunca disparava
+    // TrackUnsubscribed pra sumir o tile deles). unpublishTrack desliga de
+    // verdade.
+    const audioPub = room.localParticipant.getTrackPublication(Track.Source.ScreenShareAudio);
     try{
-      await room.localParticipant.setScreenShareEnabled(false);
+      if(pub.videoTrack) await room.localParticipant.unpublishTrack(pub.videoTrack);
+      if(audioPub && audioPub.audioTrack) await room.localParticipant.unpublishTrack(audioPub.audioTrack);
     }catch(e){
-      console.error('[sinal] setScreenShareEnabled(false) falhou:', e);
+      console.error('[sinal] unpublish da tela falhou:', e);
       setRoomStatus('Erro ao desligar a tela: ' + (e && e.message || e), true);
     }
-    const pubDepois = room.localParticipant.getTrackPublication(Track.Source.ScreenShare);
-    console.log('[sinal] desligando tela — pub depois:', pubDepois ? { muted: pubDepois.isMuted, trackSid: pubDepois.trackSid } : null);
     resetShareButton();
     return;
   }
@@ -517,15 +529,14 @@ async function toggleCamera(){
   const { Track } = LivekitClient;
   const pub = room.localParticipant.getTrackPublication(Track.Source.Camera);
   if(pub){
-    console.log('[sinal] desligando câmera — pub antes:', { muted: pub.isMuted, trackSid: pub.trackSid });
+    // Mesmo motivo do toggleShare acima: setCameraEnabled(false) só muta,
+    // não desliga de verdade. unpublishTrack desliga de verdade.
     try{
-      await room.localParticipant.setCameraEnabled(false);
+      if(pub.videoTrack) await room.localParticipant.unpublishTrack(pub.videoTrack);
     }catch(e){
-      console.error('[sinal] setCameraEnabled(false) falhou:', e);
+      console.error('[sinal] unpublish da câmera falhou:', e);
       setRoomStatus('Erro ao desligar a câmera: ' + (e && e.message || e), true);
     }
-    const pubDepois = room.localParticipant.getTrackPublication(Track.Source.Camera);
-    console.log('[sinal] desligando câmera — pub depois:', pubDepois ? { muted: pubDepois.isMuted, trackSid: pubDepois.trackSid } : null);
     resetCameraButton();
     return;
   }
@@ -1077,7 +1088,7 @@ window.addEventListener('beforeunload', () => {
 });
 
 // PWA: versão, registro do service worker, detecção de atualização e botão de instalação
-const APP_VERSION = '0.8.11'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
+const APP_VERSION = '0.8.12'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
 document.getElementById('versionLabel').textContent = 'v' + APP_VERSION;
 
 if('serviceWorker' in navigator){
