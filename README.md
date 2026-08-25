@@ -94,7 +94,7 @@ sinal-app/
 
 ## Rodando localmente
 
-Precisa de uma conta grátis no [LiveKit Cloud](https://cloud.livekit.io) e da [Vercel CLI](https://vercel.com/docs/cli) instalada.
+Precisa de uma conta grátis no [LiveKit Cloud](https://cloud.livekit.io). Pro Vercel CLI, não precisa instalar nada global — dá pra usar via `npx` (próximo passo já mostra isso); se preferir ter o comando `vercel` direto disponível, `npm install -g vercel`.
 
 ```bash
 npm install
@@ -124,7 +124,7 @@ ADMIN_DISCORD_IDS=123456789012345678
 Depois:
 
 ```bash
-vercel dev
+npx vercel dev
 ```
 
 Isso sobe o site e as funções juntos, lendo o `.env` local.
