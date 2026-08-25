@@ -16,14 +16,14 @@ Não é (e não pretende virar) um clone do Discord. É deliberadamente pequeno:
 
 ## Funcionalidades
 
-- **Sem hierarquia** — quem cria a sala e quem entra depois têm exatamente os mesmos privilégios; qualquer um pode compartilhar tela e/ou câmera a qualquer momento.
+- **Sem hierarquia, por padrão** — quem cria a sala e quem entra depois têm exatamente os mesmos privilégios; qualquer um pode compartilhar tela e/ou câmera a qualquer momento. Existe uma exceção opcional: um admin fixo (configurável) pode moderar (ver abaixo).
 - **Múltiplas transmissões simultâneas**, com destaque (spotlight) e fileira minimizada — dá pra fixar até 2 telas ao mesmo tempo.
 - **Chat de texto** integrado, sem histórico persistido (some ao sair da sala, por design).
 - **Indicador de qualidade de conexão em tempo real** — nível (Excelente/Boa/Ruim) calculado pelo próprio LiveKit, com detalhamento de perda de pacote e jitter amostrado via `getRTCStatsReport()`.
 - **Controle manual de qualidade de transmissão** (HD 1080p vs. modo leve 720p), pra quem tem upload mais fraco.
 - **Painel "quem está na sala"** — barra lateral com avatar, nome e indicador de quem está compartilhando.
 - **Login opcional com Discord** (OAuth2) — puxa nome e avatar reais em vez de digitar o nome à mão; totalmente opcional, sem senha passando pelo Sinal, sem sessão guardada no servidor (ver [Segurança](#segurança)).
-- **Moderação básica pra um admin fixo** (opcional, via Discord ID) — expulsar alguém da sala ou desligar a tela/câmera dela remotamente, sem precisar de banco de dados pra validar quem tem esse poder (ver [Segurança](#segurança)).
+- **Moderação básica pra um admin fixo** (opcional, via Discord ID) — expulsar alguém da sala ou desligar a tela/câmera dela remotamente de verdade (não só esconder — encerra a captura do lado de quem foi mutado), sem precisar de banco de dados pra validar quem tem esse poder (ver [Segurança](#segurança)).
 - **PWA instalável** — funciona como app nativo (ícone próprio, sem barra de navegador), com aviso automático de atualização.
 - **Sem fila de espera nem cadastro**: código de 6 caracteres ou link direto, e já tá dentro.
 
@@ -43,6 +43,7 @@ A solução foi migrar pra um **SFU (Selective Forwarding Unit)** gerenciado —
 
 - `api/get-token.js` — gera o token de acesso assinado do LiveKit. É a única forma segura de autorizar alguém a entrar numa sala sem expor a API secret no navegador.
 - `api/discord-login.js` / `api/discord-callback.js` — fluxo OAuth2 do login opcional com Discord. Não mantêm sessão nenhuma; só traduzem "code" em "nome + avatar" e devolvem isso pro navegador guardar localmente.
+- `api/moderate.js` — ações de admin (expulsar, desligar tela/câmera), autorizadas via o próprio token do LiveKit (grant `roomAdmin`), sem sessão própria.
 
 O frontend (`public/`) é HTML + CSS + JS puro — sem framework, sem bundler, sem build step. A única dependência de verdade do projeto inteiro é `livekit-server-sdk`, usada só pelas funções de servidor.
 
