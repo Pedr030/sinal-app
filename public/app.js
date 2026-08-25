@@ -36,6 +36,7 @@ let room = null;           // LivekitClient.Room atual
 let myName = 'Você';
 let roomCode = null;
 let myAccessToken = null;  // token do LiveKit da sessão atual, reusado nas ações de moderação (api/moderate.js)
+let selfInitiatedDisable = false; // true durante toggleShare()/toggleCamera() desligando por conta própria — evita que o handler de TrackMuted (mute forçado por admin) reaja ao nosso próprio desligar normal
 const tileStreams = new Map(); // tileId -> MediaStream (junta vídeo+áudio da mesma fonte, ex: tela+áudio da guia)
 const tileVideoTracks = new Map(); // tileId -> Track de vídeo do LiveKit (pra amostrar getRTCStatsReport())
 
@@ -214,9 +215,15 @@ function wireRoomEvents(liveRoom){
   // continua rodando se a gente não fizer nada — por isso desligamos de
   // verdade (não só a UI), o que já dispara LocalTrackUnpublished acima e
   // reseta os botões sozinho.
+  // IMPORTANTE: TrackMuted também dispara como efeito colateral do PRÓPRIO
+  // toggleShare()/toggleCamera() desligando normalmente — sem o guard
+  // `selfInitiatedDisable`, isso reentra em cima da chamada original e
+  // deixa o botão travado (bug real, achado em teste: desligar câmera
+  // manualmente parava de funcionar depois dessa mudança).
   liveRoom.on(RoomEvent.TrackMuted, (publication, participant) => {
     if(!isCurrent()) return;
     if(participant !== liveRoom.localParticipant) return;
+    if(selfInitiatedDisable) return;
     if(publication.source === Track.Source.ScreenShare) liveRoom.localParticipant.setScreenShareEnabled(false).catch(() => {});
     if(publication.source === Track.Source.Camera) liveRoom.localParticipant.setCameraEnabled(false).catch(() => {});
   });
@@ -235,7 +242,14 @@ function wireRoomEvents(liveRoom){
   });
   liveRoom.on(RoomEvent.Disconnected, () => {
     if(!isCurrent()) return;
-    setRoomStatus('Desconectado da sala.', true);
+    // Chega aqui em qualquer desconexão que NÃO foi a gente mesmo chamando
+    // leaveRoom() (isso já limpa `room` antes, então isCurrent() dá false e
+    // esse handler nem roda) — inclui ser expulso por um admin, queda de
+    // rede, etc. Antes só mostrava uma mensagem e ficava preso na tela da
+    // sala sem conseguir fazer nada (bug real, achado em teste); agora volta
+    // pra tela inicial de verdade, igual sair por conta própria.
+    leaveRoom();
+    setEntryStatus('Você foi desconectado da sala.');
   });
 }
 
@@ -422,7 +436,9 @@ async function toggleShare(){
   const { Track } = LivekitClient;
   const pub = room.localParticipant.getTrackPublication(Track.Source.ScreenShare);
   if(pub){
-    await room.localParticipant.setScreenShareEnabled(false);
+    selfInitiatedDisable = true;
+    try{ await room.localParticipant.setScreenShareEnabled(false); }
+    finally{ selfInitiatedDisable = false; }
     resetShareButton();
     return;
   }
@@ -480,7 +496,9 @@ async function toggleCamera(){
   const { Track } = LivekitClient;
   const pub = room.localParticipant.getTrackPublication(Track.Source.Camera);
   if(pub){
-    await room.localParticipant.setCameraEnabled(false);
+    selfInitiatedDisable = true;
+    try{ await room.localParticipant.setCameraEnabled(false); }
+    finally{ selfInitiatedDisable = false; }
     resetCameraButton();
     return;
   }
@@ -1029,7 +1047,7 @@ window.addEventListener('beforeunload', () => {
 });
 
 // PWA: versão, registro do service worker, detecção de atualização e botão de instalação
-const APP_VERSION = '0.8.8'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
+const APP_VERSION = '0.8.9'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
 document.getElementById('versionLabel').textContent = 'v' + APP_VERSION;
 
 if('serviceWorker' in navigator){
