@@ -221,6 +221,27 @@ function wireRoomEvents(liveRoom){
   // mutado à força pelo admin não recebe feedback visual automático (o
   // próprio botão não reseta sozinho), mas a moderação em si funciona pros
   // outros participantes (o LiveKit para de retransmitir a track mutada).
+  //
+  // Listener só de observação (não reage a nada, não chama método nenhum)
+  // pra diagnosticar de verdade quando/como TrackMuted dispara — temporário,
+  // enquanto o bug de câmera/tela travando não está resolvido.
+  liveRoom.on(RoomEvent.TrackMuted, (publication, participant) => {
+    if(!isCurrent()) return;
+    console.log('[sinal] TrackMuted observado:', {
+      source: publication.source,
+      isLocal: participant === liveRoom.localParticipant,
+      participant: participant.identity,
+      isMuted: publication.isMuted
+    });
+  });
+  liveRoom.on(RoomEvent.TrackUnmuted, (publication, participant) => {
+    if(!isCurrent()) return;
+    console.log('[sinal] TrackUnmuted observado:', {
+      source: publication.source,
+      isLocal: participant === liveRoom.localParticipant,
+      participant: participant.identity
+    });
+  });
   liveRoom.on(RoomEvent.DataReceived, (payload, participant) => {
     if(!isCurrent()) return;
     try{
@@ -430,7 +451,15 @@ async function toggleShare(){
   const { Track } = LivekitClient;
   const pub = room.localParticipant.getTrackPublication(Track.Source.ScreenShare);
   if(pub){
-    await room.localParticipant.setScreenShareEnabled(false);
+    console.log('[sinal] desligando tela — pub antes:', { muted: pub.isMuted, trackSid: pub.trackSid });
+    try{
+      await room.localParticipant.setScreenShareEnabled(false);
+    }catch(e){
+      console.error('[sinal] setScreenShareEnabled(false) falhou:', e);
+      setRoomStatus('Erro ao desligar a tela: ' + (e && e.message || e), true);
+    }
+    const pubDepois = room.localParticipant.getTrackPublication(Track.Source.ScreenShare);
+    console.log('[sinal] desligando tela — pub depois:', pubDepois ? { muted: pubDepois.isMuted, trackSid: pubDepois.trackSid } : null);
     resetShareButton();
     return;
   }
@@ -488,7 +517,15 @@ async function toggleCamera(){
   const { Track } = LivekitClient;
   const pub = room.localParticipant.getTrackPublication(Track.Source.Camera);
   if(pub){
-    await room.localParticipant.setCameraEnabled(false);
+    console.log('[sinal] desligando câmera — pub antes:', { muted: pub.isMuted, trackSid: pub.trackSid });
+    try{
+      await room.localParticipant.setCameraEnabled(false);
+    }catch(e){
+      console.error('[sinal] setCameraEnabled(false) falhou:', e);
+      setRoomStatus('Erro ao desligar a câmera: ' + (e && e.message || e), true);
+    }
+    const pubDepois = room.localParticipant.getTrackPublication(Track.Source.Camera);
+    console.log('[sinal] desligando câmera — pub depois:', pubDepois ? { muted: pubDepois.isMuted, trackSid: pubDepois.trackSid } : null);
     resetCameraButton();
     return;
   }
@@ -754,17 +791,20 @@ document.addEventListener('click', (e) => {
 
 async function moderateAction(action, targetIdentity, trackSid){
   if(!myAccessToken || !roomCode) return;
+  console.log('[sinal] moderateAction chamada:', { action, room: roomCode, targetIdentity, trackSid });
   try{
     const res = await fetch('/api/moderate', {
       method: 'POST',
       headers: { 'content-type': 'application/json', authorization: 'Bearer ' + myAccessToken },
       body: JSON.stringify({ action, room: roomCode, targetIdentity, trackSid })
     });
+    const data = await res.json().catch(() => ({}));
+    console.log('[sinal] moderateAction resposta:', res.status, data);
     if(!res.ok){
-      const data = await res.json().catch(() => ({}));
       setRoomStatus('Ação de moderação falhou: ' + (data.error || res.status), true);
     }
   }catch(e){
+    console.error('[sinal] moderateAction erro de rede:', e);
     setRoomStatus('Não foi possível falar com o servidor pra essa ação.', true);
   }
 }
@@ -1037,7 +1077,7 @@ window.addEventListener('beforeunload', () => {
 });
 
 // PWA: versão, registro do service worker, detecção de atualização e botão de instalação
-const APP_VERSION = '0.8.10'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
+const APP_VERSION = '0.8.11'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
 document.getElementById('versionLabel').textContent = 'v' + APP_VERSION;
 
 if('serviceWorker' in navigator){
