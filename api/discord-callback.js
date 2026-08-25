@@ -8,6 +8,13 @@
 // pessoa vê como identidade dela no Sinal — exatamente como o campo de nome
 // livre já funciona hoje. Não é um token de acesso a nada, então não tem
 // como alguém "forjar" isso pra ganhar permissão de outra pessoa.
+//
+// Exceção: se o Discord ID bater com ADMIN_DISCORD_IDS, aqui é o único lugar
+// que pode confirmar isso de verdade (via OAuth real) — por isso assinamos
+// um comprovante (ver lib/adminProof.js) pra get-token.js poder confiar
+// nisso depois, sem precisar repetir o login do Discord a cada sala.
+import { signAdminProof } from '../lib/adminProof.js';
+
 export async function GET(request){
   const clientId = process.env.DISCORD_CLIENT_ID;
   const clientSecret = process.env.DISCORD_CLIENT_SECRET;
@@ -59,6 +66,12 @@ export async function GET(request){
     dest.searchParams.set('discord_name', displayName);
     dest.searchParams.set('discord_avatar', avatarUrl);
     if(sala) dest.searchParams.set('sala', sala);
+
+    const adminIds = (process.env.ADMIN_DISCORD_IDS || '').split(',').map((s) => s.trim()).filter(Boolean);
+    if(adminIds.includes(profile.id) && clientSecret){
+      dest.searchParams.set('discord_admin_proof', signAdminProof(profile.id, clientSecret));
+    }
+
     return Response.redirect(dest.toString(), 302);
   }catch(e){
     console.error('Login com Discord falhou:', e && e.message, e);

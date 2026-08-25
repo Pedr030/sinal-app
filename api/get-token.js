@@ -13,6 +13,7 @@
 // export nomeado por verbo HTTP (`GET`) em vez de export default, mas o
 // corpo (Request in, Response out, process.env.*) é o mesmo Web Handler.
 import { AccessToken, RoomServiceClient } from 'livekit-server-sdk';
+import { verifyAdminProof } from '../lib/adminProof.js';
 
 export async function GET(request){
   const url = new URL(request.url);
@@ -23,6 +24,10 @@ export async function GET(request){
   // que é como os OUTROS participantes enxergam o avatar de verdade (não só
   // quem logou).
   const avatar = (url.searchParams.get('avatar') || '').trim().slice(0, 300);
+  // Opcional — comprovante assinado em api/discord-callback.js (ver
+  // lib/adminProof.js) de que quem está pedindo o token é um Discord ID
+  // admin. Verificado abaixo antes de conceder o grant roomAdmin.
+  const adminProof = url.searchParams.get('adminProof') || '';
   // "join" é o padrão de propósito se vier ausente/inesperado — é o modo
   // mais restrito (dá erro em vez de criar sala à toa), falha mais seguro.
   const mode = url.searchParams.get('mode') === 'create' ? 'create' : 'join';
@@ -106,12 +111,18 @@ export async function GET(request){
       name,
       metadata: avatar ? JSON.stringify({ avatarUrl: avatar }) : undefined
     });
+    // roomAdmin só é concedido se o comprovante do Discord vier válido (ver
+    // lib/adminProof.js) — sem isso, o grant fica de fora por padrão, igual
+    // sempre foi.
+    const clientSecret = process.env.DISCORD_CLIENT_SECRET;
+    const isAdmin = !!(adminProof && clientSecret && verifyAdminProof(adminProof, clientSecret));
     at.addGrant({
       room,
       roomJoin: true,
       canPublish: true,
       canSubscribe: true,
-      canPublishData: true
+      canPublishData: true,
+      roomAdmin: isAdmin || undefined
     });
     const token = await at.toJwt();
 

@@ -35,6 +35,7 @@ function setBtnLabel(btn, label){
 let room = null;           // LivekitClient.Room atual
 let myName = 'Você';
 let roomCode = null;
+let myAccessToken = null;  // token do LiveKit da sessão atual, reusado nas ações de moderação (api/moderate.js)
 const tileStreams = new Map(); // tileId -> MediaStream (junta vídeo+áudio da mesma fonte, ex: tela+áudio da guia)
 const tileVideoTracks = new Map(); // tileId -> Track de vídeo do LiveKit (pra amostrar getRTCStatsReport())
 
@@ -137,7 +138,8 @@ async function connectToRoom(code, name, mode){
   let token, url;
   try{
     const avatarParam = discordUser && discordUser.avatar ? `&avatar=${encodeURIComponent(discordUser.avatar)}` : '';
-    const res = await fetch(`/api/get-token?room=${encodeURIComponent(code)}&name=${encodeURIComponent(name)}&mode=${encodeURIComponent(mode)}${avatarParam}`);
+    const adminParam = discordUser && discordUser.adminProof ? `&adminProof=${encodeURIComponent(discordUser.adminProof)}` : '';
+    const res = await fetch(`/api/get-token?room=${encodeURIComponent(code)}&name=${encodeURIComponent(name)}&mode=${encodeURIComponent(mode)}${avatarParam}${adminParam}`);
     if(res.status === 404){
       setEntryStatus('Sala não encontrada. Confira o código.');
       return;
@@ -150,6 +152,10 @@ async function connectToRoom(code, name, mode){
     setEntryStatus('Não foi possível falar com o servidor. Confira sua internet e tente de novo.');
     return;
   }
+  // Guardado pra reusar nas ações de moderação (api/moderate.js) — é o mesmo
+  // token que já autentica a conexão com o LiveKit, sem precisar de uma
+  // segunda credencial.
+  myAccessToken = token;
 
   room = new LivekitClient.Room({ adaptiveStream: true, dynacast: true });
   wireRoomEvents(room);
@@ -202,6 +208,17 @@ function wireRoomEvents(liveRoom){
     if(!isCurrent()) return;
     if(publication.source === Track.Source.ScreenShare) resetShareButton();
     if(publication.source === Track.Source.Camera) resetCameraButton();
+  });
+  // Um admin pode forçar mutar minha tela/câmera do lado do servidor (ver
+  // api/moderate.js). O evento chega como "mutado", mas a captura local
+  // continua rodando se a gente não fizer nada — por isso desligamos de
+  // verdade (não só a UI), o que já dispara LocalTrackUnpublished acima e
+  // reseta os botões sozinho.
+  liveRoom.on(RoomEvent.TrackMuted, (publication, participant) => {
+    if(!isCurrent()) return;
+    if(participant !== liveRoom.localParticipant) return;
+    if(publication.source === Track.Source.ScreenShare) liveRoom.localParticipant.setScreenShareEnabled(false).catch(() => {});
+    if(publication.source === Track.Source.Camera) liveRoom.localParticipant.setCameraEnabled(false).catch(() => {});
   });
   liveRoom.on(RoomEvent.DataReceived, (payload, participant) => {
     if(!isCurrent()) return;
@@ -571,6 +588,8 @@ const ICON_VOLUME = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none"
 const ICON_VOLUME_MUTED = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="3,9 3,15 8,15 13,20 13,4 8,9"></polygon><line x1="16" y1="9" x2="22" y2="15"></line><line x1="22" y1="9" x2="16" y2="15"></line></svg>';
 const ICON_EYE = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"></path><circle cx="12" cy="12" r="3"></circle></svg>';
 const ICON_EYE_OFF = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.94 10.94 0 0112 19c-7 0-11-7-11-7a21.86 21.86 0 015.06-6.06M9.9 4.24A10.94 10.94 0 0112 4c7 0 11 7 11 7a21.82 21.82 0 01-2.16 3.19M14.12 14.12a3 3 0 11-4.24-4.24"></path><line x1="1" y1="1" x2="23" y2="23"></line></svg>';
+const ICON_KICK = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="8.5" cy="7" r="4"></circle><line x1="18" y1="8" x2="23" y2="13"></line><line x1="23" y1="8" x2="18" y2="13"></line></svg>';
+const ICON_DOTS = '<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><circle cx="12" cy="5" r="1.8"></circle><circle cx="12" cy="12" r="1.8"></circle><circle cx="12" cy="19" r="1.8"></circle></svg>';
 
 function addTile(id, name, stream){
   removeTile(id);
@@ -587,6 +606,11 @@ function addTile(id, name, stream){
       <button type="button" class="ctl-btn mute-btn" title="Mutar/desmutar">${ICON_VOLUME}</button>
       <input type="range" class="vol-slider" min="0" max="100" value="100" title="Volume">
       <button type="button" class="ctl-btn hide-btn" title="Desativar vídeo (parar de exibir e decodificar)">${ICON_EYE}</button>
+      ${discordUser && discordUser.adminProof ? `
+      <button type="button" class="ctl-btn mod-btn" title="Opções de moderação">${ICON_DOTS}</button>
+      <div class="mod-menu">
+        <button type="button" class="mod-menu-item">${id.endsWith(':cam') ? 'Desligar câmera' : 'Desligar tela'}</button>
+      </div>` : ''}
     </div>`}
     <div class="label"><span class="led"></span>${escapeHtml(name)}${isSelf ? '' : '<span class="quality-dot" title="Medindo conexão..."></span>'}</div>
     <div class="pin-hint"></div>
@@ -627,6 +651,23 @@ function addTile(id, name, stream){
       hideBtn.innerHTML = isHidden ? ICON_EYE_OFF : ICON_EYE;
       hideBtn.title = isHidden ? 'Reativar vídeo' : 'Desativar vídeo (parar de exibir e decodificar)';
     });
+
+    const modBtn = tile.querySelector('.mod-btn');
+    const modMenu = tile.querySelector('.mod-menu');
+    if(modBtn && modMenu){
+      modBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        toggleModMenu(modMenu);
+      });
+      modMenu.querySelector('.mod-menu-item').addEventListener('click', (e) => {
+        e.stopPropagation();
+        modMenu.classList.remove('open');
+        const identity = id.endsWith(':cam') ? id.slice(0, -4) : id;
+        const track = tileVideoTracks.get(id);
+        if(!track || !track.sid) return;
+        moderateAction(id.endsWith(':cam') ? 'muteCamera' : 'muteScreen', identity, track.sid);
+      });
+    }
   }
 
   tiles.set(id, tile);
@@ -687,6 +728,39 @@ function updateStageVisibility(){
   document.getElementById('filmstrip').style.display = (total - pinnedOrder.length) > 0 ? 'flex' : 'none';
 }
 
+// ---------------- MODERAÇÃO (admin fixo via Discord) ----------------
+// Só existe UI de moderação quando discordUser.adminProof está presente
+// (indicador local, cosmético). O poder de verdade é conferido de novo aqui
+// no servidor a cada chamada (api/moderate.js, via TokenVerifier + grant
+// roomAdmin do myAccessToken) — editar isso no localStorage/na URL não dá
+// poder nenhum de verdade a ninguém.
+function toggleModMenu(menu){
+  const wasOpen = menu.classList.contains('open');
+  document.querySelectorAll('.mod-menu.open').forEach((m) => m.classList.remove('open'));
+  if(!wasOpen) menu.classList.add('open');
+}
+document.addEventListener('click', (e) => {
+  if(e.target.closest('.mod-btn') || e.target.closest('.mod-menu')) return;
+  document.querySelectorAll('.mod-menu.open').forEach((m) => m.classList.remove('open'));
+});
+
+async function moderateAction(action, targetIdentity, trackSid){
+  if(!myAccessToken || !roomCode) return;
+  try{
+    const res = await fetch('/api/moderate', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: 'Bearer ' + myAccessToken },
+      body: JSON.stringify({ action, room: roomCode, targetIdentity, trackSid })
+    });
+    if(!res.ok){
+      const data = await res.json().catch(() => ({}));
+      setRoomStatus('Ação de moderação falhou: ' + (data.error || res.status), true);
+    }
+  }catch(e){
+    setRoomStatus('Não foi possível falar com o servidor pra essa ação.', true);
+  }
+}
+
 // Quem logou com Discord tem o avatar de verdade gravado no metadata do
 // participante do LiveKit (ver api/get-token.js) — assim os OUTROS
 // participantes também enxergam, não só quem logou. Sem isso, cai nas
@@ -735,17 +809,32 @@ function renderRosterPanel(){
   const { Track } = LivekitClient;
   const list = document.getElementById('rosterList');
   const all = [room.localParticipant, ...room.remoteParticipants.values()];
+  const isAdmin = !!(discordUser && discordUser.adminProof);
   list.innerHTML = all.map((p) => {
     const isSharing = !!(p.getTrackPublication(Track.Source.ScreenShare) || p.getTrackPublication(Track.Source.Camera));
     const isYou = p === room.localParticipant;
     const displayName = p.name || p.identity;
     const avatarUrl = participantAvatarUrl(p);
     const avatarInner = avatarUrl ? `<img src="${escapeHtml(avatarUrl)}" alt="">` : escapeHtml(initials(displayName));
+    const kickBtn = (isAdmin && !isYou)
+      ? `<button type="button" class="roster-kick-btn" data-identity="${escapeHtml(p.identity)}" data-name="${escapeHtml(displayName)}" title="Expulsar da sala">${ICON_KICK}</button>`
+      : '';
     return `<div class="roster-row${isSharing ? ' sharing' : ''}">
       <div class="roster-avatar">${avatarInner}</div>
       <div><div class="name">${escapeHtml(displayName)}${isYou ? ' (você)' : ''}</div>${isSharing ? '<div class="tag">Compartilhando</div>' : ''}</div>
+      ${kickBtn}
     </div>`;
   }).join('');
+
+  if(isAdmin){
+    list.querySelectorAll('.roster-kick-btn').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const identity = btn.dataset.identity;
+        const name = btn.dataset.name;
+        if(confirm(`Expulsar ${name} da sala?`)) moderateAction('kick', identity);
+      });
+    });
+  }
 }
 
 function leaveRoom(){
@@ -753,6 +842,7 @@ function leaveRoom(){
     try{ room.disconnect(); }catch(e){}
     room = null;
   }
+  myAccessToken = null;
   toggleRosterPanel(false);
   tileStreams.clear();
   tileVideoTracks.clear();
@@ -860,7 +950,8 @@ function renderDiscordStatus(){
   const btn = document.getElementById('discordLoginBtn');
   if(discordUser && discordUser.name){
     el.hidden = false;
-    el.innerHTML = `Conectado como <b>${escapeHtml(discordUser.name)}</b> (Discord) — `;
+    const adminTag = discordUser.adminProof ? ' 👑' : '';
+    el.innerHTML = `Conectado como <b>${escapeHtml(discordUser.name)}</b> (Discord)${adminTag} — `;
     const swapBtn = document.createElement('button');
     swapBtn.type = 'button';
     swapBtn.className = 'ghost-btn';
@@ -893,14 +984,20 @@ function handleDiscordCallback(){
   }
   const name = params.get('discord_name');
   const avatar = params.get('discord_avatar');
+  // Só vem preenchido se o Discord ID bater com ADMIN_DISCORD_IDS no
+  // servidor (ver api/discord-callback.js) — é só um indicador local pra UI,
+  // o poder de verdade é conferido de novo no servidor a cada ação (ver
+  // moderateAction()), então não tem como "forjar" isso editando a URL.
+  const adminProof = params.get('discord_admin_proof');
   if(name){
-    saveDiscordUser({ name, avatar: avatar || null });
+    saveDiscordUser({ name, avatar: avatar || null, adminProof: adminProof || null });
     try{ localStorage.setItem('sinal:lastName', name); }catch(e){}
   }
-  if(params.has('discord_name') || params.has('discord_avatar') || params.has('discord_error')){
+  if(params.has('discord_name') || params.has('discord_avatar') || params.has('discord_admin_proof') || params.has('discord_error')){
     const clean = new URL(window.location.href);
     clean.searchParams.delete('discord_name');
     clean.searchParams.delete('discord_avatar');
+    clean.searchParams.delete('discord_admin_proof');
     clean.searchParams.delete('discord_error');
     history.replaceState(null, '', clean.pathname + clean.search);
   }
@@ -932,7 +1029,7 @@ window.addEventListener('beforeunload', () => {
 });
 
 // PWA: versão, registro do service worker, detecção de atualização e botão de instalação
-const APP_VERSION = '0.8.7'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
+const APP_VERSION = '0.8.8'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
 document.getElementById('versionLabel').textContent = 'v' + APP_VERSION;
 
 if('serviceWorker' in navigator){

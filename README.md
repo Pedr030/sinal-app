@@ -23,6 +23,7 @@ Não é (e não pretende virar) um clone do Discord. É deliberadamente pequeno:
 - **Controle manual de qualidade de transmissão** (HD 1080p vs. modo leve 720p), pra quem tem upload mais fraco.
 - **Painel "quem está na sala"** — barra lateral com avatar, nome e indicador de quem está compartilhando.
 - **Login opcional com Discord** (OAuth2) — puxa nome e avatar reais em vez de digitar o nome à mão; totalmente opcional, sem senha passando pelo Sinal, sem sessão guardada no servidor (ver [Segurança](#segurança)).
+- **Moderação básica pra um admin fixo** (opcional, via Discord ID) — expulsar alguém da sala ou desligar a tela/câmera dela remotamente, sem precisar de banco de dados pra validar quem tem esse poder (ver [Segurança](#segurança)).
 - **PWA instalável** — funciona como app nativo (ícone próprio, sem barra de navegador), com aviso automático de atualização.
 - **Sem fila de espera nem cadastro**: código de 6 caracteres ou link direto, e já tá dentro.
 
@@ -53,6 +54,7 @@ O frontend (`public/`) é HTML + CSS + JS puro — sem framework, sem bundler, s
 - **Isolamento estrutural do `.env`**: o diretório publicado (`public/`) é fisicamente separado da raiz do projeto onde o `.env` local vive — não depende só de `.gitignore` pra não vazar segredo em produção.
 - **Sanitização de entrada do usuário**: nomes de participantes passam por `escapeHtml()` antes de ir pro DOM — evita injeção de HTML/script via nome.
 - **Checagem real de existência de sala** antes de gerar token de entrada — evita salas fantasma criadas por código digitado errado.
+- **Moderação sem sessão/banco de dados**: o poder de admin é provado por dois níveis de assinatura criptográfica (um comprovante HMAC gerado só depois de um login real via Discord OAuth, depois traduzido no grant nativo `roomAdmin` do próprio token do LiveKit) — nenhuma ação de moderação é aceita sem essa cadeia de verificação passar no servidor a cada chamada.
 
 ## Stack
 
@@ -80,7 +82,10 @@ sinal-app/
 ├── api/                     # funções serverless (Vercel)
 │   ├── get-token.js          # gera token de acesso do LiveKit
 │   ├── discord-login.js      # inicia o OAuth2 com Discord
-│   └── discord-callback.js   # troca o code por perfil (nome + avatar)
+│   ├── discord-callback.js   # troca o code por perfil (nome + avatar)
+│   └── moderate.js           # ações de admin (expulsar, desligar tela/câmera)
+├── lib/
+│   └── adminProof.js         # assina/verifica o comprovante de admin (HMAC)
 ├── vercel.json
 ├── package.json
 └── .env                      # local, nunca commitado
@@ -107,6 +112,12 @@ Opcional, só se quiser o login com Discord (crie uma aplicação em [discord.co
 ```
 DISCORD_CLIENT_ID=...
 DISCORD_CLIENT_SECRET=...
+```
+
+Também opcional — dá poder de moderação (expulsar, desligar tela/câmera de alguém) a Discord IDs específicos, separados por vírgula:
+
+```
+ADMIN_DISCORD_IDS=123456789012345678
 ```
 
 Depois:
