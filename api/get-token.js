@@ -102,6 +102,37 @@ export async function GET(request){
       }catch(e){
         console.error('createRoom falhou:', e && e.message, e);
       }
+
+      // Avisa automaticamente num canal do Discord que uma sala nova foi
+      // aberta — opcional, só dispara se DISCORD_WEBHOOK_URL estiver
+      // configurada. Não precisa de bot nem OAuth, é só uma URL secreta que
+      // qualquer POST nela vira mensagem no canal. Falha aqui não pode
+      // travar a criação da sala pra quem tá esperando o token.
+      //
+      // Só notifica se quem criou logou com Discord (indicado por `avatar`
+      // vir preenchido — só acontece depois de login real via OAuth, ver
+      // §8.1) — de propósito, pra não avisar toda vez que alguém de fora
+      // (com o link, sem fazer parte do grupo) ou um teste rápido sem login
+      // criar uma sala. Filtra pela origem (identidade verificada), não por
+      // ambiente/deploy.
+      const webhookUrl = process.env.DISCORD_WEBHOOK_URL;
+      if(webhookUrl && avatar){
+        try{
+          await fetch(webhookUrl, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              content: `🟢 **${name}** abriu uma sala no Sinal: ${url.origin}/?sala=${room}`,
+              // "name" é digitado livremente por quem entra — sem isso, dava
+              // pra alguém colocar "@everyone" como nome e disparar um ping
+              // geral no canal toda vez que criasse uma sala.
+              allowed_mentions: { parse: [] }
+            })
+          });
+        }catch(e){
+          console.error('Webhook do Discord falhou:', e && e.message, e);
+        }
+      }
     }
 
     // roomAdmin só é concedido se o comprovante do Discord vier válido (ver

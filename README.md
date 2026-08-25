@@ -23,6 +23,7 @@ Não é (e não pretende virar) um clone do Discord. É deliberadamente pequeno:
 - **Controle manual de qualidade de transmissão** (HD 1080p vs. modo leve 720p), pra quem tem upload mais fraco.
 - **Painel "quem está na sala"** — barra lateral com avatar, nome e indicador de quem está compartilhando.
 - **Login opcional com Discord** (OAuth2) — puxa nome e avatar reais em vez de digitar o nome à mão; totalmente opcional, sem senha passando pelo Sinal, sem sessão guardada no servidor (ver [Segurança](#segurança)).
+- **Aviso automático no Discord** (opcional, via Webhook) quando alguém cria uma sala — sem precisar de bot, sem OAuth, só uma URL de webhook do canal.
 - **Moderação básica pra um admin fixo** (opcional, via Discord ID) — expulsar alguém da sala ou desligar a tela/câmera dela remotamente de verdade (não só esconder — encerra a captura do lado de quem foi mutado), sem precisar de banco de dados pra validar quem tem esse poder (ver [Segurança](#segurança)).
 - **PWA instalável** — funciona como app nativo (ícone próprio, sem barra de navegador), com aviso automático de atualização.
 - **Sem fila de espera nem cadastro**: código de 6 caracteres ou link direto, e já tá dentro.
@@ -119,6 +120,12 @@ Também opcional — dá poder de moderação (expulsar, desligar tela/câmera d
 
 ```
 ADMIN_DISCORD_IDS=123456789012345678
+```
+
+Também opcional — avisa automaticamente num canal do Discord toda vez que alguém cria uma sala (crie um Webhook em Editar Canal → Integrações → Webhooks, no canal desejado):
+
+```
+DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/...
 ```
 
 Depois:
