@@ -11,7 +11,7 @@
 // impedir criar/entrar em sala com um erro confuso no meio da troca em vez
 // de uma mensagem clara. 100% reversível: só voltar pra `false` quando o
 // servidor novo estiver pronto, nada mais precisa mudar.
-const MAINTENANCE_MODE = false;
+const MAINTENANCE_MODE = true;
 
 function genCode(){
   const chars = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'; // sem 0/O/1/I
@@ -1116,7 +1116,7 @@ window.addEventListener('beforeunload', () => {
 });
 
 // PWA: versão, registro do service worker, detecção de atualização e botão de instalação
-const APP_VERSION = '0.8.17'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
+const APP_VERSION = '0.8.18'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
 document.getElementById('versionLabel').textContent = 'v' + APP_VERSION;
 
 if('serviceWorker' in navigator){
