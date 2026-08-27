@@ -6,6 +6,13 @@
 // PESSOA assistindo. Com um SFU, a codificação é feita uma vez só — o
 // servidor do LiveKit é quem retransmite pra todo mundo. Ver HANDOFF.md.
 
+// Liga/desliga a tela de manutenção (#maintenanceScreen no index.html) — usar
+// durante a migração de infraestrutura do LiveKit (ver HANDOFF.md), pra
+// impedir criar/entrar em sala com um erro confuso no meio da troca em vez
+// de uma mensagem clara. 100% reversível: só voltar pra `false` quando o
+// servidor novo estiver pronto, nada mais precisa mudar.
+const MAINTENANCE_MODE = true;
+
 function genCode(){
   const chars = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'; // sem 0/O/1/I
   let c = '';
@@ -1089,6 +1096,11 @@ function prefillShareQuality(){
 }
 
 window.addEventListener('DOMContentLoaded', () => {
+  if(MAINTENANCE_MODE){
+    document.getElementById('entryScreen').style.display = 'none';
+    document.getElementById('maintenanceScreen').style.display = 'flex';
+    return;
+  }
   loadDiscordUser();
   handleDiscordCallback();
   prefillJoinCode();
@@ -1104,7 +1116,7 @@ window.addEventListener('beforeunload', () => {
 });
 
 // PWA: versão, registro do service worker, detecção de atualização e botão de instalação
-const APP_VERSION = '0.8.15'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
+const APP_VERSION = '0.8.16'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
 document.getElementById('versionLabel').textContent = 'v' + APP_VERSION;
 
 if('serviceWorker' in navigator){
