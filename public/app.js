@@ -432,9 +432,9 @@ document.getElementById('chatForm').addEventListener('submit', (e) => {
 const SHARE_QUALITY_PRESETS = {
   high: {
     resolution: { width: 1920, height: 1080, frameRate: 30 },
-    encoding: { maxBitrate: 4_500_000, maxFramerate: 30 },
+    encoding: { maxBitrate: 6_000_000, maxFramerate: 30 },
     label: 'HD',
-    title: 'Qualidade: HD (1080p, ~4.5 Mbps de upload) — clique pra mudar pra leve (720p)'
+    title: 'Qualidade: HD (1080p, ~6 Mbps de upload) — clique pra mudar pra leve (720p)'
   },
   low: {
     resolution: { width: 1280, height: 720, frameRate: 24 },
@@ -1116,7 +1116,7 @@ window.addEventListener('beforeunload', () => {
 });
 
 // PWA: versão, registro do service worker, detecção de atualização e botão de instalação
-const APP_VERSION = '0.8.19'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
+const APP_VERSION = '0.8.20'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
 document.getElementById('versionLabel').textContent = 'v' + APP_VERSION;
 
 if('serviceWorker' in navigator){
