@@ -94,6 +94,12 @@ input.code-input{
 }
 
 main{width:100%; max-width:1440px; flex:1; display:flex; flex-direction:column;}
+/* O texto descritivo do rodapé é só pra tela de entrada — na sala rouba
+   espaço vertical do vídeo em destaque sem servir pra nada durante a
+   chamada. A versão continua visível (só ela fica bem menor/compacta). */
+body.in-room footer{margin-top:8px;}
+body.in-room .footer-desc{display:none;}
+body.in-room footer .version{margin-top:0;}
 
 /* ---------- MANUTENÇÃO (cobre a tela inteira, ver MAINTENANCE_MODE em app.js) ---------- */
 #maintenanceScreen{

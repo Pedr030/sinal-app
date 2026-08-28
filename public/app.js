@@ -328,6 +328,9 @@ function handleTrackRemoved(track, publication, participant){
 function enterRoomUI(){
   document.getElementById('entryScreen').style.display = 'none';
   document.getElementById('roomScreen').style.display = 'flex';
+  // Marca a sala ativa pro CSS deixar o rodapé compacto (§ ver style.css) —
+  // o texto descritivo do rodapé só faz sentido na tela de entrada.
+  document.body.classList.add('in-room');
   document.getElementById('roomCodeChip').textContent = roomCode;
   document.getElementById('selfName').firstChild.textContent = myName + ' ';
   document.getElementById('chatMessages').innerHTML = '<div class="chat-empty mono">Sem mensagens ainda</div>';
@@ -495,7 +498,12 @@ async function toggleShare(){
     // em 1080p30 — dava pra ver pixelização/bloco em teste real.
     await room.localParticipant.setScreenShareEnabled(true, {
       audio: true, // só disponibiliza a opção; o navegador pergunta de verdade no seletor nativo
-      resolution: preset.resolution
+      resolution: preset.resolution,
+      // Mostra o botão nativo "Compartilhar esta guia" quando a pessoa troca
+      // de aba durante o compartilhamento — dá pra trocar a fonte sem parar
+      // e recomeçar. Chrome não garante isso por padrão (pode mudar com o
+      // tempo), por isso precisa pedir de propósito.
+      surfaceSwitching: 'include'
     }, {
       screenShareEncoding: preset.encoding
     });
@@ -958,6 +966,7 @@ function leaveRoom(){
 
   document.getElementById('roomScreen').style.display = 'none';
   document.getElementById('entryScreen').style.display = 'block';
+  document.body.classList.remove('in-room');
   setEntryStatus('');
   prefillJoinCode();
 }
@@ -1114,7 +1123,7 @@ window.addEventListener('beforeunload', () => {
 });
 
 // PWA: versão, registro do service worker, detecção de atualização e botão de instalação
-const APP_VERSION = '0.8.20'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
+const APP_VERSION = '0.8.28'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
 document.getElementById('versionLabel').textContent = 'v' + APP_VERSION;
 
 if('serviceWorker' in navigator){
