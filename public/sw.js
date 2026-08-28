@@ -1,6 +1,6 @@
 // IMPORTANTE: mude o número da versão aqui a cada publicação (mesmo sem mexer no resto
 // do arquivo) — é assim que o navegador percebe que existe uma atualização e avisa o app.
-const CACHE = 'sinal-shell-0.8.18';
+const CACHE = 'sinal-shell-0.8.19';
 const SHELL = ['./index.html', './style.css', './app.js', './manifest.json', './icons/icon-192.png', './icons/icon-512.png'];
 
 self.addEventListener('install', (event) => {
