@@ -1,4 +1,4 @@
-// SINAL — sala de tela ao vivo, via LiveKit Cloud (SFU gerenciado).
+// SINAL — sala de tela ao vivo, via LiveKit self-hosted (SFU próprio).
 //
 // Migrado da malha P2P (PeerJS) pra um SFU depois de um relato real: alguém
 // compartilhando Terraria via a versão em malha via CPU disparar, porque
@@ -818,7 +818,6 @@ document.addEventListener('click', (e) => {
 
 async function moderateAction(action, targetIdentity, trackSid){
   if(!myAccessToken || !roomCode) return;
-  console.log('[sinal] moderateAction chamada:', { action, room: roomCode, targetIdentity, trackSid });
   try{
     const res = await fetch('/api/moderate', {
       method: 'POST',
@@ -826,7 +825,6 @@ async function moderateAction(action, targetIdentity, trackSid){
       body: JSON.stringify({ action, room: roomCode, targetIdentity, trackSid })
     });
     const data = await res.json().catch(() => ({}));
-    console.log('[sinal] moderateAction resposta:', res.status, data);
     if(!res.ok){
       setRoomStatus('Ação de moderação falhou: ' + (data.error || res.status), true);
     }

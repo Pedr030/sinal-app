@@ -64,7 +64,6 @@ export async function POST(request){
 
     if(action === 'kick'){
       await roomService.removeParticipant(room, targetIdentity);
-      console.log('Moderação OK: kick', JSON.stringify({ room, targetIdentity }));
     } else if(action === 'muteScreen' || action === 'muteCamera'){
       if(!trackSid){
         return new Response(JSON.stringify({ error: 'trackSid-faltando' }), {
@@ -72,8 +71,7 @@ export async function POST(request){
           headers: { 'content-type': 'application/json' }
         });
       }
-      const info = await roomService.mutePublishedTrack(room, targetIdentity, trackSid, true);
-      console.log('Moderação OK:', action, JSON.stringify({ room, targetIdentity, trackSid, muted: info && info.muted }));
+      await roomService.mutePublishedTrack(room, targetIdentity, trackSid, true);
     } else {
       return new Response(JSON.stringify({ error: 'acao-desconhecida' }), {
         status: 400,
