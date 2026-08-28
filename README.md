@@ -32,10 +32,10 @@ Não é (e não pretende virar) um clone do Discord. É deliberadamente pequeno:
 
 O maior problema técnico do projeto foi de escala: a primeira versão usava WebRTC ponto-a-ponto (malha completa via [PeerJS](https://peerjs.com/)), onde quem compartilha a tela precisa **recodificar o vídeo uma vez para cada pessoa assistindo**. Com um jogo pesado rodando e mais de 2-3 espectadores, o CPU de quem compartilha disparava — relato real de um teste com o grupo.
 
-A solução foi migrar pra um **SFU (Selective Forwarding Unit)** gerenciado — [LiveKit Cloud](https://livekit.io/cloud). Nesse modelo, quem compartilha manda **uma única cópia** codificada pro servidor, que se encarrega de retransmitir pra todo mundo. O custo de CPU de quem compartilha deixa de escalar com o número de espectadores.
+A solução foi migrar pra um **SFU (Selective Forwarding Unit)** — [LiveKit](https://livekit.io/), rodando self-hosted numa VM própria (Oracle Cloud, tier grátis pra sempre). Nesse modelo, quem compartilha manda **uma única cópia** codificada pro servidor, que se encarrega de retransmitir pra todo mundo. O custo de CPU de quem compartilha deixa de escalar com o número de espectadores.
 
 ```
- quem compartilha  ──── 1 upload ────▶  LiveKit Cloud (SFU)  ──── 1 download cada ────▶  espectador 1
+ quem compartilha  ──── 1 upload ────▶  LiveKit (SFU)  ──── 1 download cada ────▶  espectador 1
                                                               ──── 1 download cada ────▶  espectador 2
                                                               ──── 1 download cada ────▶  espectador N
 ```
@@ -63,7 +63,7 @@ O frontend (`public/`) é HTML + CSS + JS puro — sem framework, sem bundler, s
 | Camada | Tecnologia |
 |---|---|
 | Frontend | HTML/CSS/JS puro, sem framework |
-| Vídeo/áudio | [LiveKit Cloud](https://livekit.io/cloud) (SFU gerenciado) + [LiveKit JS Client SDK](https://github.com/livekit/client-sdk-js) |
+| Vídeo/áudio | [LiveKit](https://livekit.io/) self-hosted (SFU) + [LiveKit JS Client SDK](https://github.com/livekit/client-sdk-js) |
 | Backend | [Vercel Functions](https://vercel.com/docs/functions) (Node, Web Handlers) |
 | Autenticação de sala | [`livekit-server-sdk`](https://github.com/livekit/node-sdks) |
 | Login opcional | Discord OAuth2 |
@@ -95,7 +95,7 @@ sinal-app/
 
 ## Rodando localmente
 
-Precisa de uma conta grátis no [LiveKit Cloud](https://cloud.livekit.io). Pro Vercel CLI, não precisa instalar nada global — dá pra usar via `npx` (próximo passo já mostra isso); se preferir ter o comando `vercel` direto disponível, `npm install -g vercel`.
+Precisa de um servidor LiveKit — pode ser o [LiveKit Cloud](https://cloud.livekit.io) (free tier, mais rápido de configurar) ou um self-hosted (veja [docs.livekit.io/home/self-hosting](https://docs.livekit.io/home/self-hosting/) — assistente oficial `livekit/generate` gera toda a config). Pro Vercel CLI, não precisa instalar nada global — dá pra usar via `npx` (próximo passo já mostra isso); se preferir ter o comando `vercel` direto disponível, `npm install -g vercel`.
 
 ```bash
 npm install
@@ -104,7 +104,7 @@ npm install
 Crie um `.env` na raiz com as credenciais do seu projeto LiveKit:
 
 ```
-LIVEKIT_URL=wss://seu-projeto.livekit.cloud
+LIVEKIT_URL=wss://seu-servidor-livekit.exemplo.com
 LIVEKIT_API_KEY=...
 LIVEKIT_API_SECRET=...
 ```
