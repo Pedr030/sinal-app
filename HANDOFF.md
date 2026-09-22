@@ -468,7 +468,7 @@ Terminado na mesma sessão que resolveu a §15.2. Os três pedaços que faltavam
 
 ### 15.5 🔴 Segundo achado crítico — modo *include* não distingue janelas do MESMO app (2026-09-22)
 
-> **✅ Causa raiz corrigida em §15.11** (mesmo bug de PROPVARIANT dos outros dois). Cenário exato (duas janelas do mesmo navegador) ainda não re-testado depois da correção — mas o mecanismo de filtro em si já foi confirmado funcionando de verdade em outros casos. Vale confirmar quando for conveniente.
+> **⚠️ Re-testado depois da correção (§15.11/§15.12) — CONTINUA vazando, e não é bug.** Confirmado que é mesmo um limite estrutural do Windows/Chromium, não relacionado ao bug do PROPVARIANT: abriu duas janelas do Brave (vídeos diferentes), `GetWindowThreadProcessId` devolveu **o mesmo PID (a raiz do navegador) pras duas janelas** — Windows não expõe informação nenhuma que distinga qual janela pertence a qual PID, porque não existe distinção nenhuma, é a mesma instância/processo raiz pra ambas. Esse caso não tem solução possível via `PROCESS_LOOPBACK` — precisaria de outra técnica inteiramente (cabo de áudio virtual, API de captura por aba do próprio navegador). Ver §15.12 pra decisão sobre isso.
 
 Relato real: usuário separou Instagram e YouTube em duas **janelas diferentes** do Brave, compartilhou só a janela do Instagram (modo *include*, ver §15.3) — **vazou o áudio do YouTube também**.
 
@@ -482,7 +482,7 @@ Relato real: usuário separou Instagram e YouTube em duas **janelas diferentes**
 
 ### 15.6 🔴 Terceiro achado crítico — vaza ENTRE APPS DIFERENTES também (2026-09-22, mesmo dia)
 
-> **✅ Causa raiz corrigida em §15.11.** Cenário exato (Brave vs Edge) ainda não re-testado depois da correção, mas o teste com "incluir um PID inexistente = silêncio" (§15.11) já prova que o filtro por processo funciona de verdade agora, o que deveria cobrir esse caso também.
+> **✅ Re-testado e confirmado corrigido (§15.12)** — cenário exato reproduzido de novo (Brave + Edge, vídeos diferentes, tocando ao mesmo tempo de verdade): excluir o Edge deixa o áudio do Brave passando normalmente (`18919` de amplitude, nada de silêncio), e incluir só um dos dois captura só aquele (`15007` só Edge, `1529` só Brave). Isolamento entre apps diferentes funcionando 100%.
 
 Relato real, teste seguinte do usuário: repetiu o teste do §15.5, mas dessa vez com **navegadores diferentes** — transmitiu uma janela do **Brave**, som do YouTube tocando no **Edge** (processo completamente separado, sem nenhuma relação de árvore com o Brave). **Vazou áudio do Edge mesmo assim.**
 
@@ -582,9 +582,22 @@ Dois testes completos rodados de novo, dessa vez contra o processo de áudio rea
    - `include(PID inexistente)` → `maxAmp: 1` (silêncio — antes disso capturava tudo igual, ver §15.7).
 3. **O teste mais importante — call de voz real do Discord, ao vivo, com o usuário falando**: `exclude(PID raiz do Discord)` → `maxAmp: 1` (silêncio total) vs sistema inteiro sem excluir nada → `maxAmp: 13369` (voz capturada normalmente). **Esse era exatamente o cenário que falhava em §15.4** (nem excluir o processo exato de áudio do Discord resolvia antes) — agora funciona perfeitamente.
 
-**Como isso fecha as três falhas documentadas em §15.4-15.6**: as três tinham a MESMA causa raiz (filtro nunca aplicado de verdade, independente de qual PID/modo era passado) — não eram três bugs de granularidade/timing/arquitetura diferentes como se chegou a suspeitar, era um único bug de tipo de dado na camada de ativação. §15.4 (Discord em call) confirmado resolvido com teste ao vivo acima. §15.5 (multi-janela mesmo navegador) e §15.6 (cross-app) ainda não foram re-testados nos cenários exatos originais (duas janelas do mesmo Brave; Brave vs Edge) — mas dado que o mecanismo de filtro em si está comprovadamente correto agora (teste com PID inexistente → silêncio), a expectativa é que ambos estejam resolvidos também; vale confirmar quando for conveniente.
+**Como isso fecha as três falhas documentadas em §15.4-15.6**: as três tinham a MESMA causa raiz (filtro nunca aplicado de verdade, independente de qual PID/modo era passado) — não eram três bugs de granularidade/timing/arquitetura diferentes como se chegou a suspeitar, era um único bug de tipo de dado na camada de ativação. §15.4 (Discord em call) confirmado resolvido com teste ao vivo acima. §15.5 e §15.6 re-testados logo em seguida — ver §15.12.
 
-**Ainda não feito**: recompilar o instalador desktop com essa correção e publicar uma release nova (a v0.3.0 publicada — se já publicada — não tem essa correção; ver §16 pro processo de release). O `#[audioToggleBtn]` (§17) continua existindo e útil como opção manual, mas o padrão desligado por causa da não-confiabilidade **pode valer a pena reconsiderar** agora que o mecanismo subjacente está corrigido — decisão do usuário.
+### 15.12 Re-teste dos outros dois cenários originais (2026-09-22, logo em seguida) — cross-app resolvido, multi-janela é limite estrutural (não bug)
+
+**Instalador reconstruído** com a correção (`cd electron && npm run dist`) — `dist/Sinal-Setup-0.3.0.exe` + `latest.yml` + `.blockmap` gerados, addon nativo confirmado como o build corrigido (checado por tamanho/timestamp do `.node` empacotado). Ainda **não publicado** como release no GitHub — só gerado local até aqui.
+
+**§15.6 (cross-app, Brave vs Edge) — reproduzido de novo e confirmado 100% resolvido**: abriu Brave e Edge simultaneamente, cada um com um vídeo do YouTube diferente tocando de verdade.
+- `include(só Edge)` → `15007` de amplitude máxima (áudio real do Edge).
+- `include(só Brave)` → `1529` (áudio real do Brave, vídeo mais baixo).
+- `exclude(Edge)` → `18919` — **nada de silêncio**: o áudio do Brave (+ o resto do sistema) continua passando normalmente enquanto só o Edge fica de fora. Exatamente o comportamento correto — isolamento seletivo entre dois apps completamente diferentes, funcionando de verdade.
+
+**§15.5 (multi-janela, mesmo navegador) — reproduzido de novo, CONTINUA vazando, mas agora com causa raiz 100% confirmada e é permanente**: abriu duas janelas do Brave (vídeos diferentes), enumerou as janelas de verdade via `EnumWindows`/`GetWindowThreadProcessId` (não só `Get-Process`, que só mostra uma janela por processo e escondia o problema) — **as duas janelas devolveram o mesmíssimo PID (`16304`)**, a raiz do Brave. Confirmado também que o `getWindowProcessId()` do nosso próprio addon (usado de verdade no `main.js`) devolve esse mesmo PID pras duas. **Não é um bug pra corrigir — é a arquitetura do Chromium**: todas as janelas de uma mesma instância do navegador são donas do mesmo processo raiz pro sistema operacional; não existe informação nenhuma no Windows que diferencie "janela A" de "janela B" da mesma instância. Bate exatamente com a pesquisa externa do §15.9 (Chromium centraliza áudio de todas as janelas/abas num único processo de serviço de áudio compartilhado por instância).
+
+**Consequência prática**: compartilhar **uma janela específica** de um navegador com várias janelas abertas ainda vaza o áudio das outras janelas *desse mesmo navegador* — mas não vaza mais o áudio de **outros apps** (Discord, outro navegador, jogos, etc.), que é o caso que mais importa (era o motivo original de construir isso). Se algum dia quiser resolver o caso de multi-janela também, precisaria de uma abordagem diferente (cabo de áudio virtual + redirecionamento por app, já documentado em §15.9 — mas resolveria por app inteiro, não por janela específica dentro do mesmo navegador; ou uma extensão de navegador usando `tabCapture`/`setSinkId`, mencionada na pesquisa). Não é prioridade agora dado que o caso principal (Discord + apps diferentes) já funciona.
+
+**Pendente de decisão do usuário**: publicar a release nova (v0.3.0 com a correção) no GitHub; reconsiderar se o toggle de áudio isolado (§17) deveria vir **ligado** por padrão agora que o mecanismo funciona de verdade (hoje começa desligado, decisão tomada quando o bug ainda existia).
 
 ## 16. Como atualizar o app desktop já instalado
 
