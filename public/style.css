@@ -27,7 +27,17 @@ body{
   align-items:center;
   padding:22px 18px 48px;
 }
-@media (prefers-reduced-motion: reduce){ *{animation-duration:0.01ms !important;} }
+/* Quem liga essa preferência quer que o movimento PARE, não que acelere. Só
+   zerar a duração não bastava: as animações `blink` do LED (logo e tile) são
+   `infinite`, então continuavam repetindo pra sempre, só que a 0.01ms por
+   ciclo. O iteration-count é o que efetivamente as encerra. */
+@media (prefers-reduced-motion: reduce){
+  *{
+    animation-duration:0.01ms !important;
+    animation-iteration-count:1 !important;
+    transition-duration:0.01ms !important;
+  }
+}
 *:focus-visible{outline:2px solid var(--tune); outline-offset:2px;}
 
 .mono{font-family:'JetBrains Mono', monospace;}
@@ -167,8 +177,6 @@ body.in-room footer .version{margin-top:0;}
   padding:0; height:auto; font-size:12.5px; font-weight:500; margin-top:16px; display:block;
 }
 .ghost-btn:hover{color:var(--tune);}
-.connTestResult{font-size:12px; margin-top:8px; color:var(--fog); min-height:16px;}
-.connTestResult.error-text{color:var(--rec);}
 
 /* ---------- ROOM SCREEN ---------- */
 #roomScreen{display:none; flex-direction:column; flex:1;}
@@ -201,7 +209,11 @@ body.in-room footer .version{margin-top:0;}
 
 /* ---------- CHAT ---------- */
 .chat-panel{
-  position:fixed; top:0; right:0; height:100vh; width:320px; max-width:90vw;
+  /* 100dvh (com 100vh antes como fallback): no navegador de celular o 100vh
+     não desconta a barra de endereço, então o painel ficava mais alto que a
+     área visível e a linha de digitar do chat — que é o último item do flex —
+     ficava cortada embaixo da barra. */
+  position:fixed; top:0; right:0; height:100vh; height:100dvh; width:320px; max-width:90vw;
   background:var(--panel); border-left:1px solid var(--line);
   display:flex; flex-direction:column; z-index:90;
   transform:translateX(100%); transition:transform .2s ease;
@@ -227,7 +239,7 @@ body.in-room footer .version{margin-top:0;}
   .chat-panel{ width:100vw; max-width:100vw; }
 }
 .roster-panel{
-  position:fixed; top:0; right:0; height:100vh; width:280px; max-width:90vw;
+  position:fixed; top:0; right:0; height:100vh; height:100dvh; width:280px; max-width:90vw; /* ver nota do 100dvh em .chat-panel */
   background:var(--panel); border-left:1px solid var(--line);
   display:flex; flex-direction:column; z-index:90;
   transform:translateX(100%); transition:transform .2s ease;

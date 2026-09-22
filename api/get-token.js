@@ -15,10 +15,30 @@
 import { AccessToken, RoomServiceClient } from 'livekit-server-sdk';
 import { verifyAdminProof } from '../lib/adminProof.js';
 
-export async function GET(request){
-  const url = new URL(request.url);
-  const room = (url.searchParams.get('room') || '').trim().toUpperCase().slice(0, 32);
-  const name = (url.searchParams.get('name') || '').trim().slice(0, 40);
+// POST, e não GET: esta função tem efeito colateral de verdade (cria sala no
+// LiveKit e posta no canal do Discord). Num GET, qualquer <img src="...">
+// numa página aleatória — ou um bot de preview de link que tocasse a URL —
+// dispararia isso pelo navegador de quem passasse por lá. GET deveria ser
+// seguro/idempotente, e este nunca foi. Bônus: o adminProof sai da query
+// string (era credencial de 30 dias em URL, que vaza pra log/histórico/Referer)
+// e passa a viajar no corpo.
+export async function POST(request){
+  const url = new URL(request.url); // usado só pra montar o link do webhook (url.origin)
+
+  let body;
+  try{ body = await request.json(); }catch(e){
+    return new Response(JSON.stringify({ error: 'corpo-invalido' }), {
+      status: 400,
+      headers: { 'content-type': 'application/json' }
+    });
+  }
+
+  // Antes vinha tudo de searchParams, que sempre devolve string. Agora é JSON,
+  // então o cliente pode mandar número, objeto, null — e `.trim()` em cima
+  // disso explodiria. Daí normalizar pra string antes de qualquer coisa.
+  const str = (v) => (typeof v === 'string' ? v : '');
+  const room = str(body.room).trim().toUpperCase().slice(0, 32);
+  const name = str(body.name).trim().slice(0, 40);
   // Opcional — normalmente vem preenchido só quando a pessoa logou com Discord
   // (ver api/discord-callback.js). Vai pro metadata do participante no LiveKit,
   // que é como os OUTROS participantes enxergam o avatar de verdade (não só
@@ -34,15 +54,15 @@ export async function GET(request){
   //     justamente `avatar` estar preenchido);
   //  3. apontar o <img> pra um servidor de terceiro, que colheria o IP de
   //     todos os participantes quando a imagem carregasse.
-  const avatarRaw = (url.searchParams.get('avatar') || '').trim().slice(0, 300);
+  const avatarRaw = str(body.avatar).trim().slice(0, 300);
   const avatar = /^https:\/\/cdn\.discordapp\.com\/[A-Za-z0-9/_.-]+(\?[A-Za-z0-9=&_-]*)?$/.test(avatarRaw) ? avatarRaw : '';
   // Opcional — comprovante assinado em api/discord-callback.js (ver
   // lib/adminProof.js) de que quem está pedindo o token é um Discord ID
   // admin. Verificado abaixo antes de conceder o grant roomAdmin.
-  const adminProof = url.searchParams.get('adminProof') || '';
+  const adminProof = str(body.adminProof);
   // "join" é o padrão de propósito se vier ausente/inesperado — é o modo
   // mais restrito (dá erro em vez de criar sala à toa), falha mais seguro.
-  const mode = url.searchParams.get('mode') === 'create' ? 'create' : 'join';
+  const mode = body.mode === 'create' ? 'create' : 'join';
 
   if(!room || !name){
     return new Response(JSON.stringify({ error: 'room e name são obrigatórios' }), {

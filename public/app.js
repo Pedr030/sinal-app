@@ -158,9 +158,27 @@ async function connectToRoom(code, name, mode){
 
   let token, url;
   try{
-    const avatarParam = discordUser && discordUser.avatar ? `&avatar=${encodeURIComponent(discordUser.avatar)}` : '';
-    const adminParam = discordUser && discordUser.adminProof ? `&adminProof=${encodeURIComponent(discordUser.adminProof)}` : '';
-    const res = await fetch(`/api/get-token?room=${encodeURIComponent(code)}&name=${encodeURIComponent(name)}&mode=${encodeURIComponent(mode)}${avatarParam}${adminParam}`);
+    // POST, e não GET, por dois motivos independentes:
+    //
+    // 1. Criar sala e avisar no canal do Discord são efeitos colaterais de
+    //    verdade. Num GET, qualquer página da internet podia embutir um
+    //    <img src="https://sinal.../api/get-token?...&mode=create"> e fazer o
+    //    navegador de quem visitasse criar salas e mandar mensagem no Discord
+    //    de vocês, sem clicar em nada.
+    // 2. O adminProof é uma credencial de 30 dias (ver lib/adminProof.js). Em
+    //    query string ele ia parar em log de plataforma, histórico do navegador
+    //    e cabeçalho Referer, a cada entrada em sala. No corpo do POST, não vai.
+    const res = await fetch('/api/get-token', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        room: code,
+        name,
+        mode,
+        avatar: (discordUser && discordUser.avatar) || undefined,
+        adminProof: (discordUser && discordUser.adminProof) || undefined
+      })
+    });
     if(res.status === 404){
       setEntryStatus('Sala não encontrada. Confira o código.');
       return;
@@ -273,7 +291,14 @@ function wireRoomEvents(liveRoom){
     try{
       const msg = JSON.parse(new TextDecoder().decode(payload));
       if(msg && msg.type === 'chat'){
-        renderChatMessage({ name: (participant && (participant.name || participant.identity)) || 'Alguém', text: msg.text, ts: msg.ts }, false);
+        // O maxlength="500" do input é validação só de interface — quem manda
+        // é outro navegador, e um cliente modificado pode publicar o que
+        // quiser aqui. Truncar na entrada, que é a fronteira de confiança.
+        renderChatMessage({
+          name: (participant && (participant.name || participant.identity)) || 'Alguém',
+          text: String(msg.text == null ? '' : msg.text).slice(0, 500),
+          ts: typeof msg.ts === 'number' ? msg.ts : Date.now()
+        }, false);
       }
     }catch(e){ /* payload em formato inesperado, ignora */ }
   });
@@ -410,6 +435,8 @@ function scrollChatToBottom(){
   list.scrollTop = list.scrollHeight;
 }
 
+const CHAT_MAX_MESSAGES = 200; // quantas mensagens ficam no DOM (ver poda em renderChatMessage)
+
 function renderChatMessage(msg, isMine){
   const list = document.getElementById('chatMessages');
   const empty = list.querySelector('.chat-empty');
@@ -420,6 +447,11 @@ function renderChatMessage(msg, isMine){
   row.innerHTML = `<div class="chat-msg-meta"><span class="chat-msg-name">${escapeHtml(isMine ? 'Você' : msg.name)}</span><span class="chat-msg-time">${escapeHtml(time)}</span></div><div class="chat-msg-text"></div>`;
   row.querySelector('.chat-msg-text').textContent = msg.text; // sempre textContent, nome/texto vêm de outro participante
   list.appendChild(row);
+  // Sessão longa fazia o DOM crescer sem parar — e um cliente modificado
+  // publicando em loop inflaria a memória de todo mundo na sala. O histórico
+  // não é persistido de qualquer forma (some ao sair), então podar as antigas
+  // não perde nada que já não fosse perdido.
+  while(list.children.length > CHAT_MAX_MESSAGES) list.removeChild(list.firstElementChild);
   scrollChatToBottom();
   if(!isMine && !chatOpen){ unreadChat++; updateChatBadge(); }
 }
@@ -530,7 +562,17 @@ async function toggleShare(){
   btn.classList.add('active-share');
   document.getElementById('qualityBtn').disabled = true; // só faz sentido trocar antes de começar
 
+  // A captura já começou de verdade neste ponto. Se a publicação ainda não
+  // estiver registrada (ou tiver sido interrompida no meio), sem essa guarda
+  // isso estourava um TypeError DEPOIS da tela já estar sendo compartilhada:
+  // a transmissão acontecia, mas a interface local não se atualizava — sem
+  // preview, botão sem estado de "transmitindo". Confuso de diagnosticar.
   const screenPub = room.localParticipant.getTrackPublication(Track.Source.ScreenShare);
+  if(!screenPub || !screenPub.videoTrack){
+    setRoomStatus('A captura começou mas a publicação falhou. Pare e tente de novo.', true);
+    resetShareButton();
+    return;
+  }
   const selfStream = new MediaStream([screenPub.videoTrack.mediaStreamTrack]);
   const preview = document.getElementById('selfPreview');
   preview.srcObject = selfStream;
@@ -584,7 +626,13 @@ async function toggleCamera(){
   setBtnLabel(btn, 'Desligar câmera');
   btn.classList.add('active-share');
 
+  // Mesma guarda do toggleShare() — ver o comentário lá.
   const camPub = room.localParticipant.getTrackPublication(Track.Source.Camera);
+  if(!camPub || !camPub.videoTrack){
+    setRoomStatus('A câmera ligou mas a publicação falhou. Desligue e tente de novo.', true);
+    resetCameraButton();
+    return;
+  }
   const camStream = new MediaStream([camPub.videoTrack.mediaStreamTrack]);
   addTile(room.localParticipant.identity + ':cam', myName + ' (câmera)', camStream);
   renderAvatars();
@@ -1216,7 +1264,7 @@ window.addEventListener('beforeunload', () => {
 });
 
 // PWA: versão, registro do service worker, detecção de atualização e botão de instalação
-const APP_VERSION = '0.8.30'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
+const APP_VERSION = '0.8.31'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
 document.getElementById('versionLabel').textContent = 'v' + APP_VERSION;
 
 if('serviceWorker' in navigator){
