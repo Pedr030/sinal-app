@@ -474,8 +474,38 @@ Relato real: usuário separou Instagram e YouTube em duas **janelas diferentes**
 
 **Não testado ainda**: se isolar coisas como duas janelas de apps *diferentes que sejam a mesma instalação* (ex: dois documentos abertos no mesmo Word) tem o mesmo problema — provável que sim, mesma causa raiz.
 
+### 15.6 🔴 Terceiro achado crítico — vaza ENTRE APPS DIFERENTES também (2026-09-22, mesmo dia)
+
+Relato real, teste seguinte do usuário: repetiu o teste do §15.5, mas dessa vez com **navegadores diferentes** — transmitiu uma janela do **Brave**, som do YouTube tocando no **Edge** (processo completamente separado, sem nenhuma relação de árvore com o Brave). **Vazou áudio do Edge mesmo assim.**
+
+**Isso derruba a explicação do §15.5.** Brave e Edge não compartilham processo raiz nenhum — são instalações e binários diferentes (`brave.exe` vs `msedge.exe`), árvores de processo totalmente independentes. Se o mecanismo de *include* estivesse filtrando por árvore de processo como documentado, o áudio do Edge nunca deveria aparecer.
+
+**Estado real, juntando os três achados (§15.4, §15.5, §15.6)**:
+- ✅ Funcionou uma vez, em teste controlado e sintético (`exclude-filter-test.mjs`): excluir um processo PowerShell recém-criado, tocando um WAV, reduziu a amplitude captada em mais de 3x.
+- ❌ Não funcionou pra excluir a voz de uma call real do Discord (nem a raiz, nem o processo de áudio específico).
+- ❌ Não funcionou pra isolar uma janela do Brave de outra janela do **mesmo** Brave.
+- ❌ Não funcionou pra isolar uma janela do Brave do áudio de um processo **completamente diferente e não relacionado** (Edge).
+
+**Isso não é mais "falta ajustar qual PID excluir"** — o padrão (1 caso sintético funcionando contra 3 casos reais falhando, inclusive um sem nenhuma relação de processo) sugere que a abordagem de isolar áudio por processo via `PROCESS_LOOPBACK` pode ter uma limitação bem mais fundamental do que o entendido até aqui nessa sessão, ou que o teste sintético que "funcionou" tinha algum fator não identificado que não se repete em cenários reais (diferença entre processo recém-criado vs processo já estabelecido e complexo, por exemplo — não confirmado, só hipótese).
+
+**Decisão explícita**: não investigar mais isso nessa sessão (já muito longa). **Próxima sessão precisa tratar isso como uma investigação nova**, possivelmente reconsiderando a abordagem inteira (não só trocar qual PID mirar) — os candidatos de hipótese acumulados até aqui (papel `eCommunications` vs `eConsole`, timing de ativação antes/depois da sessão de áudio existir, isolamento por processo do Windows sendo fundamentalmente menos granular do que a documentação sugere pra apps complexos) precisam ser testados um a um, com tempo e cabeça fresca — não emendados no fim de uma sessão de 10+ horas.
+
+**Mitigação recomendada pra próxima sessão, antes de resolver o problema de verdade**: dar a opção de **compartilhar sem áudio isolado nenhum** (ver §17) — hoje o app publica a track de áudio isolado automaticamente sempre que possível, sem escolha do usuário. Como a isolação está confirmadamente não-confiável, isso pode estar piorando a experiência (vazamento com falsa sensação de segurança) em vez de ser neutro. Uma opção de desligar deixa o comportamento pelo menos previsível.
+
 ## 16. Como atualizar o app desktop já instalado (pergunta real do usuário, 2026-09-22)
 
 **Hoje**: não tem atualização automática configurada (sem `electron-updater`/feed de update). Pra atualizar, baixa o instalador novo (`Sinal Setup X.Y.Z.exe`, sempre nos [Releases do GitHub](https://github.com/Pedr030/sinal-app/releases)) e roda — **não precisa desinstalar antes**. Instaladores NSIS gerados pelo `electron-builder` detectam a instalação existente (mesmo diretório/registro) e substituem por cima automaticamente. Não confirmado com teste real ainda (só documentado pelo comportamento padrão do NSIS/electron-builder) — vale testar na próxima versão publicada.
 
 **Se no futuro valer a pena automatizar isso**: `electron-updater` (mesma família do `electron-builder`, já é uma dependência ligada) consegue checar e baixar atualizações sozinho, usando o próprio GitHub Releases como fonte (não precisa de servidor próprio) — o app checaria uma vez ao abrir e avisaria/baixaria sozinho. Não implementado ainda, só citado — teria que decidir se cabe no princípio de simplicidade do projeto ou se checar manualmente no GitHub basta pro tamanho do grupo.
+
+**✅ Decisão do usuário (2026-09-22): implementar na próxima sessão.** Não é mais só uma opção citada — foi pedido explicitamente. Ver `electron-updater` + `autoUpdater.checkForUpdatesAndNotify()` (ou equivalente manual, checando a API de Releases do GitHub direto) como ponto de partida.
+
+## 17. Gaps de paridade — funcionalidades do site que faltam checar/portar no app desktop (2026-09-22)
+
+Apontado pelo usuário ao testar: o app desktop hoje só tem o que foi explicitamente construído nessa sessão (vídeo, seletor de tela, bandeja, áudio isolado — este último com problemas sérios, ver §15.6). **Não foi feita uma auditoria de paridade completa** contra o que o site já oferece. Itens específicos citados, pra checar na próxima sessão:
+
+- **Compartilhar sem áudio** — hoje não existe essa opção no fluxo do Electron: se o addon nativo carregar, o app **sempre** tenta publicar a track de áudio isolado automaticamente (ver `createElectronIsolatedAudioTrack()` em `toggleShare()`, `public/app.js`), sem escolha do usuário. Dado o estado do §15.6 (isolamento não confiável), isso é prioridade alta — ver a "Mitigação recomendada" no fim do §15.6.
+- **Regular volume de outras transmissões** — o site tem um slider de volume por participante (`.vol-slider`, dentro de `.tile-controls`, ver `addTile()` em `app.js`). Não foi confirmado se isso funciona igual dentro do Electron — é lógica de `<video>`/Web Audio pura, deveria funcionar sem mudança nenhuma (mesmo motor Chromium), mas **não foi testado de verdade** dentro do app desktop.
+- **Outras funcionalidades do site em geral** — não houve uma checagem item a item (chat, moderação/coroa de admin, pin de tile, tela cheia por tile, indicador de qualidade de conexão, etc.) especificamente dentro do Electron. A expectativa é que tudo funcione igual (é o mesmo `app.js`/`index.html`/`style.css`, sem fork nenhum) — mas "deveria funcionar" não é o mesmo que "testado e confirmado", e essa sessão não fez essa varredura.
+
+**Próximo passo sugerido**: uma sessão de teste dedicada, só de paridade — abrir o app desktop e passar por cada funcionalidade do checklist do site (ver HANDOFF §12, "Limitações conhecidas / o que ainda falta validar", pra reaproveitar uma lista já existente como ponto de partida) uma por uma, anotando o que difere.
