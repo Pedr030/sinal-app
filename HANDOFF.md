@@ -698,3 +698,21 @@ Apontado pelo usuário ao testar: o app desktop hoje só tem o que foi explicita
 **Testado**: toda a lógica nova (não só sintaxe) via participante/publicação falsos no navegador, chamando as funções reais do `app.js` direto — confirmado: card pendente renderiza certo (ícone + "Clique pra assistir" + nome), clique chama `setSubscribed(true)`, `handleTrackAdded` troca o card pelo tile ao vivo, "parar de assistir" chama `setSubscribed(false)`, os três cenários de remoção (parei de assistir mas ela continua / ela parou de vez enquanto eu assistia / ela parou de vez antes de eu clicar) resolvem certo, `syncExistingPublications()` funciona, variante de câmera (`:cam`) funciona igual. Não testado com dois clientes reais numa sala — só dá pra confirmar 100% com a galera testando de verdade.
 
 **Não precisa de instalador novo** — é só `public/app.js`/`style.css`, vive inteiramente no site (o Electron carrega a mesma URL de produção). Basta publicar no Vercel (`main`).
+
+## 19. Polimento pra parecer app de verdade, não navegador — 2026-09-22
+
+**Pedido do usuário**: dentro do app desktop, o rodapé "lembrava que é um site" — mostrava a versão do **deploy do site** (não do instalador) e um texto de descrição/compatibilidade ("Funciona melhor no Chrome/Edge") que só faz sentido pra alguém chegando pela primeira vez num navegador, não pra quem já tá usando o app instalado.
+
+**Implementado**:
+- **Versão certa no rodapé**: novo `ipcMain.on('sinal:get-app-version', ...)` (`main.js`) expõe `app.getVersion()` (a versão do `electron/package.json`, ex. `0.3.2`) via `window.sinalElectron.appVersion` (`preload.js`, `ipcRenderer.sendSync` — precisa estar pronto antes da página rodar). `app.js` usa esse valor no lugar do `APP_VERSION` do site quando `isElectron`.
+- **Esconde o texto de descrição/compatibilidade** (`.footer-desc`) e o **botão "Instalar app"** (PWA, `#installBtn`) sempre que `window.sinalElectron.isElectron` — via uma classe nova `body.electron-app` (mesmo padrão que `body.in-room` já usava pra esconder a descrição dentro de uma sala). O `beforeinstallprompt` também ganhou uma guarda em JS pra nem tentar mostrar o botão dentro do Electron (defesa dupla junto com o CSS).
+
+**Testado**: visualmente, simulando `window.sinalElectron` no navegador — versão trocada certinha (`v0.3.2` em vez de `v0.8.36`), descrição some, botão de instalar some. Comportamento normal do site (fora do Electron) confirmado intacto.
+
+**Precisa de instalador novo** — `main.js`/`preload.js` mudaram (IPC novo), então só publicar no Vercel não é suficiente dessa vez; precisa gerar e publicar uma release nova pra `window.sinalElectron.appVersion` existir de verdade.
+
+**Outras ideias de polimento "parecer app de verdade" cogitadas, não implementadas ainda** (perguntou "o que mais dá pra apontar" — ideias soltas, não pedidas formalmente):
+- Ícone/atalho na área de trabalho e barra de tarefas já existem (instalador NSIS cuida disso) — não verificado se o ícone usado é de boa qualidade em todos os tamanhos (16px/32px da bandeja podem ficar borrados se o `.ico` só tiver uma resolução).
+- Splash/tela de carregamento nativa ao abrir (hoje abre a janela e só depois o site carrega — pode dar uma fração de segundo de tela branca/preta antes do conteúdo aparecer).
+- Notificação nativa do Windows (`new Notification(...)`, já suportado pelo Chromium/Electron) em vez de só o "flash no título da aba" (`flashTabTitle()`) quando alguém começa a compartilhar — mais chamativo, e funciona mesmo com a janela minimizada/na bandeja.
+- Atalho de teclado global (ex: compartilhar/parar de compartilhar sem precisar focar a janela) — o tipo de coisa que reforça "isso é um app instalado", mas é escopo bem maior.

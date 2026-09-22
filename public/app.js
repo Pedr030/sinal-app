@@ -1602,6 +1602,10 @@ function prefillShareElectronAudio(){
 });
 
 window.addEventListener('DOMContentLoaded', () => {
+  // Marca pro CSS esconder coisa que só faz sentido no navegador normal
+  // (descrição de "o que é isso"/compatibilidade, botão de instalar PWA) —
+  // dentro do Electron isso só lembra que é um site, não um app de verdade.
+  if(window.sinalElectron && window.sinalElectron.isElectron) document.body.classList.add('electron-app');
   if(MAINTENANCE_MODE){
     document.getElementById('entryScreen').style.display = 'none';
     document.getElementById('maintenanceScreen').classList.add('on');
@@ -1623,8 +1627,11 @@ window.addEventListener('beforeunload', () => {
 });
 
 // PWA: versão, registro do service worker, detecção de atualização e botão de instalação
-const APP_VERSION = '0.8.35'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
-document.getElementById('versionLabel').textContent = 'v' + APP_VERSION;
+const APP_VERSION = '0.8.36'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
+// Dentro do Electron, mostra a versão do INSTALADOR (electron/package.json),
+// não a do site — ver preload.js. Fora dele (navegador normal), continua a
+// versão do deploy de sempre.
+document.getElementById('versionLabel').textContent = 'v' + ((window.sinalElectron && window.sinalElectron.appVersion) || APP_VERSION);
 
 if('serviceWorker' in navigator){
   window.addEventListener('load', () => {
@@ -1656,6 +1663,10 @@ document.getElementById('updateBtn').addEventListener('click', () => {
 let deferredInstallPrompt = null;
 window.addEventListener('beforeinstallprompt', (e) => {
   e.preventDefault();
+  // Dentro do Electron já é um app instalado — "instalar" de novo não faz
+  // sentido (também escondido via CSS, isso aqui é só pra nem guardar o
+  // prompt à toa).
+  if(window.sinalElectron && window.sinalElectron.isElectron) return;
   deferredInstallPrompt = e;
   document.getElementById('installBtn').style.display = 'inline-flex';
 });

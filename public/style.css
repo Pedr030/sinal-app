@@ -110,6 +110,14 @@ main{width:100%; max-width:1440px; flex:1; display:flex; flex-direction:column;}
 body.in-room footer{margin-top:8px;}
 body.in-room .footer-desc{display:none;}
 body.in-room footer .version{margin-top:0;}
+/* Dentro do app desktop (Electron), nunca mostra o texto de navegador/
+   compatibilidade nem o botão de instalar PWA — ver body.electron-app em
+   app.js. Já tá rodando como app de verdade, essas duas coisas só entregam
+   "na real isso é um site". */
+body.electron-app .footer-desc{display:none;}
+body.electron-app footer{margin-top:8px;}
+body.electron-app footer .version{margin-top:0;}
+body.electron-app #installBtn{display:none !important;}
 
 /* ---------- MANUTENÇÃO (cobre a tela inteira, ver MAINTENANCE_MODE em app.js) ---------- */
 #maintenanceScreen{

@@ -295,6 +295,12 @@ ipcMain.on('sinal:audio-toggle-source', (event, { pid, exeName, enabled }) => {
 // — sem isso a(s) captura(s) nativa(s) ficariam rodando pra sempre em segundo plano.
 ipcMain.on('sinal:audio-stop', stopIsolatedAudio);
 
+// Versão do instalador (não a do site) pro rodapé mostrar dentro do app
+// desktop — ver preload.js/app.js. Síncrono (sendSync/returnValue) porque o
+// preload precisa do valor pronto antes da página rodar, sem virar Promise
+// espalhada pelo app.js só pra isso.
+ipcMain.on('sinal:get-app-version', (event) => { event.returnValue = app.getVersion(); });
+
 // Auto-update via GitHub Releases (tag "desktop-vX.Y.Z", ver build.publish em
 // package.json). Só funciona em build empacotado — em dev não existe
 // app-update.yml e o electron-updater lançaria erro à toa. Baixa sozinho em
