@@ -30,14 +30,15 @@ use napi::bindgen_prelude::*;
 use napi::threadsafe_function::{ErrorStrategy, ThreadsafeFunction, ThreadsafeFunctionCallMode};
 use napi_derive::napi;
 
-use windows::core::Result as WinResult;
+use windows::core::{Interface, Result as WinResult};
 use windows::Win32::Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0};
 use windows::Win32::Media::Audio::{
-    eConsole, eRender, IAudioCaptureClient, IAudioClient, IMMDeviceEnumerator, MMDeviceEnumerator,
-    AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM, AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
-    AUDCLNT_STREAMFLAGS_LOOPBACK, AUDIOCLIENT_ACTIVATION_PARAMS, AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK,
-    AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS, PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE,
-    PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE, WAVEFORMATEX, WAVE_FORMAT_PCM,
+    eConsole, eRender, IAudioCaptureClient, IAudioClient, IAudioSessionControl2, IAudioSessionManager2,
+    IMMDeviceEnumerator, MMDeviceEnumerator, AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM,
+    AUDCLNT_STREAMFLAGS_EVENTCALLBACK, AUDCLNT_STREAMFLAGS_LOOPBACK, AUDIOCLIENT_ACTIVATION_PARAMS,
+    AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK, AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS, AudioSessionStateActive,
+    PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE, PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE,
+    WAVEFORMATEX, WAVE_FORMAT_PCM,
 };
 use windows::Win32::System::Com::StructuredStorage::InitPropVariantFromBuffer;
 use windows::Win32::System::Com::{CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_ALL, COINIT_MULTITHREADED};
@@ -115,6 +116,76 @@ pub fn find_discord_root_pid() -> Option<u32> {
             .map(|(pid, _)| *pid)
             .or_else(|| discord_pids.first().map(|(pid, _)| *pid)) // fallback: qualquer um é melhor que nenhum
     }
+}
+
+/// DIAGNÓSTICO — não usado no fluxo normal do app, só pra investigar o
+/// vazamento de áudio documentado em HANDOFF.md §15.4-15.6. Lista toda
+/// sessão de áudio ATIVA no endpoint de renderização padrão agora mesmo,
+/// junto com o PID dono e o nome do executável — ou seja, mostra
+/// exatamente quem o Windows acha que está fazendo barulho neste segundo,
+/// sem achismo. Rodar isso DURANTE uma call de voz real do Discord (ou
+/// qualquer outro cenário de vazamento) é o próximo passo real da
+/// investigação: se o PID de `find_discord_root_pid()` (ou da árvore dele)
+/// não aparecer entre as sessões ativas listadas aqui enquanto a call toca,
+/// a exclusão nunca tinha chance de funcionar — o alvo tava errado desde o
+/// início, não é bug da API do Windows.
+#[napi(object)]
+pub struct AudioSessionInfo {
+    pub pid: u32,
+    pub exe_name: String,
+    pub is_active: bool,
+}
+
+#[napi]
+pub fn list_audio_sessions() -> Result<Vec<AudioSessionInfo>> {
+    unsafe {
+        CoInitializeEx(None, COINIT_MULTITHREADED).ok().map_err(|e| Error::from_reason(format!("CoInitializeEx: {e}")))?;
+
+        let result = (|| -> WinResult<Vec<AudioSessionInfo>> {
+            let enumerator: IMMDeviceEnumerator = CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)?;
+            let device = enumerator.GetDefaultAudioEndpoint(eRender, eConsole)?;
+            let session_manager: IAudioSessionManager2 = device.Activate(CLSCTX_ALL, None)?;
+            let session_enumerator = session_manager.GetSessionEnumerator()?;
+            let count = session_enumerator.GetCount()?;
+
+            // PID -> nome do exe, reaproveitando o mesmo snapshot usado em
+            // find_discord_root_pid() — mais barato que resolver um por um.
+            let exe_names = pid_to_exe_name_map();
+
+            let mut sessions = Vec::new();
+            for i in 0..count {
+                let control = session_enumerator.GetSession(i)?;
+                let Ok(control2) = control.cast::<IAudioSessionControl2>() else { continue };
+                let pid = control2.GetProcessId().unwrap_or(0);
+                if pid == 0 { continue; } // sessão "mix" do sistema, sem processo dono
+                let is_active = control.GetState().map(|s| s == AudioSessionStateActive).unwrap_or(false);
+                let exe_name = exe_names.get(&pid).cloned().unwrap_or_else(|| "?".to_string());
+                sessions.push(AudioSessionInfo { pid, exe_name, is_active });
+            }
+            Ok(sessions)
+        })();
+
+        CoUninitialize();
+        result.map_err(|e| Error::from_reason(format!("list_audio_sessions falhou: {e}")))
+    }
+}
+
+fn pid_to_exe_name_map() -> std::collections::HashMap<u32, String> {
+    let mut map = std::collections::HashMap::new();
+    unsafe {
+        let Ok(snapshot) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) else { return map };
+        let mut entry = PROCESSENTRY32W::default();
+        entry.dwSize = size_of::<PROCESSENTRY32W>() as u32;
+        let mut ok = Process32FirstW(snapshot, &mut entry).is_ok();
+        while ok {
+            let name_len = entry.szExeFile.iter().position(|&c| c == 0).unwrap_or(entry.szExeFile.len());
+            let name = String::from_utf16_lossy(&entry.szExeFile[..name_len]);
+            map.insert(entry.th32ProcessID, name);
+            ok = Process32NextW(snapshot, &mut entry).is_ok();
+        }
+        let _ = CloseHandle(snapshot);
+    }
+    map
 }
 
 fn activate_process_loopback(target_pid: u32, exclude: bool) -> WinResult<IAudioClient> {
