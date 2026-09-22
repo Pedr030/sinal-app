@@ -8,6 +8,12 @@ const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('sinalElectron', {
   isElectron: true,
 
+  // Versão do INSTALADOR (electron/package.json), não a do site
+  // (APP_VERSION em app.js) — pro rodapé mostrar algo que combine com "isso
+  // é um app de verdade", não o número de versão do deploy do site.
+  // sendSync porque precisa estar pronto antes da página rodar.
+  appVersion: ipcRenderer.sendSync('sinal:get-app-version'),
+
   // Chamado pelo app.js logo depois que a tela/janela começa a ser
   // compartilhada. O processo principal já escolheu o(s) PID(s) certo(s) (a
   // partir da fonte selecionada no picker.html) e já começou a capturar

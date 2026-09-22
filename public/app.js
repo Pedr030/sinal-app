@@ -553,13 +553,12 @@ function toggleShareQuality(){
 }
 
 // Só existe dentro do app desktop (Electron) — botão fica escondido no site
-// normal (ver #audioToggleBtn em style.css). Desligado por padrão: o áudio
-// isolado por processo hoje NÃO isola de verdade (ver HANDOFF §15.7/§15.8 —
-// testado ao vivo, o filtro por PID não tem efeito nenhum, captura o sistema
-// inteiro do mesmo jeito) — então o padrão mais honesto é só vídeo, e quem
-// quiser tentar com áudio mesmo assim liga na mão sabendo do risco de vazar
-// a call do Discord ou qualquer outro som do PC.
-let shareElectronAudio = false;
+// normal (ver #audioToggleBtn em style.css). Ligado por padrão: a causa raiz
+// do isolamento foi achada e corrigida (HANDOFF §15.11-15.14), testada ao
+// vivo numa call real e confirmada pelo grupo em produção — o padrão
+// desligado era de quando o filtro ainda não funcionava de verdade, não faz
+// mais sentido pedir pra ligar na mão toda vez.
+let shareElectronAudio = true;
 
 function updateAudioToggleBtn(){
   const btn = document.getElementById('audioToggleBtn');
@@ -1115,8 +1114,15 @@ function addTile(id, name, stream){
     });
     volSlider.addEventListener('click', (e) => e.stopPropagation());
     volSlider.addEventListener('input', () => {
-      video.volume = volSlider.value / 100;
-      if(video.volume > 0 && video.muted){
+      const linear = volSlider.value / 100;
+      // Ouvido humano percebe volume em escala logarítmica, não linear —
+      // um slider 1:1 com video.volume deixa a barra "sem fazer nada" até
+      // quase o fim (relatado: "tem que botar lá pra baixo pra abaixar o
+      // volume de fato"). Elevar ao quadrado é a curva de compensação mais
+      // comum pra isso (audio taper) — a metade do slider já soa
+      // perceptivelmente mais baixa, não só nos últimos 10-20%.
+      video.volume = linear * linear;
+      if(linear > 0 && video.muted){
         video.muted = false;
         muteBtn.innerHTML = ICON_VOLUME;
         muteBtn.classList.remove('active');
@@ -1563,7 +1569,7 @@ function prefillShareElectronAudio(){
   try{
     const saved = localStorage.getItem('sinal:shareElectronAudio');
     if(saved === '1' || saved === '0') shareElectronAudio = saved === '1';
-  }catch(e){ /* localStorage indisponível — sem problema, fica no padrão (desligado) */ }
+  }catch(e){ /* localStorage indisponível — sem problema, fica no padrão (ligado) */ }
   updateAudioToggleBtn();
 }
 
@@ -1602,6 +1608,10 @@ function prefillShareElectronAudio(){
 });
 
 window.addEventListener('DOMContentLoaded', () => {
+  // Marca pro CSS esconder coisa que só faz sentido no navegador normal
+  // (descrição de "o que é isso"/compatibilidade, botão de instalar PWA) —
+  // dentro do Electron isso só lembra que é um site, não um app de verdade.
+  if(window.sinalElectron && window.sinalElectron.isElectron) document.body.classList.add('electron-app');
   if(MAINTENANCE_MODE){
     document.getElementById('entryScreen').style.display = 'none';
     document.getElementById('maintenanceScreen').classList.add('on');
@@ -1623,8 +1633,11 @@ window.addEventListener('beforeunload', () => {
 });
 
 // PWA: versão, registro do service worker, detecção de atualização e botão de instalação
-const APP_VERSION = '0.8.35'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
-document.getElementById('versionLabel').textContent = 'v' + APP_VERSION;
+const APP_VERSION = '0.8.38'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
+// Dentro do Electron, mostra a versão do INSTALADOR (electron/package.json),
+// não a do site — ver preload.js. Fora dele (navegador normal), continua a
+// versão do deploy de sempre.
+document.getElementById('versionLabel').textContent = 'v' + ((window.sinalElectron && window.sinalElectron.appVersion) || APP_VERSION);
 
 if('serviceWorker' in navigator){
   window.addEventListener('load', () => {
@@ -1656,6 +1669,10 @@ document.getElementById('updateBtn').addEventListener('click', () => {
 let deferredInstallPrompt = null;
 window.addEventListener('beforeinstallprompt', (e) => {
   e.preventDefault();
+  // Dentro do Electron já é um app instalado — "instalar" de novo não faz
+  // sentido (também escondido via CSS, isso aqui é só pra nem guardar o
+  // prompt à toa).
+  if(window.sinalElectron && window.sinalElectron.isElectron) return;
   deferredInstallPrompt = e;
   document.getElementById('installBtn').style.display = 'inline-flex';
 });

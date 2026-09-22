@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<title>Atualização do Sinal</title>
+<style>
+  /* Mesma paleta do site (public/style.css) — não a paleta genérica que o
+     picker.html usa, essa janela é propositalmente "a cara do Sinal" (foi
+     pedido explícito, ver HANDOFF). Sem fontes externas (Google Fonts) de
+     propósito, igual ao picker — janela utilitária pequena, sem esperar
+     rede pra desenhar; letter-spacing+uppercase+peso já aproxima bem o
+     visual do wordmark sem precisar carregar a Bebas Neue de verdade. */
+  :root{
+    --void:#0b0c0e; --panel:#17191c; --line:#2b2e33; --ink:#eef1f0;
+    --fog:#888d90; --tune:#ffb020;
+  }
+  *{ box-sizing:border-box; }
+  body{
+    margin:0; height:100vh; overflow:hidden; -webkit-app-region:drag;
+    background:
+      radial-gradient(ellipse 500px 260px at 15% -10%, #1a1512 0%, transparent 62%),
+      var(--void);
+    color:var(--ink); font-family:'Segoe UI', system-ui, sans-serif;
+    display:flex; flex-direction:column; align-items:center; justify-content:center;
+    gap:16px; padding:28px; text-align:center;
+  }
+  .brand{ display:flex; align-items:center; gap:8px; -webkit-app-region:no-drag; }
+  .rec-led{ width:8px; height:8px; border-radius:50%; background:#ff4438; box-shadow:0 0 0 3px #ff443822; }
+  .wordmark{ font-size:20px; font-weight:800; letter-spacing:3px; text-transform:uppercase; }
+  h1{ margin:0; font-size:16px; font-weight:600; -webkit-app-region:no-drag; }
+  p{ margin:0; color:var(--fog); font-size:13px; line-height:1.5; max-width:320px; -webkit-app-region:no-drag; }
+  .version{ color:var(--tune); font-weight:700; }
+  .actions{ display:flex; gap:10px; margin-top:6px; -webkit-app-region:no-drag; }
+  button{
+    font-family:inherit; font-size:13px; font-weight:600; cursor:pointer;
+    padding:9px 18px; border-radius:7px; border:1px solid var(--line);
+  }
+  #laterBtn{ background:transparent; color:var(--fog); }
+  #laterBtn:hover{ color:var(--ink); border-color:var(--fog); }
+  #restartBtn{ background:var(--tune); border-color:var(--tune); color:#1a1200; }
+  #restartBtn:hover{ background:#ffc247; }
+</style>
+</head>
+<body>
+  <div class="brand">
+    <span class="rec-led"></span>
+    <span class="wordmark">Sinal</span>
+  </div>
+  <h1>Atualização baixada</h1>
+  <p>A versão <span class="version" id="versionText">nova</span> já está pronta. Reinicia agora pra instalar, ou decide na próxima vez que abrir o app.</p>
+  <div class="actions">
+    <button type="button" id="laterBtn">Depois</button>
+    <button type="button" id="restartBtn">Reiniciar agora</button>
+  </div>
+  <script>
+    // window.updateAPI vem do update-preload.js — essa janela nunca carrega
+    // o site do Sinal, só esse HTML local.
+    window.updateAPI.onInfo((info) => {
+      document.getElementById('versionText').textContent = info && info.version ? 'v' + info.version : 'nova';
+    });
+    document.getElementById('restartBtn').addEventListener('click', () => window.updateAPI.restartNow());
+    document.getElementById('laterBtn').addEventListener('click', () => window.updateAPI.later());
+    document.addEventListener('keydown', (e) => { if(e.key === 'Escape') window.updateAPI.later(); });
+  </script>
+</body>
+</html>
