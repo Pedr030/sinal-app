@@ -337,6 +337,17 @@ body.in-room footer .version{margin-top:0;}
 }
 .tile .label .led{width:6px;height:6px;border-radius:50%; background:var(--rec); animation:blink 1.8s ease-in-out infinite;}
 .admin-crown{ font-size:12px; line-height:1; }
+/* Card "clique pra assistir" (autoSubscribe:false, igual ao Discord — ver
+   addPendingTile em app.js). Mesma grade/tamanho de um .tile ao vivo, só
+   sem vídeo nenhum até a pessoa clicar. */
+.pending-tile{ cursor:pointer; }
+.pending-watch{
+  position:absolute; inset:0; display:flex; flex-direction:column; align-items:center;
+  justify-content:center; gap:10px; color:var(--fog); background:var(--panel-2);
+  transition:.12s;
+}
+.pending-tile:hover .pending-watch{ color:var(--tune); background:var(--panel); }
+.pending-hint{ font-size:11px; letter-spacing:.5px; }
 .roster-row .admin-crown{ margin-right:4px; }
 .quality-dot{
   width:7px; height:7px; border-radius:50%; background:#4c5157; margin-left:2px; flex-shrink:0;

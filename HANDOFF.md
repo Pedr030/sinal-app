@@ -650,6 +650,8 @@ alterar o modo de thread depois de o mesmo estar definido. (0x80010106)
 
 **Lição pra próximas vezes**: qualquer teste de código que compartilha COM/threading com o host precisa rodar *dentro* do ambiente real (Electron), não só isolado em Node puro — um teste "passando" fora do host não garante nada sobre conflitos de inicialização que só o host real provoca. `electron/test/multi-source-test.mjs` continua útil (valida a lógica de scan/captura em si), mas não substitui testar dentro do Electron pra esse tipo de bug.
 
+**✅ Confirmado pelo usuário, na interface real, `desktop-v0.3.2` (2026-09-22)**: compartilhou a tela inteira com áudio ligado — painel apareceu com `claude.exe`, `brave.exe` e `steam.exe` detectados e marcados, Discord e o próprio Sinal corretamente fora da lista. Fecha o modo multi-fonte de vez: causa raiz achada, corrigida, e validada na prática, não só em teste isolado.
+
 ## 16. Como atualizar o app desktop já instalado
 
 **✅ Implementado (2026-09-22, v0.3.0)**: `electron-updater` (`electron/src/main.js`, função `setupAutoUpdater()`) checa o GitHub Releases sozinho — 10s depois de abrir, e depois a cada 4h enquanto o app fica rodando na bandeja. Baixa a atualização em segundo plano (`autoDownload = true`) e só reinicia com confirmação explícita (diálogo "Reiniciar agora" / "Depois" via `dialog.showMessageBox`) — nunca troca a versão sem avisar. Só roda em build empacotado (`app.isPackaged`); em dev (`npm start`) fica sem efeito, sem erro.
@@ -678,3 +680,21 @@ Apontado pelo usuário ao testar: o app desktop hoje só tem o que foi explicita
 - **Outras funcionalidades do site em geral** — não houve uma checagem item a item (chat, moderação/coroa de admin, pin de tile, tela cheia por tile, indicador de qualidade de conexão, etc.) especificamente dentro do Electron. A expectativa é que tudo funcione igual (é o mesmo `app.js`/`index.html`/`style.css`, sem fork nenhum) — mas "deveria funcionar" não é o mesmo que "testado e confirmado", e essa sessão não fez essa varredura.
 
 **Próximo passo sugerido**: uma sessão de teste dedicada, só de paridade — abrir o app desktop e passar por cada funcionalidade do checklist do site (ver HANDOFF §12, "Limitações conhecidas / o que ainda falta validar", pra reaproveitar uma lista já existente como ponto de partida) uma por uma, anotando o que difere.
+
+## 18. "Clique pra assistir" (igual ao Discord) — 2026-09-22
+
+**Pedido do usuário**: hoje, quando alguém compartilha, a transmissão toca automaticamente pra **todo mundo** na sala — quem tá jogando junto e não quer ver tem que mutar/esconder na mão. Cenário real citado: jogando com a galera, chega um amigo só pra assistir, você compartilha pra ele — os outros que tão jogando (e não ligam pra essa transmissão) ficam recebendo o vídeo/áudio dela também, sem pedir.
+
+**Implementado**: igual ao Discord — ninguém recebe vídeo/áudio de transmissão nenhuma até **clicar** pra assistir. Aplica tanto pra tela quanto câmera, com opção de **parar de assistir** depois.
+
+**Como funciona**:
+- `room.connect(url, token, { autoSubscribe: false })` — LiveKit para de inscrever automaticamente em qualquer track de vídeo/áudio de participante remoto (`public/app.js`, `joinRoom()`).
+- Quando alguém publica (`RoomEvent.TrackPublished`), em vez de a transmissão aparecer direto, mostra um card **"Clique pra assistir"** no lugar do tile ao vivo (`addPendingTile()`) — mesma grade (spotlight/filmstrip), mesmo `Map` de tiles, só com conteúdo/clique diferentes.
+- Clicar chama `watchTile()`, que inscreve (`publication.setSubscribed(true)`) tanto no vídeo quanto no áudio junto (screen-share tem uma publicação de áudio separada, `ScreenShareAudio`) — `TrackSubscribed` dispara em seguida e o fluxo existente (`handleTrackAdded`/`addTile()`) troca o card pelo tile ao vivo de verdade, sem precisar de lógica nova ali (`addTile()` já remove o que existir naquele id antes de criar o novo).
+- **Botão "parar de assistir"** — era o antigo `hide-btn` (que só pausava localmente sem economizar nada de verdade); agora desinscreve de verdade (`setSubscribed(false)`) — banda e decodificação reais liberadas, não só visual. `handleTrackRemoved()` (via `TrackUnsubscribed`) detecta se a publicação ainda existe (`participant.getTrackPublication(...)`) — se sim, a pessoa só parou de assistir (volta o card pendente); se não, a pessoa realmente parou de compartilhar (tile some de vez, sem deixar rastro).
+- **Sincroniza quem já tava compartilhando antes de eu entrar** — `syncExistingPublications()`, chamado em `enterRoomUI()`, percorre `room.remoteParticipants` procurando publicações já existentes sem inscrição, criando os cards pendentes na entrada (sem depender só do evento `TrackPublished`, que só dispara pra publicações **novas** depois que eu já tô na sala).
+- Controles que já existiam num tile ao vivo (mutar, volume, tela cheia, moderação) continuam iguais — só existem depois que a pessoa abriu a transmissão.
+
+**Testado**: toda a lógica nova (não só sintaxe) via participante/publicação falsos no navegador, chamando as funções reais do `app.js` direto — confirmado: card pendente renderiza certo (ícone + "Clique pra assistir" + nome), clique chama `setSubscribed(true)`, `handleTrackAdded` troca o card pelo tile ao vivo, "parar de assistir" chama `setSubscribed(false)`, os três cenários de remoção (parei de assistir mas ela continua / ela parou de vez enquanto eu assistia / ela parou de vez antes de eu clicar) resolvem certo, `syncExistingPublications()` funciona, variante de câmera (`:cam`) funciona igual. Não testado com dois clientes reais numa sala — só dá pra confirmar 100% com a galera testando de verdade.
+
+**Não precisa de instalador novo** — é só `public/app.js`/`style.css`, vive inteiramente no site (o Electron carrega a mesma URL de produção). Basta publicar no Vercel (`main`).

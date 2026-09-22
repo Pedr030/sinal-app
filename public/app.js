@@ -200,8 +200,14 @@ async function connectToRoom(code, name, mode){
   wireRoomEvents(room);
 
   try{
+    // autoSubscribe: false — igual ao Discord, ninguém recebe vídeo/áudio de
+    // transmissão nenhuma até clicar pra assistir (ver addPendingTile/
+    // watchTile abaixo). Sem isso, toda transmissão de tela/câmera de
+    // qualquer participante tocava automaticamente pra todo mundo na sala,
+    // mesmo quem só tá jogando e não quer ver — cada um tinha que mutar/
+    // esconder na mão.
     await Promise.race([
-      room.connect(url, token),
+      room.connect(url, token, { autoSubscribe: false }),
       new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 10000))
     ]);
   }catch(e){
@@ -239,8 +245,25 @@ function wireRoomEvents(liveRoom){
     removeTile(participant.identity + ':cam');
     renderAvatars();
   });
-  liveRoom.on(RoomEvent.TrackPublished, () => { if(isCurrent()) renderAvatars(); });
-  liveRoom.on(RoomEvent.TrackUnpublished, () => { if(isCurrent()) renderAvatars(); });
+  liveRoom.on(RoomEvent.TrackPublished, (publication, participant) => {
+    if(!isCurrent()) return;
+    renderAvatars();
+    // Com autoSubscribe:false, publicar não inscreve sozinho — mostra o
+    // card "clique pra assistir" em vez de puxar vídeo/áudio na hora.
+    if(publication.source === Track.Source.Camera) addPendingTile(participant.identity + ':cam', participant, true);
+    else if(publication.source === Track.Source.ScreenShare) addPendingTile(participant.identity, participant, false);
+  });
+  liveRoom.on(RoomEvent.TrackUnpublished, (publication, participant) => {
+    if(!isCurrent()) return;
+    renderAvatars();
+    // Se ninguém tinha clicado pra assistir ainda (card ainda era só o
+    // "pendente"), TrackUnsubscribed nunca dispara pra limpar — faz aqui.
+    if(publication.source === Track.Source.Camera || publication.source === Track.Source.ScreenShare){
+      const tileId = publication.source === Track.Source.Camera ? participant.identity + ':cam' : participant.identity;
+      const tile = tiles.get(tileId);
+      if(tile && tile.classList.contains('pending-tile')) removeTile(tileId);
+    }
+  });
   // Cobre parar de compartilhar pelo controle nativo do navegador ("Parar
   // apresentação"), não só pelo nosso próprio botão.
   liveRoom.on(RoomEvent.LocalTrackUnpublished, (publication) => {
@@ -346,9 +369,9 @@ function handleTrackAdded(track, publication, participant){
 function handleTrackRemoved(track, publication, participant){
   const { Track } = LivekitClient;
   const source = publication.source;
-  let tileId;
-  if(source === Track.Source.Camera) tileId = participant.identity + ':cam';
-  else if(source === Track.Source.ScreenShare || source === Track.Source.ScreenShareAudio) tileId = participant.identity;
+  let tileId, isCamera;
+  if(source === Track.Source.Camera){ tileId = participant.identity + ':cam'; isCamera = true; }
+  else if(source === Track.Source.ScreenShare || source === Track.Source.ScreenShareAudio){ tileId = participant.identity; isCamera = false; }
   else return;
 
   const stream = tileStreams.get(tileId);
@@ -360,6 +383,12 @@ function handleTrackRemoved(track, publication, participant){
     qualityBaseLabel.delete(tileId);
     qualityStatsPrev.delete(tileId);
     removeTile(tileId);
+    // Isso dispara tanto quando a PESSOA para de compartilhar quanto quando
+    // EU clico em "parar de assistir" (setSubscribed(false), ver
+    // stopWatchingTile). Só nesse segundo caso a publicação ainda existe —
+    // aí volta o card "clique pra assistir" em vez de sumir sem rastro.
+    const sourceKind = isCamera ? Track.Source.Camera : Track.Source.ScreenShare;
+    if(participant.getTrackPublication(sourceKind)) addPendingTile(tileId, participant, isCamera);
   }
 }
 
@@ -373,7 +402,23 @@ function enterRoomUI(){
   document.getElementById('selfName').firstChild.textContent = myName + ' ';
   document.getElementById('chatMessages').innerHTML = '<div class="chat-empty mono">Sem mensagens ainda</div>';
   renderAvatars();
+  // Quem já tava compartilhando ANTES de eu entrar não passa pelo evento
+  // TrackPublished (isso só dispara pra publicações novas, depois que eu já
+  // tô na sala) — sem isso, transmissão de quem chegou primeiro nunca
+  // ganhava o card "clique pra assistir".
+  syncExistingPublications();
   try{ localStorage.setItem('sinal:lastRoomCode', roomCode); }catch(e){ /* modo privado etc — sem problema, só não vai lembrar da próxima vez */ }
+}
+
+function syncExistingPublications(){
+  if(!room) return;
+  const { Track } = LivekitClient;
+  room.remoteParticipants.forEach((participant) => {
+    const screenPub = participant.getTrackPublication(Track.Source.ScreenShare);
+    if(screenPub && !screenPub.isSubscribed) addPendingTile(participant.identity, participant, false);
+    const camPub = participant.getTrackPublication(Track.Source.Camera);
+    if(camPub && !camPub.isSubscribed) addPendingTile(participant.identity + ':cam', participant, true);
+  });
 }
 
 function flashCopyFeedback(btn){
@@ -946,10 +991,85 @@ const ICON_EYE = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" st
 const ICON_EYE_OFF = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.94 10.94 0 0112 19c-7 0-11-7-11-7a21.86 21.86 0 015.06-6.06M9.9 4.24A10.94 10.94 0 0112 4c7 0 11 7 11 7a21.82 21.82 0 01-2.16 3.19M14.12 14.12a3 3 0 11-4.24-4.24"></path><line x1="1" y1="1" x2="23" y2="23"></line></svg>';
 const ICON_KICK = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="8.5" cy="7" r="4"></circle><line x1="18" y1="8" x2="23" y2="13"></line><line x1="23" y1="8" x2="18" y2="13"></line></svg>';
 const ICON_DOTS = '<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><circle cx="12" cy="5" r="1.8"></circle><circle cx="12" cy="12" r="1.8"></circle><circle cx="12" cy="19" r="1.8"></circle></svg>';
+const ICON_PLAY = '<svg viewBox="0 0 24 24" width="32" height="32" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>';
+
+// ---------------- "Clique pra assistir" (igual ao Discord — ver HANDOFF) ----------------
+// Com autoSubscribe:false, uma transmissão publicada não chega sozinha pra
+// mais ninguém — mostra esse card no lugar até a pessoa clicar. Reaproveita
+// a mesma grade (spotlight/filmstrip) e o mesmo Map `tiles` que os tiles ao
+// vivo usam, só com outro conteúdo/clique.
+function addPendingTile(tileId, participant, isCamera){
+  if(tiles.has(tileId)) return; // já existe (pendente ou ao vivo) — não duplica
+  if(room && participant === room.localParticipant) return; // nunca pendente pra si mesmo
+  const displayName = participant.name || participant.identity;
+  const label = isCamera ? displayName + ' (câmera)' : displayName;
+
+  const tile = document.createElement('div');
+  tile.className = 'tile pending-tile';
+  tile.dataset.id = tileId;
+  tile.innerHTML = `
+    <div class="pending-watch">
+      ${ICON_PLAY}
+      <span class="pending-hint mono">Clique pra assistir</span>
+    </div>
+    <div class="label"><span class="led"></span>${escapeHtml(label)}</div>
+  `;
+  tile.addEventListener('click', () => watchTile(tileId, isCamera));
+  tiles.set(tileId, tile);
+
+  if(pinnedOrder.length === 0){
+    pinnedOrder.push(tileId);
+    tile.classList.add('pinned');
+    document.getElementById('spotlightGrid').appendChild(tile);
+  } else {
+    tile.classList.add('minimized');
+    document.getElementById('filmstrip').appendChild(tile);
+  }
+  updateStageVisibility();
+}
+
+// Inscreve na(s) publicação(ões) daquela fonte — vídeo e, se existir, o
+// áudio junto (ScreenShareAudio é uma publicação separada do vídeo da
+// tela). TrackSubscribed dispara em seguida e handleTrackAdded troca o card
+// pendente pelo tile ao vivo de verdade (addTile já remove o que existir
+// nesse id antes de criar o novo).
+function watchTile(tileId, isCamera){
+  if(!room) return;
+  const { Track } = LivekitClient;
+  const identity = isCamera ? tileId.slice(0, -4) : tileId;
+  const participant = room.remoteParticipants.get(identity);
+  if(!participant) return;
+  const videoPub = participant.getTrackPublication(isCamera ? Track.Source.Camera : Track.Source.ScreenShare);
+  if(videoPub && !videoPub.isSubscribed) videoPub.setSubscribed(true);
+  if(!isCamera){
+    const audioPub = participant.getTrackPublication(Track.Source.ScreenShareAudio);
+    if(audioPub && !audioPub.isSubscribed) audioPub.setSubscribed(true);
+  }
+}
+
+// "Parar de assistir" — desinscreve de verdade (não só esconde/pausa
+// localmente), economizando banda e decodificação de quem não quer mais ver
+// aquela transmissão. handleTrackRemoved (disparado por TrackUnsubscribed)
+// cuida de voltar pro card "clique pra assistir" já que a pessoa
+// provavelmente continua compartilhando, só paramos de olhar.
+function stopWatchingTile(tileId, isCamera){
+  if(!room) return;
+  const { Track } = LivekitClient;
+  const identity = isCamera ? tileId.slice(0, -4) : tileId;
+  const participant = room.remoteParticipants.get(identity);
+  if(!participant) return;
+  const videoPub = participant.getTrackPublication(isCamera ? Track.Source.Camera : Track.Source.ScreenShare);
+  if(videoPub && videoPub.isSubscribed) videoPub.setSubscribed(false);
+  if(!isCamera){
+    const audioPub = participant.getTrackPublication(Track.Source.ScreenShareAudio);
+    if(audioPub && audioPub.isSubscribed) audioPub.setSubscribed(false);
+  }
+}
 
 function addTile(id, name, stream){
   removeTile(id);
   const isSelf = !!(room && room.localParticipant && (id === room.localParticipant.identity || id === room.localParticipant.identity + ':cam'));
+  const isCamera = id.endsWith(':cam');
   const ownerIdentity = id.endsWith(':cam') ? id.slice(0, -4) : id;
   const owner = room && (ownerIdentity === room.localParticipant.identity ? room.localParticipant : room.remoteParticipants.get(ownerIdentity));
   const crown = owner && participantIsAdmin(owner) ? '<span class="admin-crown" title="Admin da sala">👑</span>' : '';
@@ -964,7 +1084,7 @@ function addTile(id, name, stream){
     <div class="tile-controls">
       <button type="button" class="ctl-btn mute-btn" title="Mutar/desmutar">${ICON_VOLUME}</button>
       <input type="range" class="vol-slider" min="0" max="100" value="100" title="Volume">
-      <button type="button" class="ctl-btn hide-btn" title="Desativar vídeo (parar de exibir e decodificar)">${ICON_EYE}</button>
+      <button type="button" class="ctl-btn hide-btn" title="Parar de assistir">${ICON_EYE_OFF}</button>
       ${discordUser && discordUser.adminProof ? `
       <button type="button" class="ctl-btn mod-btn" title="Opções de moderação">${ICON_DOTS}</button>
       <div class="mod-menu">
@@ -1004,11 +1124,11 @@ function addTile(id, name, stream){
     });
     hideBtn.addEventListener('click', (e) => {
       e.stopPropagation();
-      const isHidden = tile.classList.toggle('render-off');
-      if(isHidden){ video.pause(); } else { video.play().catch(() => {}); }
-      hideBtn.classList.toggle('active', isHidden);
-      hideBtn.innerHTML = isHidden ? ICON_EYE_OFF : ICON_EYE;
-      hideBtn.title = isHidden ? 'Reativar vídeo' : 'Desativar vídeo (parar de exibir e decodificar)';
+      // Desinscreve de verdade (ver stopWatchingTile) — troca esse tile
+      // pelo card "clique pra assistir" assim que TrackUnsubscribed chegar
+      // (handleTrackRemoved cuida disso), então não precisa alternar estado
+      // aqui: esse botão não existe mais depois desse clique.
+      stopWatchingTile(id, isCamera);
     });
 
     const modBtn = tile.querySelector('.mod-btn');
@@ -1503,7 +1623,7 @@ window.addEventListener('beforeunload', () => {
 });
 
 // PWA: versão, registro do service worker, detecção de atualização e botão de instalação
-const APP_VERSION = '0.8.34'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
+const APP_VERSION = '0.8.35'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
 document.getElementById('versionLabel').textContent = 'v' + APP_VERSION;
 
 if('serviceWorker' in navigator){
