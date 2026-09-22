@@ -461,3 +461,21 @@ Terminado na mesma sessão que resolveu a §15.2. Os três pedaços que faltavam
 **Impacto real**: o app funciona (vídeo, chat, moderação, segundo plano) e o áudio isolado funciona pra **áudio de app comum** (jogo, música, vídeo) — só **não** isola a voz da call, que é o motivo original de construir isso tudo. Quem baixar a v0.2.0 esperando não vazar mais a call pros espectadores **ainda vai ouvir a call**, igual sempre foi.
 
 **Não repetir**: excluir a raiz da árvore do Discord (testado, não funciona pra voz), excluir o processo `audio.mojom.AudioService` do Discord especificamente (testado, não funciona). Próximo passo é investigar o papel `eCommunications` antes de tentar mais PIDs.
+
+### 15.5 🔴 Segundo achado crítico — modo *include* não distingue janelas do MESMO app (2026-09-22)
+
+Relato real: usuário separou Instagram e YouTube em duas **janelas diferentes** do Brave, compartilhou só a janela do Instagram (modo *include*, ver §15.3) — **vazou o áudio do YouTube também**.
+
+**Causa confirmada** (`Get-CimInstance Win32_Process -Filter "Name='brave.exe'"`): o Brave roda como **uma raiz só** (ex. PID `13488`) com N processos filhos `--type=renderer` — um por aba/janela — todos na mesma árvore. `getWindowProcessId(hwnd)` devolve o PID **dono da janela** (a raiz do navegador, `13488`), não o do renderer daquela aba especificamente — porque em navegadores multi-processo o HWND de nível superior pertence ao processo principal, não a um renderer individual. `PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE` captura a raiz **e toda a árvore** — ou seja, todas as abas/janelas do mesmo navegador, não só a escolhida.
+
+**Isso não é um bug de implementação — é limite real da abordagem.** Isolamento por processo do SO enxerga só o nível de *processo*, não o nível de *aba/janela dentro do mesmo processo*. Pra isolar de verdade uma aba específica dentro do mesmo navegador, precisaria de uma API do próprio navegador (é exatamente pra isso que existe a captura de áudio por aba do Chrome/Chromium usada no "Compartilhar esta guia", que os navegadores implementam internamente antes de misturar tudo na saída de áudio do processo) — não dá pra replicar isso de fora, via WASAPI.
+
+**Efeito prático**: o modo *include* (compartilhar uma janela específica) funciona bem pra isolar **um app de outro** (ex: um jogo, que roda como processo próprio, separado do Discord) — mas **não isola entre abas/janelas do mesmo navegador**, nem entre janelas de qualquer app que compartilhe um processo raiz comum (Discord também se enquadra: todas as janelas do Discord, se houvesse mais de uma, cairiam na mesma árvore).
+
+**Não testado ainda**: se isolar coisas como duas janelas de apps *diferentes que sejam a mesma instalação* (ex: dois documentos abertos no mesmo Word) tem o mesmo problema — provável que sim, mesma causa raiz.
+
+## 16. Como atualizar o app desktop já instalado (pergunta real do usuário, 2026-09-22)
+
+**Hoje**: não tem atualização automática configurada (sem `electron-updater`/feed de update). Pra atualizar, baixa o instalador novo (`Sinal Setup X.Y.Z.exe`, sempre nos [Releases do GitHub](https://github.com/Pedr030/sinal-app/releases)) e roda — **não precisa desinstalar antes**. Instaladores NSIS gerados pelo `electron-builder` detectam a instalação existente (mesmo diretório/registro) e substituem por cima automaticamente. Não confirmado com teste real ainda (só documentado pelo comportamento padrão do NSIS/electron-builder) — vale testar na próxima versão publicada.
+
+**Se no futuro valer a pena automatizar isso**: `electron-updater` (mesma família do `electron-builder`, já é uma dependência ligada) consegue checar e baixar atualizações sozinho, usando o próprio GitHub Releases como fonte (não precisa de servidor próprio) — o app checaria uma vez ao abrir e avisaria/baixaria sozinho. Não implementado ainda, só citado — teria que decidir se cabe no princípio de simplicidade do projeto ou se checar manualmente no GitHub basta pro tamanho do grupo.
