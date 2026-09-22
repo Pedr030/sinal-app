@@ -16,22 +16,29 @@ napi = { version = "2", default-features = false, features = ["napi4", "error_an
 napi-derive = "2"
 
 # Só os módulos do Win32 que a gente realmente usa — reduz superfície e tempo
-# de compilação. Ver src/lib.rs pra onde cada um é usado. Sem a feature
-# "implement" — ativação é via IMMDevice::Activate (síncrona), não precisa
-# mais de implementar nenhuma interface COM própria (ver comentário no
-# topo de src/lib.rs).
+# de compilação. Ver src/lib.rs pra onde cada um é usado. "implement" só é
+# usada pelos examples/ de diagnóstico (completion handler do
+# ActivateAudioInterfaceAsync) — o lib.rs de produção continua sem precisar
+# implementar nenhuma interface COM própria (ativação via IMMDevice::Activate).
 [dependencies.windows]
 version = "0.58"
 features = [
   "Win32_Foundation",
+  "Win32_Devices_FunctionDiscovery",
   "Win32_Media_Audio",
   "Win32_Security",
+  "Win32_Storage_StructuredStorage",
   "Win32_System_Com",
+  "Win32_UI_Shell_PropertiesSystem",
   "Win32_System_Com_StructuredStorage",
   "Win32_System_Diagnostics_ToolHelp",
   "Win32_System_Threading",
   "Win32_UI_WindowsAndMessaging",
+  "implement",
 ]
+
+[dev-dependencies]
+windows-core = "0.58"
 
 [build-dependencies]
 napi-build = "2"
