@@ -161,7 +161,26 @@ pub struct AudioSessionInfo {
 #[napi]
 pub fn list_audio_sessions() -> Result<Vec<AudioSessionInfo>> {
     unsafe {
-        CoInitializeEx(None, COINIT_MULTITHREADED).ok().map_err(|e| Error::from_reason(format!("CoInitializeEx: {e}")))?;
+        // Diferente da captura (que sempre roda numa thread nova, dedicada,
+        // que ninguém mais tocou), essa função é chamada direto na thread
+        // que o Node/napi entregar — dentro do Electron, isso é a MESMA
+        // thread principal que o Chromium já inicializou como COM apartment
+        // single-threaded (STA), antes da gente sequer rodar. Pedir
+        // COINIT_MULTITHREADED numa thread que já tem um modelo diferente dá
+        // RPC_E_CHANGED_MODE (0x80010106) — não é erro de verdade, só quer
+        // dizer "COM já tá pronto aqui, só que não fomos nós que iniciamos".
+        // Pego isso em teste real dentro do Electron (funcionava sempre no
+        // teste isolado fora do Electron, onde a thread tá "limpa" — nunca
+        // reproduziu fora daqui). IMMDeviceEnumerator/IAudioSessionManager2
+        // funcionam normalmente em STA ou MTA, então nesse caso seguimos sem
+        // chamar CoUninitialize no final (não fomos nós que pegamos essa
+        // referência, não é nossa pra soltar).
+        const RPC_E_CHANGED_MODE: i32 = 0x8001_0106u32 as i32;
+        let we_initialized = match CoInitializeEx(None, COINIT_MULTITHREADED).ok() {
+            Ok(()) => true,
+            Err(e) if e.code().0 == RPC_E_CHANGED_MODE => false,
+            Err(e) => return Err(Error::from_reason(format!("CoInitializeEx: {e}"))),
+        };
 
         let result = (|| -> WinResult<Vec<AudioSessionInfo>> {
             let enumerator: IMMDeviceEnumerator = CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)?;
@@ -187,7 +206,7 @@ pub fn list_audio_sessions() -> Result<Vec<AudioSessionInfo>> {
             Ok(sessions)
         })();
 
-        CoUninitialize();
+        if we_initialized { CoUninitialize(); }
         result.map_err(|e| Error::from_reason(format!("list_audio_sessions falhou: {e}")))
     }
 }

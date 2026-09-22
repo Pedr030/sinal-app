@@ -625,11 +625,30 @@ O modo "compartilhar uma janela específica" **não muda nada** — continua usa
 - ✅ **Captura nativa multi-fonte, de verdade**: script isolado (`electron/test/multi-source-test.mjs`) rodou o mesmo algoritmo de `scanAudioSources()` fora do Electron, com Discord, Sinal, Brave e Edge todos tocando som ao mesmo tempo de verdade — confirmado: Discord e Sinal nunca apareceram na lista; Brave e Edge foram capturados **simultaneamente, sem conflito** (`maxAmp` real e não-nulo nos dois ao mesmo tempo); um processo novo (o próprio script Node) foi detectado e adicionado automaticamente no scan seguinte, sem reiniciar nada.
 - ✅ **Mistura e UI, de verdade, no navegador**: testado via `window.sinalElectron` simulado numa aba real (não é teste de papel) — duas fontes sintéticas (16000 e 8000 de amplitude 16-bit) somaram exatamente `0.732421875` (= 16000/32768 + 8000/32768) na saída real da `MediaStreamTrack` publicada, lida de volta via um segundo `AudioContext` inspecionando a track. Remover uma fonte (`onAudioSourceRemoved`) fez a saída voltar a exatamente o valor da fonte restante, sem resquício. Duas fontes somando mais que 1.0 clamparam certinho em `1.0`. O painel (`renderAudioSourcesPanel`) mostrou os checkboxes certos (marcado/desmarcado batendo com `enabled`), escondeu com lista vazia, e o clique no checkbox chamou `toggleAudioSource` com os parâmetros certos.
 - ✅ App real (`npm start` em `electron/`) sobe sem erro com o código novo.
-- ❌ **Não testado**: o fluxo ponta a ponta de verdade — abrir o app empacotado, clicar em compartilhar, escolher "tela inteira" no seletor nativo, ver o painel aparecer sozinho com apps reais, desmarcar um e confirmar que some da transmissão. Isso só dá pra confirmar com alguém realmente clicando na interface — poesia da limitação de não ter mãos.
+- ✅ **Publicado como `desktop-v0.3.1`** (PR #5 + #6 mergeados em `main`), instalado por cima da v0.3.0. Primeiro teste do usuário: compartilhou a tela inteira com áudio isolado ligado e **o painel apareceu certinho** — parecia fechado.
 
 **Corrigido de brinde nessa mudança**: um vazamento de listener de IPC pré-existente — cada início de compartilhamento registrava `onAudioChunk`/`onAudioSources`/`onAudioSourceRemoved` de novo sem nunca remover os antigos (`preload.js`). Depois de vários ciclos de compartilhar/parar, os listeners se acumulariam. Corrigido: `stopIsolatedAudio()` no preload agora chama `ipcRenderer.removeAllListeners(...)` nos três canais antes de avisar o processo principal.
 
-**Ainda não commitado nem instalado** — pendente de revisão do usuário antes de gerar um instalador novo.
+**Nota de processo, pra não esquecer numa próxima vez**: mudança em `public/app.js`/`preload.js` que altera o formato dos dados trocados por IPC precisa ir **junto** com uma release nova do instalador — o site é atualizado na hora (Vercel), mas o `main.js`/`preload.js` só atualiza quando a pessoa instala a versão nova. Nessa mudança específica, isso quase gerou confusão: o usuário testou o painel antes de eu ter dado push/publicado a release, e claro que não apareceu nada (não existia ainda no que ele tava rodando) — parecia bug, não era.
+
+### 15.14 🔴 Achado crítico real, no MESMO dia: bug de threading do COM fazia o painel falhar de forma intermitente
+
+Segundo teste do usuário (mesmo instalador v0.3.1, mesma máquina): compartilhou a tela inteira de novo, áudio ligado, confirmou "tela inteira" no seletor — **painel não apareceu**. Contradição direta com o teste anterior que tinha "fechado". Pedido pra rodar `npm start` (mostra os logs do processo principal no terminal) revelou o erro de verdade:
+
+```
+[sinal-audio] listAudioSessions() falhou: Error: CoInitializeEx: Não é possível
+alterar o modo de thread depois de o mesmo estar definido. (0x80010106)
+```
+
+**Causa raiz**: `list_audio_sessions()` (`src/lib.rs`) chamava `CoInitializeEx(None, COINIT_MULTITHREADED)` incondicionalmente, assumindo que era a primeira coisa a inicializar COM naquela thread — verdade no `electron/test/multi-source-test.mjs` (roda em Node puro, thread "limpa"), **falso dentro do Electron de verdade**: `scanAudioSources()` é chamado direto na thread principal do processo Electron, que é a MESMA thread que o Chromium já inicializa como COM apartment **single-threaded (STA)** logo na largada, antes de qualquer código nosso rodar. Pedir `COINIT_MULTITHREADED` (MTA) numa thread que já tem um modelo diferente dá `RPC_E_CHANGED_MODE` (`0x80010106`) — Windows não deixa trocar o modelo de uma thread já inicializada.
+
+**Por que foi intermitente, não sempre**: `IAudioLoopback`/`activate_process_loopback` (a captura em si) roda numa thread NOVA, dedicada (`std::thread::spawn`), que ninguém mais tocou — `CoInitializeEx(MULTITHREADED)` lá sempre é a primeira chamada, nunca conflita. Só `list_audio_sessions()` roda direto na thread principal compartilhada com o Chromium — o resultado depende de quando exatamente ela é chamada em relação a outras inicializações internas do Electron, por isso "funcionou uma vez, falhou a próxima" no mesmo instalador, mesma máquina.
+
+**Corrigido**: `list_audio_sessions()` agora trata `RPC_E_CHANGED_MODE` como "COM já tá pronto nessa thread, só não fomos nós que inicializamos" em vez de erro fatal — segue em frente sem chamar `CoUninitialize()` no final (não é referência nossa pra soltar). `IMMDeviceEnumerator`/`IAudioSessionManager2` funcionam normalmente em STA ou MTA, então isso não perde funcionalidade nenhuma.
+
+**Verificado de verdade, na thread principal real do Electron** (não só no teste isolado fora dele, que nunca teria pego esse bug): novo `electron/test/com-threading-test.mjs`, rodado via `npx electron test/com-threading-test.mjs` (não `node`) — chama `listAudioSessions()` direto no `app.whenReady()` do processo principal, duas vezes seguidas (simulando o scan periódico). As duas chamadas funcionaram sem erro, com sessões reais detectadas.
+
+**Lição pra próximas vezes**: qualquer teste de código que compartilha COM/threading com o host precisa rodar *dentro* do ambiente real (Electron), não só isolado em Node puro — um teste "passando" fora do host não garante nada sobre conflitos de inicialização que só o host real provoca. `electron/test/multi-source-test.mjs` continua útil (valida a lógica de scan/captura em si), mas não substitui testar dentro do Electron pra esse tipo de bug.
 
 ## 16. Como atualizar o app desktop já instalado
 
