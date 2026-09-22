@@ -521,10 +521,8 @@ function updateAudioToggleBtn(){
   if(!btn) return;
   btn.classList.toggle('audio-on', shareElectronAudio);
   if(shareElectronAudio){
-    btn.textContent = 'Áudio';
     setBtnLabel(btn, 'Áudio: tentando incluir (ainda não isola de verdade — pode vazar a call do Discord ou outros sons do PC, ver HANDOFF). Clique pra desligar.');
   }else{
-    btn.textContent = 'Sem áudio';
     setBtnLabel(btn, 'Áudio: desligado (só vídeo). Clique pra tentar incluir mesmo assim — ainda não isola de verdade, pode vazar outros sons.');
   }
 }

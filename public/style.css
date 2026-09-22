@@ -207,7 +207,13 @@ body.in-room footer .version{margin-top:0;}
    hoje nem lá é confiável). */
 #audioToggleBtn{ display:none; }
 #audioToggleBtn.on{ display:inline-flex; }
+/* Dois ícones dentro do botão (alto-falante normal / mutado) — mesmo padrão
+   de troca do #copyCodeBtn (.icon-copy/.icon-check) acima. Mutado é o que
+   aparece por padrão (áudio isolado começa desligado, ver app.js). */
+#audioToggleBtn .icon-speaker{ display:none; }
 #audioToggleBtn.audio-on{ color:var(--tune); }
+#audioToggleBtn.audio-on .icon-speaker{ display:block; }
+#audioToggleBtn.audio-on .icon-speaker-muted{ display:none; }
 .chat-badge{
   position:absolute; top:3px; right:3px; min-width:16px; height:16px; padding:0 4px;
   border-radius:8px; background:var(--rec); color:#fff; font-size:10px; font-weight:700;
