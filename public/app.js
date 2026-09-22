@@ -1115,8 +1115,15 @@ function addTile(id, name, stream){
     });
     volSlider.addEventListener('click', (e) => e.stopPropagation());
     volSlider.addEventListener('input', () => {
-      video.volume = volSlider.value / 100;
-      if(video.volume > 0 && video.muted){
+      const linear = volSlider.value / 100;
+      // Ouvido humano percebe volume em escala logarítmica, não linear —
+      // um slider 1:1 com video.volume deixa a barra "sem fazer nada" até
+      // quase o fim (relatado: "tem que botar lá pra baixo pra abaixar o
+      // volume de fato"). Elevar ao quadrado é a curva de compensação mais
+      // comum pra isso (audio taper) — a metade do slider já soa
+      // perceptivelmente mais baixa, não só nos últimos 10-20%.
+      video.volume = linear * linear;
+      if(linear > 0 && video.muted){
         video.muted = false;
         muteBtn.innerHTML = ICON_VOLUME;
         muteBtn.classList.remove('active');
@@ -1627,7 +1634,7 @@ window.addEventListener('beforeunload', () => {
 });
 
 // PWA: versão, registro do service worker, detecção de atualização e botão de instalação
-const APP_VERSION = '0.8.36'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
+const APP_VERSION = '0.8.37'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
 // Dentro do Electron, mostra a versão do INSTALADOR (electron/package.json),
 // não a do site — ver preload.js. Fora dele (navegador normal), continua a
 // versão do deploy de sempre.
