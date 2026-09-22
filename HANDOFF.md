@@ -445,4 +445,19 @@ Terminado na mesma sessão que resolveu a §15.2. Os três pedaços que faltavam
 
 **Empacotamento pro instalador**: `cargo build --release` (não a build debug) é o artefato que vai pro `.exe` — `package.json` do electron tem `files`/`asarUnpack` apontando pro `.node` de release (módulo nativo não pode ficar dentro do `.asar`, senão `require()` não consegue `dlopen`). Testado: `npm run dist` empacota certinho (`.node` aparece em `resources/app.asar.unpacked/native/...`) e o `.exe` gerado roda sem erro de addon.
 
-**O que ainda não foi testado**: qualidade percebida do áudio numa sessão real e longa com outra pessoa ouvindo (só testado tecnicamente — chega, tem amplitude real, mas não houve teste de "like ficou bom de ouvir"), e o caso "compartilhar uma janela específica" com áudio isolado de verdade (o teste de ponta a ponta usou tela inteira/exclude-Discord; o `getWindowProcessId` foi validado separadamente mas não nesse fluxo completo).
+**O que ainda não foi testado** (antes do teste real que revelou §15.4 — deixado aqui como registro do que se sabia até então): qualidade percebida do áudio numa sessão real e longa com outra pessoa ouvindo, e o caso "compartilhar uma janela específica" com áudio isolado de verdade.
+
+### 15.4 🔴 ACHADO CRÍTICO (2026-09-22, mesma sessão) — exclude-Discord NÃO funciona pra voz de call real
+
+**A v0.2.0 publicada NÃO cumpre a promessa principal.** Testes anteriores (§15.2/15.3) validaram o mecanismo de exclusão com áudio "genérico" (WAV tocado via processo PowerShell) — funcionava perfeitamente (diferença de 3x+ de amplitude). Mas isso nunca foi testado contra **voz de call real do Discord**. Quando testado de verdade (usuário numa call real, ao vivo, enquanto os testes rodavam):
+
+- Excluir a raiz da árvore de processos do Discord (pid da vez, ex. `7448`): **amplitude praticamente idêntica** com e sem exclusão (`14343` vs `14095` de máxima — sem diferença real).
+- Excluir especificamente o processo `--type=utility --utility-sub-type=audio.mojom.AudioService` do Discord (o suspeito óbvio, é literalmente o processo de áudio dele): **também não fez diferença** (`10018` de máxima, mesma faixa).
+
+**Conclusão: nenhum dos processos visíveis na árvore do Discord (`Get-CimInstance Win32_Process -Filter "Name='Discord.exe'"`) é o dono da sessão WASAPI que renderiza a voz da call.** O mecanismo de exclude-por-processo (`PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE`) funciona exatamente como documentado pela Microsoft — só que a voz da call parece não passar por nenhum desses PIDs.
+
+**Hipótese não confirmada, próxima linha de investigação**: chamada de voz usa WebRTC (mesma tecnologia da própria Sinal), que costuma abrir a sessão de áudio no papel `eCommunications` do Windows, não `eConsole` (o que a nossa captura usa via `GetDefaultAudioEndpoint(eRender, eConsole)`). Mesmo que os dois papéis apontem pro mesmo dispositivo físico, não está confirmado que isso é irrelevante pro `PROCESS_LOOPBACK` — vale testar explicitamente contra o endpoint de `eCommunications` antes de qualquer outra teoria. Outras hipóteses não descartadas: o ADM (Audio Device Module) do WebRTC podendo abrir a sessão WASAPI num processo/thread que não aparece como "Discord.exe" na enumeração via `CreateToolhelp32Snapshot` (deveria aparecer, mas não confirmado com 100% de certeza), ou algum comportamento de mixagem/roteamento de áudio específico de chamada que o Windows trata diferente de reprodução normal.
+
+**Impacto real**: o app funciona (vídeo, chat, moderação, segundo plano) e o áudio isolado funciona pra **áudio de app comum** (jogo, música, vídeo) — só **não** isola a voz da call, que é o motivo original de construir isso tudo. Quem baixar a v0.2.0 esperando não vazar mais a call pros espectadores **ainda vai ouvir a call**, igual sempre foi.
+
+**Não repetir**: excluir a raiz da árvore do Discord (testado, não funciona pra voz), excluir o processo `audio.mojom.AudioService` do Discord especificamente (testado, não funciona). Próximo passo é investigar o papel `eCommunications` antes de tentar mais PIDs.
