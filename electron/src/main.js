@@ -12,8 +12,9 @@
 //  4. No Windows não existe seletor nativo pro Electron (useSystemPicker só
 //     funciona no macOS 15+), então a gente mostra nosso próprio seletor
 //     (picker.html) com os thumbnails do desktopCapturer.
-const { app, BrowserWindow, Tray, Menu, session, desktopCapturer, ipcMain, nativeImage } = require('electron');
+const { app, BrowserWindow, Tray, Menu, session, desktopCapturer, ipcMain, nativeImage, dialog } = require('electron');
 const path = require('node:path');
+const { autoUpdater } = require('electron-updater');
 
 // URL de produção real — mesma que https://sinal-app-stream.vercel.app serve
 // pro navegador. Ver README/HANDOFF pra histórico de migração de domínio.
@@ -187,6 +188,62 @@ function startIsolatedAudio(target){
 // — sem isso a captura nativa ficaria rodando pra sempre em segundo plano.
 ipcMain.on('sinal:audio-stop', stopIsolatedAudio);
 
+// Auto-update via GitHub Releases (tag "desktop-vX.Y.Z", ver build.publish em
+// package.json). Só funciona em build empacotado — em dev não existe
+// app-update.yml e o electron-updater lançaria erro à toa. Baixa sozinho em
+// segundo plano, mas só reinicia com confirmação explícita da pessoa (nunca
+// interrompe sem avisar, principalmente porque fechar a janela só esconde
+// pra bandeja normalmente — reiniciar pra instalar é a exceção).
+//
+// Importante: instaladores publicados ANTES desta versão (v0.1.0, v0.2.0)
+// não têm o electron-updater embutido nem o latest.yml no release — quem
+// estiver nessas versões não recebe update automático, só a partir de quem
+// já instalou uma versão com isso (v0.3.0+). Ver HANDOFF.md.
+function setupAutoUpdater(){
+  if(!app.isPackaged){
+    console.log('[sinal-update] pulando auto-update (rodando em dev, não empacotado)');
+    return;
+  }
+
+  autoUpdater.autoDownload = true;
+  autoUpdater.autoInstallOnAppQuit = true;
+
+  autoUpdater.on('error', (err) => {
+    console.error('[sinal-update] erro checando/baixando atualização:', err);
+  });
+  autoUpdater.on('checking-for-update', () => {
+    console.log('[sinal-update] checando por atualização...');
+  });
+  autoUpdater.on('update-available', (info) => {
+    console.log('[sinal-update] atualização disponível:', info.version);
+  });
+  autoUpdater.on('update-not-available', () => {
+    console.log('[sinal-update] já está na versão mais recente');
+  });
+  autoUpdater.on('update-downloaded', async (info) => {
+    console.log('[sinal-update] atualização baixada:', info.version);
+    const { response } = await dialog.showMessageBox(mainWindow, {
+      type: 'info',
+      title: 'Atualização do Sinal',
+      message: `Uma nova versão do Sinal (${info.version}) foi baixada.`,
+      detail: 'Reiniciar agora pra instalar, ou depois na próxima vez que abrir o app.',
+      buttons: ['Reiniciar agora', 'Depois'],
+      defaultId: 0,
+      cancelId: 1
+    });
+    if(response === 0){
+      isQuitting = true;
+      autoUpdater.quitAndInstall();
+    }
+  });
+
+  // Primeira checagem logo após abrir (com um respiro pra não competir com o
+  // carregamento da janela principal), depois repete a cada 4h — o app fica
+  // rodando em segundo plano por muito tempo (é o ponto da bandeja).
+  setTimeout(() => autoUpdater.checkForUpdates().catch((e) => console.error('[sinal-update] falha na checagem inicial:', e)), 10_000);
+  setInterval(() => autoUpdater.checkForUpdates().catch((e) => console.error('[sinal-update] falha na checagem periódica:', e)), 4 * 60 * 60 * 1000);
+}
+
 app.whenReady().then(() => {
   // Tira a barra de menu padrão do Electron (File/Edit/View/Window) — sem
   // função nenhuma nesse app (não tem "abrir arquivo", desfazer, etc.) e
@@ -228,6 +285,7 @@ app.whenReady().then(() => {
 
   createMainWindow();
   createTray();
+  setupAutoUpdater();
 });
 
 app.on('window-all-closed', () => {

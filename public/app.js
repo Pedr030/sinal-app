@@ -507,6 +507,32 @@ function toggleShareQuality(){
   updateQualityBtn();
 }
 
+// Só existe dentro do app desktop (Electron) — botão fica escondido no site
+// normal (ver #audioToggleBtn em style.css). Desligado por padrão: o áudio
+// isolado por processo hoje NÃO isola de verdade (ver HANDOFF §15.7/§15.8 —
+// testado ao vivo, o filtro por PID não tem efeito nenhum, captura o sistema
+// inteiro do mesmo jeito) — então o padrão mais honesto é só vídeo, e quem
+// quiser tentar com áudio mesmo assim liga na mão sabendo do risco de vazar
+// a call do Discord ou qualquer outro som do PC.
+let shareElectronAudio = false;
+
+function updateAudioToggleBtn(){
+  const btn = document.getElementById('audioToggleBtn');
+  if(!btn) return;
+  btn.classList.toggle('audio-on', shareElectronAudio);
+  if(shareElectronAudio){
+    setBtnLabel(btn, 'Áudio: tentando incluir (ainda não isola de verdade — pode vazar a call do Discord ou outros sons do PC, ver HANDOFF). Clique pra desligar.');
+  }else{
+    setBtnLabel(btn, 'Áudio: desligado (só vídeo). Clique pra tentar incluir mesmo assim — ainda não isola de verdade, pode vazar outros sons.');
+  }
+}
+
+function toggleElectronAudio(){
+  shareElectronAudio = !shareElectronAudio;
+  try{ localStorage.setItem('sinal:shareElectronAudio', shareElectronAudio ? '1' : '0'); }catch(e){ /* modo privado etc — sem problema */ }
+  updateAudioToggleBtn();
+}
+
 // ---------------- ÁUDIO ISOLADO (só dentro do app desktop/Electron) ----------------
 // O navegador (e o getDisplayMedia padrão dentro do Electron) só oferece
 // "áudio do sistema inteiro" ao compartilhar tela — o que inclui a voz da
@@ -657,6 +683,7 @@ async function toggleShare(){
   setBtnLabel(btn, 'Parar compartilhamento');
   btn.classList.add('active-share');
   document.getElementById('qualityBtn').disabled = true; // só faz sentido trocar antes de começar
+  document.getElementById('audioToggleBtn').disabled = true; // idem — decide no começo, não muda no meio
 
   // A captura já começou de verdade neste ponto. Se a publicação ainda não
   // estiver registrada (ou tiver sido interrompida no meio), sem essa guarda
@@ -680,7 +707,7 @@ async function toggleShare(){
   // call do Discord que o navegador não tem como evitar. Não trava o
   // compartilhamento se isso falhar (ex: addon nativo não carregou): a
   // tela já está funcionando nesse ponto, só fica sem esse áudio extra.
-  if(window.sinalElectron && window.sinalElectron.isElectron){
+  if(window.sinalElectron && window.sinalElectron.isElectron && shareElectronAudio){
     try{
       const audioTrack = createElectronIsolatedAudioTrack();
       await room.localParticipant.publishTrack(audioTrack, {
@@ -704,6 +731,7 @@ function resetShareButton(){
   setBtnLabel(btn, 'Compartilhar minha tela');
   btn.classList.remove('active-share');
   document.getElementById('qualityBtn').disabled = false;
+  document.getElementById('audioToggleBtn').disabled = false;
   document.getElementById('selfPreview').style.display = 'none';
   document.getElementById('selfStatus').textContent = 'Assistindo';
   if(room) removeTile(room.localParticipant.identity);
@@ -1177,6 +1205,7 @@ function leaveRoom(){
   setBtnLabel(shareBtn, 'Compartilhar minha tela');
   shareBtn.classList.remove('active-share');
   document.getElementById('qualityBtn').disabled = false;
+  document.getElementById('audioToggleBtn').disabled = false;
   const cameraBtn = document.getElementById('cameraBtn');
   setBtnLabel(cameraBtn, 'Ligar câmera');
   cameraBtn.classList.remove('active-share');
@@ -1328,6 +1357,19 @@ function prefillShareQuality(){
   updateQualityBtn();
 }
 
+// Mostra o botão de áudio isolado só dentro do Electron (ver #audioToggleBtn
+// em style.css) e restaura a preferência lembrada — mesma lógica de
+// prefillShareQuality().
+function prefillShareElectronAudio(){
+  if(!(window.sinalElectron && window.sinalElectron.isElectron)) return;
+  document.getElementById('audioToggleBtn').classList.add('on');
+  try{
+    const saved = localStorage.getItem('sinal:shareElectronAudio');
+    if(saved === '1' || saved === '0') shareElectronAudio = saved === '1';
+  }catch(e){ /* localStorage indisponível — sem problema, fica no padrão (desligado) */ }
+  updateAudioToggleBtn();
+}
+
 // Ligação dos botões da interface. Ficavam como onclick="..." direto no
 // index.html, o que obrigava toda função a ser global no window e — o motivo
 // de terem saído — é justamente o que a Content-Security-Policy bloqueia
@@ -1349,7 +1391,8 @@ function prefillShareQuality(){
   ['leaveBtn',        () => leaveRoom()],
   ['cameraBtn',       () => toggleCamera()],
   ['shareBtn',        () => toggleShare()],
-  ['qualityBtn',      () => toggleShareQuality()]
+  ['qualityBtn',      () => toggleShareQuality()],
+  ['audioToggleBtn',  () => toggleElectronAudio()]
 ].forEach(([id, handler]) => {
   const el = document.getElementById(id);
   if(!el){
@@ -1372,6 +1415,7 @@ window.addEventListener('DOMContentLoaded', () => {
   prefillJoinCode();
   prefillLastName();
   prefillShareQuality();
+  prefillShareElectronAudio();
   renderDiscordStatus();
 });
 
@@ -1382,7 +1426,7 @@ window.addEventListener('beforeunload', () => {
 });
 
 // PWA: versão, registro do service worker, detecção de atualização e botão de instalação
-const APP_VERSION = '0.8.32'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
+const APP_VERSION = '0.8.33'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
 document.getElementById('versionLabel').textContent = 'v' + APP_VERSION;
 
 if('serviceWorker' in navigator){
