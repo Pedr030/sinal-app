@@ -109,9 +109,13 @@ body.in-room footer .version{margin-top:0;}
     radial-gradient(ellipse 900px 460px at 20% -12%, #1a1512 0%, transparent 62%),
     radial-gradient(ellipse 700px 480px at 105% 0%, #101a1c 0%, transparent 55%),
     var(--void);
-  display:flex; flex-direction:column; align-items:center; justify-content:center;
+  /* Escondida por padrão — app.js põe a classe .on quando MAINTENANCE_MODE
+     está ligado. Antes isso era um style="display:none" no próprio HTML, mas
+     atributo de estilo inline é bloqueado pela CSP (ver vercel.json). */
+  display:none; flex-direction:column; align-items:center; justify-content:center;
   gap:22px; padding:24px; text-align:center;
 }
+#maintenanceScreen.on{ display:flex; }
 .maintenance-message{
   font-family:'Bebas Neue', sans-serif; font-size:clamp(36px, 7vw, 72px);
   line-height:1.2; letter-spacing:1px; color:var(--ink); max-width:900px; font-weight:400;

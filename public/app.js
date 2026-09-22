@@ -1162,10 +1162,43 @@ function prefillShareQuality(){
   updateQualityBtn();
 }
 
+// Ligação dos botões da interface. Ficavam como onclick="..." direto no
+// index.html, o que obrigava toda função a ser global no window e — o motivo
+// de terem saído — é justamente o que a Content-Security-Policy bloqueia
+// (ver vercel.json): com CSP ligada e handler inline, os botões simplesmente
+// param de funcionar, sem erro visível na tela.
+//
+// O <script> do app tem defer, então o HTML já está todo parseado quando isso
+// roda — não precisa esperar o DOMContentLoaded.
+[
+  ['discordLoginBtn', () => loginWithDiscord()],
+  ['createRoomBtn',   () => createRoom()],
+  ['joinRoomBtn',     () => joinRoom()],
+  ['copyCodeBtn',     (btn) => copyRoomCode(btn)],   // recebiam o `this` do onclick — agora vem do próprio listener
+  ['copyLinkBtn',     (btn) => copyRoomLink(btn)],
+  ['rosterBtn',       () => toggleRosterPanel()],
+  ['rosterCloseBtn',  () => toggleRosterPanel(false)],
+  ['chatToggleBtn',   () => toggleChatPanel()],
+  ['chatCloseBtn',    () => toggleChatPanel(false)],
+  ['leaveBtn',        () => leaveRoom()],
+  ['cameraBtn',       () => toggleCamera()],
+  ['shareBtn',        () => toggleShare()],
+  ['qualityBtn',      () => toggleShareQuality()]
+].forEach(([id, handler]) => {
+  const el = document.getElementById(id);
+  if(!el){
+    // Não deveria acontecer — mas se um id sumir do HTML numa mudança futura,
+    // é melhor gritar no console do que o botão virar decoração em silêncio.
+    console.error('Botão não encontrado no HTML:', id);
+    return;
+  }
+  el.addEventListener('click', () => handler(el));
+});
+
 window.addEventListener('DOMContentLoaded', () => {
   if(MAINTENANCE_MODE){
     document.getElementById('entryScreen').style.display = 'none';
-    document.getElementById('maintenanceScreen').style.display = 'flex';
+    document.getElementById('maintenanceScreen').classList.add('on');
     return;
   }
   loadDiscordUser();
@@ -1183,7 +1216,7 @@ window.addEventListener('beforeunload', () => {
 });
 
 // PWA: versão, registro do service worker, detecção de atualização e botão de instalação
-const APP_VERSION = '0.8.29'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
+const APP_VERSION = '0.8.30'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
 document.getElementById('versionLabel').textContent = 'v' + APP_VERSION;
 
 if('serviceWorker' in navigator){
