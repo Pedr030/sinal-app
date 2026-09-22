@@ -188,6 +188,11 @@ function startIsolatedAudio(target){
 ipcMain.on('sinal:audio-stop', stopIsolatedAudio);
 
 app.whenReady().then(() => {
+  // Tira a barra de menu padrão do Electron (File/Edit/View/Window) — sem
+  // função nenhuma nesse app (não tem "abrir arquivo", desfazer, etc.) e
+  // deixa parecendo ferramenta de desenvolvedor em vez de um app de verdade.
+  Menu.setApplicationMenu(null);
+
   // session.defaultSession só existe depois do app pronto — chamar isso no
   // nível superior do módulo (fora do whenReady) derruba o processo inteiro
   // com "Session can only be received when app is ready" antes mesmo de
