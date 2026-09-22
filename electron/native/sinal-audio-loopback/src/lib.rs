@@ -4,20 +4,23 @@
 // microsoft/Windows-classic-samples) — ver HANDOFF.md pra por que isso é
 // código próprio em vez de um pacote de terceiro pouco maduro.
 //
-// ATIVAÇÃO: via IMMDevice::Activate() (API clássica/síncrona), NÃO via
-// ActivateAudioInterfaceAsync() no dispositivo virtual
-// (VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK) como a amostra oficial faz. Os dois
-// caminhos são documentados oficialmente como equivalentes pra esse caso —
-// ver a nota em IMMDevice::Activate: "Starting in Windows 10 Build 20348,
-// callers activating an IAudioClient can set pActivationParams to a pointer
-// to a AUDIOCLIENT_ACTIVATION_PARAMS to configure an audio client in
-// loopback mode with a process filter." Mudamos pra esse porque, numa
-// máquina real testada nessa sessão, o caminho assíncrono/dispositivo
-// virtual falhava consistentemente com E_INVALIDARG (pra qualquer PID, nos
-// dois modos, em código próprio E num pacote de terceiro publicado) enquanto
-// esse caminho síncrono num dispositivo REAL funciona — ver HANDOFF.md
-// seção 15.2 pro histórico completo da investigação. Bônus: fica bem mais
-// simples, não precisa de completion handler COM assíncrono nem IAgileObject.
+// ATIVAÇÃO: via ActivateAudioInterfaceAsync() no dispositivo virtual
+// (VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK), IGUAL à amostra oficial da
+// Microsoft — não mais via IMMDevice::Activate() num dispositivo real, que
+// foi usado por várias sessões como contorno de um E_INVALIDARG nunca
+// explicado (ver HANDOFF §15.2). CAUSA RAIZ ACHADA (2026-09-22, sessão
+// dedicada de pesquisa + teste em 2 máquinas físicas diferentes):
+// `InitPropVariantFromBuffer` (usada aqui antes) NÃO cria um PROPVARIANT do
+// tipo VT_BLOB — a documentação da própria função diz "Creates a VT_VECTOR |
+// VT_UI1 propvariant" — enquanto a API exige VT_BLOB (ver remarks de
+// IMMDevice::Activate). O E_INVALIDARG sempre foi o Windows corretamente
+// rejeitando um PROPVARIANT malformado, não um bug da API ou do SO. Corrigido
+// construindo o PROPVARIANT na mão (igual a amostra em C++ e o projeto real
+// thomas-quant/wasapi-loopback, usado em produção pelo GoofCord pro mesmo
+// caso de uso) — ver HANDOFF §15.11. Bônus: esse é o caminho que a Microsoft
+// de fato valida/documenta pra esse recurso, e o único que os testes desta
+// sessão confirmaram FILTRAR áudio por processo de verdade (o caminho
+// síncrono ativava sem erro mas nunca filtrou nada, ver §15.7).
 #![deny(unsafe_op_in_unsafe_fn)]
 
 use std::mem::size_of;
@@ -30,23 +33,42 @@ use napi::bindgen_prelude::*;
 use napi::threadsafe_function::{ErrorStrategy, ThreadsafeFunction, ThreadsafeFunctionCallMode};
 use napi_derive::napi;
 
-use windows::core::{Interface, Result as WinResult};
+use windows::core::{implement, imp::PROPVARIANT, Interface, Result as WinResult, GUID, HRESULT};
 use windows::Win32::Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0};
 use windows::Win32::Media::Audio::{
-    eConsole, eRender, IAudioCaptureClient, IAudioClient, IAudioSessionControl2, IAudioSessionManager2,
-    IMMDeviceEnumerator, MMDeviceEnumerator, AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM,
+    eConsole, eRender, ActivateAudioInterfaceAsync, IActivateAudioInterfaceAsyncOperation,
+    IActivateAudioInterfaceCompletionHandler, IActivateAudioInterfaceCompletionHandler_Impl,
+    IAudioCaptureClient, IAudioClient, IAudioSessionControl2, IAudioSessionManager2, IMMDeviceEnumerator,
+    MMDeviceEnumerator, AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM,
     AUDCLNT_STREAMFLAGS_EVENTCALLBACK, AUDCLNT_STREAMFLAGS_LOOPBACK, AUDIOCLIENT_ACTIVATION_PARAMS,
     AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK, AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS, AudioSessionStateActive,
     PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE, PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE,
-    WAVEFORMATEX, WAVE_FORMAT_PCM,
+    VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK, WAVEFORMATEX, WAVE_FORMAT_PCM,
 };
-use windows::Win32::System::Com::StructuredStorage::InitPropVariantFromBuffer;
-use windows::Win32::System::Com::{CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_ALL, COINIT_MULTITHREADED};
+use windows::Win32::System::Com::{CoCreateInstance, CoInitializeEx, CoUninitialize, IAgileObject, CLSCTX_ALL, COINIT_MULTITHREADED};
 use windows::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
 };
 use windows::Win32::System::Threading::{CreateEventW, WaitForSingleObject};
+use windows::Win32::System::Variant::VT_BLOB;
 use windows::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId;
+
+// Completion handler da ativação assíncrona — igual ao padrão usado nos
+// examples/diag_*.rs (já testado e validado nessa sessão). IAgileObject
+// evita marshaling desnecessário entre apartamentos COM.
+#[implement(IActivateAudioInterfaceCompletionHandler, IAgileObject)]
+struct ActivationCompletionHandler {
+    tx: std::sync::Mutex<Option<Sender<WinResult<IActivateAudioInterfaceAsyncOperation>>>>,
+}
+impl windows::Win32::System::Com::IAgileObject_Impl for ActivationCompletionHandler_Impl {}
+impl IActivateAudioInterfaceCompletionHandler_Impl for ActivationCompletionHandler_Impl {
+    fn ActivateCompleted(&self, op: Option<&IActivateAudioInterfaceAsyncOperation>) -> WinResult<()> {
+        if let Some(tx) = self.tx.lock().unwrap().take() {
+            let _ = tx.send(op.cloned().ok_or_else(|| windows::core::Error::from(HRESULT(-1))));
+        }
+        Ok(())
+    }
+}
 
 const BITS_PER_BYTE: u32 = 8;
 // Formato fixo — 16-bit PCM, 48kHz, estéreo. AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM
@@ -202,29 +224,52 @@ fn activate_process_loopback(target_pid: u32, exclude: bool) -> WinResult<IAudio
         ProcessLoopbackMode: mode,
     };
 
-    // PROPVARIANT do tipo VT_BLOB apontando pro struct acima — equivalente ao
-    // que a amostra em C++ monta na mão (activateParams.vt = VT_BLOB; ...),
-    // só que via InitPropVariantFromBuffer (propsys.dll), a função oficial do
-    // Windows pra isso — evita mexer direto nos campos da union.
-    let propvariant = unsafe {
-        InitPropVariantFromBuffer(
-            &params as *const _ as *const core::ffi::c_void,
-            size_of::<AUDIOCLIENT_ACTIVATION_PARAMS>() as u32,
-        )?
+    // PROPVARIANT do tipo VT_BLOB construído NA MÃO (não via
+    // InitPropVariantFromBuffer — ver comentário grande no topo do arquivo
+    // pra por que isso importa: aquela função cria VT_VECTOR|VT_UI1, não
+    // VT_BLOB, e é a causa raiz do E_INVALIDARG que essa mesma ativação dava
+    // antes). Usa o PROPVARIANT "cru" (windows::core::imp::PROPVARIANT, sem
+    // Drop) — nunca existe um PROPVARIANT "dono" de verdade, então
+    // PropVariantClear nunca tenta CoTaskMemFree num ponteiro de stack
+    // (heap corruption). Reinterpretado como *const windows::core::PROPVARIANT
+    // só na hora de chamar a API (mesmo layout — o wrapper é repr(transparent)).
+    let mut propvariant: PROPVARIANT = unsafe { std::mem::zeroed() };
+    propvariant.Anonymous.Anonymous.vt = VT_BLOB.0;
+    propvariant.Anonymous.Anonymous.Anonymous.blob = windows::core::imp::BLOB {
+        cbSize: size_of::<AUDIOCLIENT_ACTIVATION_PARAMS>() as u32,
+        pBlobData: &mut params as *mut _ as *mut u8,
     };
 
-    // Pega um IMMDevice REAL (o endpoint de renderização padrão) via a API
-    // clássica, e ativa o IAudioClient nele passando o mesmo
-    // AUDIOCLIENT_ACTIVATION_PARAMS de sempre — ver o comentário grande no
-    // topo do arquivo pra por que é esse caminho, e não
-    // ActivateAudioInterfaceAsync no dispositivo virtual.
-    let enumerator: IMMDeviceEnumerator = unsafe { CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL) }
-        .map_err(|e| { eprintln!("[sinal-audio] CoCreateInstance(MMDeviceEnumerator) falhou: {e:?}"); e })?;
-    let device = unsafe { enumerator.GetDefaultAudioEndpoint(eRender, eConsole) }
-        .map_err(|e| { eprintln!("[sinal-audio] GetDefaultAudioEndpoint falhou: {e:?}"); e })?;
-    let audio_client: IAudioClient = unsafe { device.Activate(CLSCTX_ALL, Some(&propvariant as *const _ as *const _)) }
-        .map_err(|e| { eprintln!("[sinal-audio] IMMDevice::Activate (process-loopback) falhou: {e:?}"); e })?;
-    eprintln!("[sinal-audio] IAudioClient obtido via IMMDevice::Activate, inicializando...");
+    // Ativação assíncrona no dispositivo virtual — o caminho oficial/validado
+    // pela Microsoft pra process-loopback. Espera a conclusão via canal (o
+    // completion handler roda numa thread COM interna, não a nossa).
+    let (tx, rx) = channel::<WinResult<IActivateAudioInterfaceAsyncOperation>>();
+    let handler: IActivateAudioInterfaceCompletionHandler =
+        ActivationCompletionHandler { tx: std::sync::Mutex::new(Some(tx)) }.into();
+
+    let dispatch_result = unsafe {
+        ActivateAudioInterfaceAsync(
+            VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK,
+            &IAudioClient::IID as *const GUID,
+            Some(&propvariant as *const PROPVARIANT as *const windows::core::PROPVARIANT),
+            &handler,
+        )
+    };
+    if let Err(e) = &dispatch_result {
+        eprintln!("[sinal-audio] ActivateAudioInterfaceAsync (dispatch) falhou: {e:?}");
+    }
+    dispatch_result?;
+
+    let operation = rx.recv().map_err(|_| windows::core::Error::from(HRESULT(-1)))??;
+    let mut activate_hr = HRESULT(0);
+    let mut activated_iface: Option<windows::core::IUnknown> = None;
+    unsafe { operation.GetActivateResult(&mut activate_hr, &mut activated_iface) }
+        .map_err(|e| { eprintln!("[sinal-audio] GetActivateResult (chamada) falhou: {e:?}"); e })?;
+    activate_hr.ok().map_err(|e| { eprintln!("[sinal-audio] ativação retornou erro: {e:?}"); e })?;
+    let audio_client: IAudioClient = activated_iface
+        .and_then(|u| u.cast().ok())
+        .ok_or_else(|| { eprintln!("[sinal-audio] ativação OK mas não deu pra obter IAudioClient"); windows::core::Error::from(HRESULT(-1)) })?;
+    eprintln!("[sinal-audio] IAudioClient obtido via ActivateAudioInterfaceAsync, inicializando...");
 
     let mut format = WAVEFORMATEX::default();
     format.wFormatTag = WAVE_FORMAT_PCM as u16;

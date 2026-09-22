@@ -4,7 +4,7 @@
 // de novo, agora que sabemos que o caminho síncrono (IMMDevice::Activate)
 // provavelmente nunca filtrou nada de verdade. target_pid e exclude(0/1) via argv.
 use std::sync::mpsc::channel;
-use windows::core::{implement, Interface, Result as WinResult, GUID, HRESULT};
+use windows::core::{implement, imp::PROPVARIANT, Interface, Result as WinResult, GUID, HRESULT};
 use windows::Win32::Devices::FunctionDiscovery::PKEY_Device_FriendlyName;
 use windows::Win32::Media::Audio::{
     eConsole, eRender, ActivateAudioInterfaceAsync, IActivateAudioInterfaceAsyncOperation,
@@ -14,8 +14,8 @@ use windows::Win32::Media::Audio::{
     PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE, PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE,
     VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK,
 };
-use windows::Win32::System::Com::StructuredStorage::InitPropVariantFromBuffer;
 use windows::Win32::System::Com::{CoCreateInstance, CoInitializeEx, IAgileObject, STGM_READ, CLSCTX_ALL, COINIT_MULTITHREADED};
+use windows::Win32::System::Variant::VT_BLOB;
 
 #[implement(IActivateAudioInterfaceCompletionHandler, IAgileObject)]
 struct Handler {
@@ -56,10 +56,28 @@ fn main() {
             TargetProcessId: target_pid,
             ProcessLoopbackMode: mode,
         };
-        let propvariant = InitPropVariantFromBuffer(
-            &params as *const _ as *const core::ffi::c_void,
-            std::mem::size_of::<AUDIOCLIENT_ACTIVATION_PARAMS>() as u32,
-        ).expect("InitPropVariantFromBuffer falhou");
+        // CORREÇÃO (achada nessa sessão): InitPropVariantFromBuffer NÃO cria um
+        // PROPVARIANT do tipo VT_BLOB como a amostra oficial e a documentação do
+        // IMMDevice::Activate exigem ("Set the vt member... to VT_BLOB") — a
+        // documentação da própria função diz "Creates a VT_VECTOR | VT_UI1
+        // propvariant". Isso é literalmente um PROPVARIANT do tipo errado sendo
+        // mandado pro Windows o tempo todo — o E_INVALIDARG é a resposta CORRETA
+        // do Windows pra um parâmetro malformado, não um bug misterioso da API.
+        // Construção manual abaixo, igual à amostra oficial em C++ e ao
+        // thomas-quant/wasapi-loopback (referência real, em produção). Usa o
+        // PROPVARIANT "cru" (windows::core::imp::PROPVARIANT, layout C puro,
+        // sem Drop) em vez do wrapper seguro público — nunca chega a existir um
+        // PROPVARIANT "dono" de verdade, então não tem PropVariantClear
+        // nenhum tentando dar CoTaskMemFree num ponteiro de stack (heap
+        // corruption). O ponteiro cru é reinterpretado como
+        // *const windows::core::PROPVARIANT só na hora de chamar a API (os
+        // dois tipos têm o mesmo layout — o wrapper é #[repr(transparent)]).
+        let mut propvariant: PROPVARIANT = std::mem::zeroed();
+        propvariant.Anonymous.Anonymous.vt = VT_BLOB.0;
+        propvariant.Anonymous.Anonymous.Anonymous.blob = windows::core::imp::BLOB {
+            cbSize: std::mem::size_of::<AUDIOCLIENT_ACTIVATION_PARAMS>() as u32,
+            pBlobData: &mut params as *mut _ as *mut u8,
+        };
 
         println!("Chamando ActivateAudioInterfaceAsync(VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK, ...)...");
         let (tx, rx) = channel::<WinResult<IActivateAudioInterfaceAsyncOperation>>();
@@ -68,7 +86,7 @@ fn main() {
         let dispatch_result = ActivateAudioInterfaceAsync(
             VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK,
             &IAudioClient::IID as *const GUID,
-            if no_params { None } else { Some(&propvariant as *const _) },
+            if no_params { None } else { Some(&propvariant as *const PROPVARIANT as *const windows::core::PROPVARIANT) },
             &handler,
         );
         match &dispatch_result {
