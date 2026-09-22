@@ -1,0 +1,38 @@
+[package]
+name = "sinal-audio-loopback"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+# Addon nativo N-API que a gente escreveu (não é dependência de terceiro) pra
+# capturar áudio do Windows excluindo (ou incluindo só) uma árvore de
+# processos específica — ver HANDOFF.md, seção Electron/áudio isolado, pro
+# porquê de ser código próprio em vez de um pacote pronto de terceiro.
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+napi = { version = "2", default-features = false, features = ["napi4", "error_anyhow"] }
+napi-derive = "2"
+# A macro #[implement] (feature "implement" da crate windows) gera código que
+# referencia windows_core::... como crate de topo, não só via windows::core —
+# por isso precisa estar declarada aqui também, na mesma versão.
+windows-core = "0.58"
+
+# Só os módulos do Win32 que a gente realmente usa — reduz superfície e tempo
+# de compilação. Ver src/lib.rs pra onde cada um é usado.
+[dependencies.windows]
+version = "0.58"
+features = [
+  "implement",
+  "Win32_Foundation",
+  "Win32_Media_Audio",
+  "Win32_Security",
+  "Win32_System_Com",
+  "Win32_System_Com_StructuredStorage",
+  "Win32_System_Threading",
+  "Win32_System_Variant",
+]
+
+[build-dependencies]
+napi-build = "2"

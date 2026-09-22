@@ -3,3 +3,8 @@ node_modules
 .vercel
 .claude
 .env*
+
+# App desktop (Electron) — ver HANDOFF.md secao Electron
+electron/dist
+electron/native/*/target
+electron/test/*.png
