@@ -19,11 +19,23 @@ export async function GET(request){
   const url = new URL(request.url);
   const room = (url.searchParams.get('room') || '').trim().toUpperCase().slice(0, 32);
   const name = (url.searchParams.get('name') || '').trim().slice(0, 40);
-  // Opcional — vem preenchido só quando a pessoa logou com Discord (ver
-  // api/discord-callback.js). Vai pro metadata do participante no LiveKit,
+  // Opcional — normalmente vem preenchido só quando a pessoa logou com Discord
+  // (ver api/discord-callback.js). Vai pro metadata do participante no LiveKit,
   // que é como os OUTROS participantes enxergam o avatar de verdade (não só
   // quem logou).
-  const avatar = (url.searchParams.get('avatar') || '').trim().slice(0, 300);
+  //
+  // Mas atenção: isso chega por query string, ou seja, é 100% controlado por
+  // quem chama — NÃO é prova de que houve login. Por isso só passa se for
+  // mesmo uma URL do CDN do Discord, e só com caracteres válidos de URL (nada
+  // de aspas ou espaço). O formato estrito fecha três coisas de uma vez:
+  //  1. usar o campo pra injetar marcação no navegador dos outros (o valor vai
+  //     parar num <img> na tela de todo mundo na sala);
+  //  2. disparar o webhook do Discord sem ter logado (a condição lá embaixo é
+  //     justamente `avatar` estar preenchido);
+  //  3. apontar o <img> pra um servidor de terceiro, que colheria o IP de
+  //     todos os participantes quando a imagem carregasse.
+  const avatarRaw = (url.searchParams.get('avatar') || '').trim().slice(0, 300);
+  const avatar = /^https:\/\/cdn\.discordapp\.com\/[A-Za-z0-9/_.-]+(\?[A-Za-z0-9=&_-]*)?$/.test(avatarRaw) ? avatarRaw : '';
   // Opcional — comprovante assinado em api/discord-callback.js (ver
   // lib/adminProof.js) de que quem está pedindo o token é um Discord ID
   // admin. Verificado abaixo antes de conceder o grant roomAdmin.
@@ -102,12 +114,17 @@ export async function GET(request){
       // qualquer POST nela vira mensagem no canal. Falha aqui não pode
       // travar a criação da sala pra quem tá esperando o token.
       //
-      // Só notifica se quem criou logou com Discord (indicado por `avatar`
-      // vir preenchido — só acontece depois de login real via OAuth, ver
-      // §8.1) — de propósito, pra não avisar toda vez que alguém de fora
-      // (com o link, sem fazer parte do grupo) ou um teste rápido sem login
-      // criar uma sala. Filtra pela origem (identidade verificada), não por
-      // ambiente/deploy.
+      // Só notifica se `avatar` veio preenchido — na prática, se a pessoa
+      // logou com Discord (ver §8.1) — de propósito, pra não avisar toda vez
+      // que alguém de fora (com o link, sem fazer parte do grupo) ou um teste
+      // rápido sem login criar uma sala.
+      //
+      // Isso é um filtro de RUÍDO, não de autenticação: o `avatar` é validado
+      // no formato lá em cima, mas nada impede alguém de copiar a URL de
+      // avatar de um perfil real do Discord e passar na mão. Se um dia isso
+      // virar spam no canal, a correção certa é assinar o perfil no
+      // discord-callback.js com HMAC, igual já é feito com o adminProof
+      // (lib/adminProof.js) — aí passa a ser verificável de verdade.
       const webhookUrl = process.env.DISCORD_WEBHOOK_URL;
       if(webhookUrl && avatar){
         try{

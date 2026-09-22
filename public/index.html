@@ -29,7 +29,17 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=JetBrains+Mono:wght@400;500;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="style.css">
-<script src="https://cdn.jsdelivr.net/npm/livekit-client/dist/livekit-client.umd.min.js"></script>
+<!-- Versão FIXA de propósito (e com integrity/SRI): a URL sem @versão do jsDelivr
+     serve sempre a última publicada, então uma major nova do livekit-client
+     quebraria o app em produção sem ninguém ter feito deploy — e o culpado ia
+     parecer ser qualquer outra coisa. O SRI cobre o outro lado: se o arquivo
+     servido não bater com o hash (CDN comprometido), o navegador se recusa a
+     executar, em vez de rodar código de terceiro com acesso ao localStorage.
+     Pra atualizar: trocar a versão E gerar o hash novo —
+     curl -sL <url> | openssl dgst -sha384 -binary | openssl base64 -A -->
+<script src="https://cdn.jsdelivr.net/npm/livekit-client@2.22.3/dist/livekit-client.umd.min.js"
+        integrity="sha384-MveBYLjjZe2VXnKzvBbPfyh5MEbiqNDeta9nzIGbtqnXmC+CwX/mLE5+M9PDIcPy"
+        crossorigin="anonymous"></script>
 <!-- Vercel Web Analytics — visitas anônimas (sem cookie), só pra cruzar uso com o consumo de banda do LiveKit -->
 <script defer src="/_vercel/insights/script.js"></script>
 </head>

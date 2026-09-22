@@ -27,10 +27,23 @@ function initials(name){
 // Nomes vêm de outros participantes e não são confiáveis — sem isso, alguém
 // poderia colocar HTML/script no próprio nome e ele rodaria no navegador de
 // todo mundo na sala, já que os nomes vão parar em innerHTML.
+//
+// ATENÇÃO à implementação: a versão antiga usava textContent -> innerHTML, que
+// parece certa mas NÃO escapa aspas — o serializador de HTML só escapa &, < e >
+// em nó de texto. Em contexto de texto isso bastava, mas nos lugares onde o
+// valor ia dentro de um atributo entre aspas (src="...", data-name="...") dava
+// pra fechar a aspa e injetar um onerror=. Daí o escape manual abaixo, que
+// cobre os dois contextos. Mesmo assim, preferir montar via DOM
+// (createElement + .textContent/.src) onde der — ver renderAvatars() e
+// renderRosterPanel(); aí o problema deixa de existir em vez de depender de
+// lembrar de escapar certo toda vez.
 function escapeHtml(str){
-  const div = document.createElement('div');
-  div.textContent = str == null ? '' : String(str);
-  return div.innerHTML;
+  return String(str == null ? '' : str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 // Botões só de ícone (câmera, compartilhar) não têm texto visível — o rótulo
 // vira title/aria-label, que muda dinamicamente conforme o estado (ligado/desligado).
@@ -872,9 +885,22 @@ function renderAvatars(){
     av.className = 'avatar' + (isSharing ? ' sharing' : '');
     const isYou = p === room.localParticipant;
     const avatarUrl = participantAvatarUrl(p);
-    const inner = avatarUrl ? `<img src="${escapeHtml(avatarUrl)}" alt="">` : escapeHtml(initials(displayName));
-    const crownTip = participantIsAdmin(p) ? ' 👑' : '';
-    av.innerHTML = `${inner}<span class="tip">${escapeHtml(displayName)}${isYou ? ' (você)':''}${crownTip}</span>`;
+    // Montado via DOM de propósito: o avatarUrl e o nome vêm do metadata do
+    // participante, ou seja, de outra pessoa. Atribuir em .src/.textContent
+    // não tem como "escapar" pra virar marcação, diferente de interpolar numa
+    // string de innerHTML (ver o comentário em escapeHtml()).
+    if(avatarUrl){
+      const img = document.createElement('img');
+      img.src = avatarUrl;
+      img.alt = '';
+      av.appendChild(img);
+    } else {
+      av.appendChild(document.createTextNode(initials(displayName)));
+    }
+    const tip = document.createElement('span');
+    tip.className = 'tip';
+    tip.textContent = displayName + (isYou ? ' (você)' : '') + (participantIsAdmin(p) ? ' 👑' : '');
+    av.appendChild(tip);
     row.appendChild(av);
   });
   if(rosterOpen) renderRosterPanel();
@@ -897,32 +923,66 @@ function renderRosterPanel(){
   const list = document.getElementById('rosterList');
   const all = [room.localParticipant, ...room.remoteParticipants.values()];
   const viewerIsAdmin = !!(discordUser && discordUser.adminProof);
-  list.innerHTML = all.map((p) => {
+  // Montado via DOM (e não por string de innerHTML) pelo mesmo motivo de
+  // renderAvatars(): nome, identity e avatarUrl vêm de outros participantes.
+  // De quebra, o botão de expulsar não precisa mais carregar data-identity/
+  // data-name no HTML — o listener fecha em cima das variáveis daqui.
+  list.innerHTML = '';
+  all.forEach((p) => {
     const isSharing = !!(p.getTrackPublication(Track.Source.ScreenShare) || p.getTrackPublication(Track.Source.Camera));
     const isYou = p === room.localParticipant;
     const displayName = p.name || p.identity;
     const avatarUrl = participantAvatarUrl(p);
-    const avatarInner = avatarUrl ? `<img src="${escapeHtml(avatarUrl)}" alt="">` : escapeHtml(initials(displayName));
-    const crown = participantIsAdmin(p) ? '<span class="admin-crown" title="Admin da sala">👑</span>' : '';
-    const kickBtn = (viewerIsAdmin && !isYou)
-      ? `<button type="button" class="roster-kick-btn" data-identity="${escapeHtml(p.identity)}" data-name="${escapeHtml(displayName)}" title="Expulsar da sala">${ICON_KICK}</button>`
-      : '';
-    return `<div class="roster-row${isSharing ? ' sharing' : ''}">
-      <div class="roster-avatar">${avatarInner}</div>
-      <div><div class="name">${crown}${escapeHtml(displayName)}${isYou ? ' (você)' : ''}</div>${isSharing ? '<div class="tag">Compartilhando</div>' : ''}</div>
-      ${kickBtn}
-    </div>`;
-  }).join('');
 
-  if(viewerIsAdmin){
-    list.querySelectorAll('.roster-kick-btn').forEach((btn) => {
-      btn.addEventListener('click', () => {
-        const identity = btn.dataset.identity;
-        const name = btn.dataset.name;
-        if(confirm(`Expulsar ${name} da sala?`)) moderateAction('kick', identity);
+    const rowEl = document.createElement('div');
+    rowEl.className = 'roster-row' + (isSharing ? ' sharing' : '');
+
+    const avatarEl = document.createElement('div');
+    avatarEl.className = 'roster-avatar';
+    if(avatarUrl){
+      const img = document.createElement('img');
+      img.src = avatarUrl;
+      img.alt = '';
+      avatarEl.appendChild(img);
+    } else {
+      avatarEl.textContent = initials(displayName);
+    }
+    rowEl.appendChild(avatarEl);
+
+    const info = document.createElement('div');
+    const nameEl = document.createElement('div');
+    nameEl.className = 'name';
+    if(participantIsAdmin(p)){
+      const crown = document.createElement('span');
+      crown.className = 'admin-crown';
+      crown.title = 'Admin da sala';
+      crown.textContent = '👑';
+      nameEl.appendChild(crown);
+    }
+    nameEl.appendChild(document.createTextNode(displayName + (isYou ? ' (você)' : '')));
+    info.appendChild(nameEl);
+    if(isSharing){
+      const tag = document.createElement('div');
+      tag.className = 'tag';
+      tag.textContent = 'Compartilhando';
+      info.appendChild(tag);
+    }
+    rowEl.appendChild(info);
+
+    if(viewerIsAdmin && !isYou){
+      const kickBtn = document.createElement('button');
+      kickBtn.type = 'button';
+      kickBtn.className = 'roster-kick-btn';
+      kickBtn.title = 'Expulsar da sala';
+      kickBtn.innerHTML = ICON_KICK; // SVG constante do próprio código, não vem de ninguém de fora
+      kickBtn.addEventListener('click', () => {
+        if(confirm(`Expulsar ${displayName} da sala?`)) moderateAction('kick', p.identity);
       });
-    });
-  }
+      rowEl.appendChild(kickBtn);
+    }
+
+    list.appendChild(rowEl);
+  });
 }
 
 function leaveRoom(){
@@ -1123,7 +1183,7 @@ window.addEventListener('beforeunload', () => {
 });
 
 // PWA: versão, registro do service worker, detecção de atualização e botão de instalação
-const APP_VERSION = '0.8.28'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
+const APP_VERSION = '0.8.29'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
 document.getElementById('versionLabel').textContent = 'v' + APP_VERSION;
 
 if('serviceWorker' in navigator){
