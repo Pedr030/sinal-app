@@ -19,10 +19,29 @@ const path = require('node:path');
 // pro navegador. Ver README/HANDOFF pra histórico de migração de domínio.
 const SINAL_URL = 'https://sinal-app-stream.vercel.app';
 
+// Addon nativo de áudio isolado por processo (ver HANDOFF §15.2) — carregado
+// com try/catch de propósito: se o binário não existir (plataforma errada,
+// build não rodou) ou falhar por qualquer motivo, o app inteiro não pode
+// cair por causa disso — só significa que a sala roda sem áudio isolado,
+// igual sempre foi.
+//
+// Sempre a build "release" (`cargo build --release` na pasta do addon), não
+// "debug" — mesmo em desenvolvimento: é o artefato que também vai pro
+// instalador (ver "files"/"asarUnpack" em package.json), então testar contra
+// ele em dev já testa o caminho real, em vez de mudar de binário entre um
+// ambiente e outro.
+let audioAddon = null;
+try{
+  audioAddon = require('../native/sinal-audio-loopback/target/release/sinal_audio_loopback.node');
+}catch(e){
+  console.error('[sinal] addon de áudio isolado não carregou (sala funciona sem isso):', e.message);
+}
+
 let mainWindow = null;
 let tray = null;
 let pickerWindow = null;
 let isQuitting = false;
+let audioLoopback = null; // instância ativa do AudioLoopback nativo, se houver
 
 function createMainWindow(){
   mainWindow = new BrowserWindow({
@@ -115,6 +134,59 @@ function showSourcePicker(sources){
   });
 }
 
+// A partir da fonte escolhida no seletor, decide COMO isolar o áudio:
+//  - compartilhando uma janela específica -> modo "incluir", só o processo
+//    dono daquela janela (descobre o PID a partir do HWND embutido no id do
+//    desktopCapturer, formato "window:<hwnd>:0").
+//  - compartilhando a tela inteira -> modo "excluir", sempre o Discord (é o
+//    caso que resolve o eco/vazamento da call de voz).
+// Devolve null se não der pra determinar um alvo (ex: Discord não tá
+// rodando ao compartilhar tela inteira — nada pra isolar, segue sem áudio
+// isolado mesmo, não é erro).
+function determineAudioTarget(chosen){
+  if(!audioAddon) return null;
+  if(chosen.id.startsWith('screen:')){
+    const pid = audioAddon.findDiscordRootPid();
+    return pid == null ? null : { pid, exclude: true };
+  }
+  if(chosen.id.startsWith('window:')){
+    const hwnd = Number(chosen.id.split(':')[1]);
+    const pid = audioAddon.getWindowProcessId(hwnd);
+    return pid == null ? null : { pid, exclude: false };
+  }
+  return null;
+}
+
+function stopIsolatedAudio(){
+  if(audioLoopback){
+    try{ audioLoopback.stop(); }catch(e){ console.error('[sinal-audio] stop() falhou:', e); }
+    audioLoopback = null;
+  }
+}
+
+function startIsolatedAudio(target){
+  stopIsolatedAudio(); // nunca duas capturas ao mesmo tempo
+  audioLoopback = new audioAddon.AudioLoopback();
+  try{
+    audioLoopback.start(target.pid, target.exclude, (err, buf) => {
+      if(err){ console.error('[sinal-audio] erro no callback de captura:', err); return; }
+      if(mainWindow && !mainWindow.isDestroyed()){
+        mainWindow.webContents.send('sinal:audio-chunk', buf);
+      }
+    });
+    console.log(`[sinal-audio] captura iniciada — pid=${target.pid} exclude=${target.exclude}`);
+  }catch(e){
+    // Não trava o compartilhamento por causa disso — a tela já está sendo
+    // compartilhada nesse ponto, só fica sem o áudio isolado.
+    console.error('[sinal-audio] falha ao iniciar captura, seguindo sem áudio isolado:', e);
+    audioLoopback = null;
+  }
+}
+
+// Renderer avisa quando parou de compartilhar (ver public/app.js toggleShare)
+// — sem isso a captura nativa ficaria rodando pra sempre em segundo plano.
+ipcMain.on('sinal:audio-stop', stopIsolatedAudio);
+
 app.whenReady().then(() => {
   // session.defaultSession só existe depois do app pronto — chamar isso no
   // nível superior do módulo (fora do whenReady) derruba o processo inteiro
@@ -140,6 +212,8 @@ app.whenReady().then(() => {
       // publicado como uma track separada — não pelo caminho do
       // getDisplayMedia, que no Windows só ofereceria loopback do sistema
       // inteiro (mesma limitação de hoje no navegador, não é uma melhora).
+      const audioTarget = determineAudioTarget(chosen);
+      if(audioTarget) startIsolatedAudio(audioTarget);
       callback({ video: chosen });
     }catch(e){
       console.error('[sinal] setDisplayMediaRequestHandler falhou:', e);
@@ -157,4 +231,4 @@ app.on('window-all-closed', () => {
   // fluxo normal.
 });
 
-app.on('before-quit', () => { isQuitting = true; });
+app.on('before-quit', () => { isQuitting = true; stopIsolatedAudio(); });

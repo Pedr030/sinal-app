@@ -507,6 +507,101 @@ function toggleShareQuality(){
   updateQualityBtn();
 }
 
+// ---------------- ÁUDIO ISOLADO (só dentro do app desktop/Electron) ----------------
+// O navegador (e o getDisplayMedia padrão dentro do Electron) só oferece
+// "áudio do sistema inteiro" ao compartilhar tela — o que inclui a voz da
+// call do Discord, causando eco em quem assiste. Dentro do app desktop, o
+// processo principal (main.js) captura áudio isolado por processo via um
+// addon nativo (ver HANDOFF §15.2 — WASAPI process-loopback) e manda os
+// pedaços de PCM aqui por IPC (window.sinalElectron, exposto pelo
+// preload.js). Essa função monta uma MediaStreamTrack de verdade a partir
+// desses pedaços, pra publicar como uma track de áudio extra no LiveKit.
+//
+// Só existe dentro do Electron — no site normal (navegador), toggleShare()
+// nem chama isso, window.sinalElectron simplesmente não existe.
+let electronAudioCtx = null; // guardado pra fechar quando parar de compartilhar
+
+function createElectronIsolatedAudioTrack(){
+  const audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 48000 });
+  const destination = audioCtx.createMediaStreamDestination();
+
+  // ScriptProcessorNode é oficialmente descontinuado (substituído por
+  // AudioWorkletNode), mas continua funcionando em todo Chromium/Electron
+  // atual — escolhido de propósito aqui por não precisar de um arquivo de
+  // worklet separado (que precisaria ser publicado em public/ e carregado
+  // via audioWorklet.addModule). Roda na thread principal, não numa thread
+  // de áudio dedicada — pra esse uso (áudio suplementar, não a voz
+  // principal da call, que continua 100% pelo Discord) é aceitável; se um
+  // dia der problema de qualidade perceptível, migrar pra AudioWorkletNode
+  // é o caminho.
+  //
+  // 2 canais de ENTRADA (não 0) de propósito, mesmo sem usar o inputBuffer:
+  // testado que um ScriptProcessorNode com 0 canais de entrada declarados
+  // não é "puxado" de verdade pelo motor de áudio do Chromium, mesmo com
+  // uma fonte conectada (ver electron/test/test-pcm-to-track.html).
+  const processor = audioCtx.createScriptProcessor(4096, 2, 2);
+  const queue = []; // fila de {left, right} Float32Array, um item por pedaço recebido
+  let queuedFrames = 0;
+  const MAX_QUEUED_FRAMES = 48000 * 2; // ~2s de margem — além disso descarta, pra não acumular atraso crescente
+  let readIndex = 0;
+
+  processor.onaudioprocess = (event) => {
+    const left = event.outputBuffer.getChannelData(0);
+    const right = event.outputBuffer.getChannelData(1);
+    for(let i = 0; i < left.length; i++){
+      if(queue.length === 0){ left[i] = 0; right[i] = 0; continue; }
+      const chunk = queue[0];
+      left[i] = chunk.left[readIndex];
+      right[i] = chunk.right[readIndex];
+      readIndex++;
+      queuedFrames--;
+      if(readIndex >= chunk.left.length){ queue.shift(); readIndex = 0; }
+    }
+  };
+
+  processor.connect(destination);
+  // "Motor" mudo pra garantir que o processor seja puxado de verdade (ver
+  // comentário acima sobre canais de entrada) — não produz som nenhum
+  // (offset 0), só mantém o nó ativo no grafo.
+  const silentSource = audioCtx.createConstantSource();
+  silentSource.offset.value = 0;
+  silentSource.connect(processor);
+  silentSource.start();
+
+  // window.sinalElectron.onAudioChunk: buf chega como Uint8Array de PCM
+  // 16-bit LE intercalado estéreo, 48kHz — mesmo formato fixo que o addon
+  // nativo sempre usa.
+  window.sinalElectron.onAudioChunk((buf) => {
+    if(queuedFrames > MAX_QUEUED_FRAMES){
+      // Captura adiantou muito da reprodução — descarta o acumulado em vez
+      // de deixar o atraso crescer pra sempre (prioriza "tempo real", não
+      // "não perder nada", igual o resto do app faz com vídeo).
+      queue.length = 0; readIndex = 0; queuedFrames = 0;
+    }
+    const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+    const frameCount = Math.floor(buf.length / 4); // 4 bytes por frame (2 canais × 16 bits)
+    const left = new Float32Array(frameCount);
+    const right = new Float32Array(frameCount);
+    for(let i = 0; i < frameCount; i++){
+      left[i] = view.getInt16(i * 4, true) / 32768;
+      right[i] = view.getInt16(i * 4 + 2, true) / 32768;
+    }
+    queue.push({ left, right });
+    queuedFrames += frameCount;
+  });
+
+  electronAudioCtx = audioCtx;
+  return destination.stream.getAudioTracks()[0];
+}
+
+function teardownElectronIsolatedAudio(){
+  if(window.sinalElectron) window.sinalElectron.stopIsolatedAudio();
+  if(electronAudioCtx){
+    electronAudioCtx.close().catch(() => {});
+    electronAudioCtx = null;
+  }
+}
+
 async function toggleShare(){
   if(!room) return;
   const { Track } = LivekitClient;
@@ -530,6 +625,7 @@ async function toggleShare(){
     }finally{
       selfInitiatedUnpublish = false;
     }
+    if(window.sinalElectron) teardownElectronIsolatedAudio();
     resetShareButton();
     return;
   }
@@ -578,6 +674,23 @@ async function toggleShare(){
   preview.srcObject = selfStream;
   preview.style.display = 'block';
   document.getElementById('selfStatus').textContent = 'Transmitindo';
+
+  // Dentro do app desktop, publica o áudio isolado por processo (ver
+  // HANDOFF §15.2) como uma track separada — resolve o eco/vazamento da
+  // call do Discord que o navegador não tem como evitar. Não trava o
+  // compartilhamento se isso falhar (ex: addon nativo não carregou): a
+  // tela já está funcionando nesse ponto, só fica sem esse áudio extra.
+  if(window.sinalElectron && window.sinalElectron.isElectron){
+    try{
+      const audioTrack = createElectronIsolatedAudioTrack();
+      await room.localParticipant.publishTrack(audioTrack, {
+        source: Track.Source.ScreenShareAudio,
+        name: 'sinal-isolated-audio'
+      });
+    }catch(e){
+      console.error('[sinal] publicar áudio isolado falhou (segue só com vídeo):', e);
+    }
+  }
 
   addTile(room.localParticipant.identity, myName + ' (você)', selfStream);
   const selfTile = tiles.get(room.localParticipant.identity);
@@ -1034,6 +1147,11 @@ function renderRosterPanel(){
 }
 
 function leaveRoom(){
+  // Sair da sala compartilhando não passa pelo toggleShare() (que é quem
+  // normalmente desliga isso) — sem isso aqui, a captura nativa de áudio
+  // isolado ficava rodando pra sempre em segundo plano no processo
+  // principal do Electron, mesmo depois de sair da sala.
+  if(window.sinalElectron) teardownElectronIsolatedAudio();
   if(room){
     try{ room.disconnect(); }catch(e){}
     room = null;
@@ -1264,7 +1382,7 @@ window.addEventListener('beforeunload', () => {
 });
 
 // PWA: versão, registro do service worker, detecção de atualização e botão de instalação
-const APP_VERSION = '0.8.31'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
+const APP_VERSION = '0.8.32'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
 document.getElementById('versionLabel').textContent = 'v' + APP_VERSION;
 
 if('serviceWorker' in navigator){

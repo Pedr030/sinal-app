@@ -41,7 +41,11 @@ use windows::Win32::Media::Audio::{
 };
 use windows::Win32::System::Com::StructuredStorage::InitPropVariantFromBuffer;
 use windows::Win32::System::Com::{CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_ALL, COINIT_MULTITHREADED};
+use windows::Win32::System::Diagnostics::ToolHelp::{
+    CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
+};
 use windows::Win32::System::Threading::{CreateEventW, WaitForSingleObject};
+use windows::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId;
 
 const BITS_PER_BYTE: u32 = 8;
 // Formato fixo — 16-bit PCM, 48kHz, estéreo. AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM
@@ -50,6 +54,68 @@ const BITS_PER_BYTE: u32 = 8;
 const SAMPLE_RATE: u32 = 48000;
 const CHANNELS: u16 = 2;
 const BITS_PER_SAMPLE: u16 = 16;
+
+// A partir daqui: helpers pra descobrir QUAL PID usar, chamados do main.js
+// antes de AudioLoopback::start(). O desktopCapturer do Electron só devolve
+// um id tipo "window:67262:0" — o número é o HWND (handle de janela) em
+// decimal, não o PID — por isso precisa desse passo.
+
+/// HWND (o número que vem depois de "window:" no id do desktopCapturer, em
+/// decimal) -> PID do processo dono da janela. `None` se a janela não
+/// existir mais (fechou entre o usuário escolher e a gente processar).
+#[napi]
+pub fn get_window_process_id(hwnd: i64) -> Option<u32> {
+    use windows::Win32::Foundation::HWND;
+    let mut pid: u32 = 0;
+    let hwnd = HWND(hwnd as *mut core::ffi::c_void);
+    let thread_id = unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)) };
+    if thread_id == 0 || pid == 0 {
+        None
+    } else {
+        Some(pid)
+    }
+}
+
+/// Acha o PID "raiz" do Discord (o processo que não é filho de outro
+/// Discord.exe) — usado no modo "compartilhar tela inteira", onde a gente
+/// sempre exclui o Discord em vez de incluir um app específico. Discord roda
+/// vários processos (renderers, GPU, etc.) todos chamados Discord.exe; como
+/// PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE exclui o alvo E os
+/// filhos dele, achar a raiz garante que a árvore inteira fica de fora.
+/// `None` se o Discord não estiver rodando.
+#[napi]
+pub fn find_discord_root_pid() -> Option<u32> {
+    unsafe {
+        let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0).ok()?;
+
+        let mut entry = PROCESSENTRY32W::default();
+        entry.dwSize = size_of::<PROCESSENTRY32W>() as u32;
+
+        let mut discord_pids: Vec<(u32, u32)> = Vec::new(); // (pid, parent_pid)
+        let mut ok = Process32FirstW(snapshot, &mut entry).is_ok();
+        while ok {
+            let name_len = entry.szExeFile.iter().position(|&c| c == 0).unwrap_or(entry.szExeFile.len());
+            let name = String::from_utf16_lossy(&entry.szExeFile[..name_len]);
+            if name.eq_ignore_ascii_case("Discord.exe") {
+                discord_pids.push((entry.th32ProcessID, entry.th32ParentProcessID));
+            }
+            ok = Process32NextW(snapshot, &mut entry).is_ok();
+        }
+        let _ = CloseHandle(snapshot);
+
+        if discord_pids.is_empty() {
+            return None;
+        }
+        let pids: std::collections::HashSet<u32> = discord_pids.iter().map(|(pid, _)| *pid).collect();
+        // A raiz é a que o pai NÃO é outro Discord.exe (foi lançada pelo
+        // explorer/atalho, não por outro processo do próprio Discord).
+        discord_pids
+            .iter()
+            .find(|(_, parent)| !pids.contains(parent))
+            .map(|(pid, _)| *pid)
+            .or_else(|| discord_pids.first().map(|(pid, _)| *pid)) // fallback: qualquer um é melhor que nenhum
+    }
+}
 
 fn activate_process_loopback(target_pid: u32, exclude: bool) -> WinResult<IAudioClient> {
     let mode = if exclude {
