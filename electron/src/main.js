@@ -136,29 +136,35 @@ function showSourcePicker(sources){
 }
 
 // A partir da fonte escolhida no seletor, decide COMO isolar o áudio:
-//  - compartilhando uma janela específica -> modo "incluir", só o processo
-//    dono daquela janela (descobre o PID a partir do HWND embutido no id do
-//    desktopCapturer, formato "window:<hwnd>:0").
-//  - compartilhando a tela inteira -> modo "excluir", sempre o Discord (é o
-//    caso que resolve o eco/vazamento da call de voz).
-// Devolve null se não der pra determinar um alvo (ex: Discord não tá
-// rodando ao compartilhar tela inteira — nada pra isolar, segue sem áudio
-// isolado mesmo, não é erro).
+//  - compartilhando uma janela específica -> modo "single": incluir só o
+//    processo dono daquela janela (descobre o PID a partir do HWND embutido
+//    no id do desktopCapturer, formato "window:<hwnd>:0") — já isola bem
+//    sozinho, sem precisar de multi-fonte (confirmado em HANDOFF §15.12).
+//  - compartilhando a tela inteira -> modo "multi": em vez de só excluir o
+//    Discord (que também deixava vazar o áudio do próprio Sinal tocando
+//    localmente — ver HANDOFF §15.13), descobre TODOS os apps fazendo som
+//    agora, tira Discord e o próprio Sinal da lista, e inclui cada um
+//    individualmente — misturados numa faixa só do lado do renderer
+//    (public/app.js). Reavalia sozinho de tempos em tempos, então um app
+//    que abre DEPOIS que a transmissão já começou também entra.
 function determineAudioTarget(chosen){
   if(!audioAddon) return null;
-  if(chosen.id.startsWith('screen:')){
-    const pid = audioAddon.findDiscordRootPid();
-    return pid == null ? null : { pid, exclude: true };
-  }
+  if(chosen.id.startsWith('screen:')) return { mode: 'multi' };
   if(chosen.id.startsWith('window:')){
     const hwnd = Number(chosen.id.split(':')[1]);
     const pid = audioAddon.getWindowProcessId(hwnd);
-    return pid == null ? null : { pid, exclude: false };
+    return pid == null ? null : { mode: 'single', pid, exclude: false };
   }
   return null;
 }
 
 function stopIsolatedAudio(){
+  stopSingleSourceAudio();
+  stopMultiSourceAudio();
+}
+
+// ---- Modo single (compartilhar uma janela específica) ----
+function stopSingleSourceAudio(){
   if(audioLoopback){
     try{ audioLoopback.stop(); }catch(e){ console.error('[sinal-audio] stop() falhou:', e); }
     audioLoopback = null;
@@ -166,16 +172,16 @@ function stopIsolatedAudio(){
 }
 
 function startIsolatedAudio(target){
-  stopIsolatedAudio(); // nunca duas capturas ao mesmo tempo
+  stopIsolatedAudio(); // nunca duas capturas ao mesmo tempo, nenhum dos dois modos
   audioLoopback = new audioAddon.AudioLoopback();
   try{
     audioLoopback.start(target.pid, target.exclude, (err, buf) => {
       if(err){ console.error('[sinal-audio] erro no callback de captura:', err); return; }
       if(mainWindow && !mainWindow.isDestroyed()){
-        mainWindow.webContents.send('sinal:audio-chunk', buf);
+        mainWindow.webContents.send('sinal:audio-chunk', { pid: target.pid, buf });
       }
     });
-    console.log(`[sinal-audio] captura iniciada — pid=${target.pid} exclude=${target.exclude}`);
+    console.log(`[sinal-audio] captura iniciada (single) — pid=${target.pid} exclude=${target.exclude}`);
   }catch(e){
     // Não trava o compartilhamento por causa disso — a tela já está sendo
     // compartilhada nesse ponto, só fica sem o áudio isolado.
@@ -184,8 +190,109 @@ function startIsolatedAudio(target){
   }
 }
 
+// ---- Modo multi (compartilhar a tela inteira) ----
+// Um AudioLoopback por processo detectado (todos em modo "incluir"), cada
+// um mandando seus próprios pedaços de PCM marcados com o pid — a mistura
+// de verdade acontece do lado do renderer (createElectronIsolatedAudioTrack
+// em public/app.js), não aqui.
+const MULTI_SCAN_INTERVAL_MS = 2000;
+const multiSources = new Map(); // pid -> { loopback, exeName }
+const disabledExeNames = new Set(); // apps desmarcados na hora pelo usuário (ver toggle na UI)
+let multiScanTimer = null;
+
+// Nunca aparece na lista nem no checklist — Discord e o próprio Sinal são
+// sempre fora, não é uma escolha do usuário (ver HANDOFF §15.11/§15.13).
+function isEligibleSource(session, discordRootPid){
+  const exe = session.exeName.toLowerCase();
+  if(exe === 'discord.exe' || exe === 'sinal.exe') return false;
+  if(session.pid === discordRootPid) return false;
+  return true;
+}
+
+function startSourceCapture(pid, exeName){
+  const loopback = new audioAddon.AudioLoopback();
+  try{
+    loopback.start(pid, false, (err, buf) => {
+      if(err){ console.error(`[sinal-audio] erro na captura multi-fonte (pid=${pid}):`, err); return; }
+      if(mainWindow && !mainWindow.isDestroyed()){
+        mainWindow.webContents.send('sinal:audio-chunk', { pid, buf });
+      }
+    });
+    multiSources.set(pid, { loopback, exeName });
+    console.log(`[sinal-audio] fonte adicionada — pid=${pid} exe=${exeName}`);
+  }catch(e){
+    // Uma fonte falhando não derruba as outras — só essa fica de fora.
+    console.error(`[sinal-audio] falha ao capturar pid=${pid} (${exeName}), ignorando essa fonte:`, e);
+  }
+}
+
+function stopSourceCapture(pid){
+  const source = multiSources.get(pid);
+  if(!source) return;
+  try{ source.loopback.stop(); }catch(e){ console.error('[sinal-audio] stop() de fonte falhou:', e); }
+  multiSources.delete(pid);
+  if(mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('sinal:audio-source-removed', pid);
+  console.log(`[sinal-audio] fonte removida — pid=${pid}`);
+}
+
+function scanAudioSources(){
+  if(!audioAddon) return;
+  let sessions;
+  try{ sessions = audioAddon.listAudioSessions(); }
+  catch(e){ console.error('[sinal-audio] listAudioSessions() falhou:', e); return; }
+
+  const discordRootPid = audioAddon.findDiscordRootPid();
+  const seenPids = new Set();
+  // Lista completa mandada pro renderer — inclui os DESMARCADOS também
+  // (senão, depois de desmarcar um app ele sumiria da tela e não teria como
+  // marcar de volta sem parar e começar a compartilhar de novo).
+  const candidates = [];
+  for(const s of sessions){
+    if(seenPids.has(s.pid)) continue; // listAudioSessions às vezes repete PID (mais de uma sessão no mesmo processo)
+    seenPids.add(s.pid);
+    if(!isEligibleSource(s, discordRootPid)) continue;
+    const enabled = !disabledExeNames.has(s.exeName.toLowerCase());
+    candidates.push({ pid: s.pid, exeName: s.exeName, enabled });
+    if(enabled && !multiSources.has(s.pid)) startSourceCapture(s.pid, s.exeName);
+  }
+  // Some quem fechou de vez (pid não aparece mais em sessão nenhuma) — quem
+  // foi desmarcado manualmente já foi removido na hora, não precisa checar aqui.
+  for(const pid of [...multiSources.keys()]){
+    if(!seenPids.has(pid)) stopSourceCapture(pid);
+  }
+
+  if(mainWindow && !mainWindow.isDestroyed()){
+    mainWindow.webContents.send('sinal:audio-sources', candidates);
+  }
+}
+
+function startMultiSourceAudio(){
+  stopIsolatedAudio();
+  disabledExeNames.clear();
+  scanAudioSources();
+  multiScanTimer = setInterval(scanAudioSources, MULTI_SCAN_INTERVAL_MS);
+  console.log('[sinal-audio] captura multi-fonte iniciada');
+}
+
+function stopMultiSourceAudio(){
+  if(multiScanTimer){ clearInterval(multiScanTimer); multiScanTimer = null; }
+  for(const pid of [...multiSources.keys()]) stopSourceCapture(pid);
+}
+
+// Renderer avisa quando o usuário marca/desmarca um app na lista de fontes
+// (checkbox por app, só existe no modo multi — ver public/app.js).
+ipcMain.on('sinal:audio-toggle-source', (event, { pid, exeName, enabled }) => {
+  const exe = (exeName || '').toLowerCase();
+  if(enabled){
+    disabledExeNames.delete(exe);
+  }else{
+    disabledExeNames.add(exe);
+    if(multiSources.has(pid)) stopSourceCapture(pid);
+  }
+});
+
 // Renderer avisa quando parou de compartilhar (ver public/app.js toggleShare)
-// — sem isso a captura nativa ficaria rodando pra sempre em segundo plano.
+// — sem isso a(s) captura(s) nativa(s) ficariam rodando pra sempre em segundo plano.
 ipcMain.on('sinal:audio-stop', stopIsolatedAudio);
 
 // Auto-update via GitHub Releases (tag "desktop-vX.Y.Z", ver build.publish em
@@ -275,7 +382,10 @@ app.whenReady().then(() => {
       // getDisplayMedia, que no Windows só ofereceria loopback do sistema
       // inteiro (mesma limitação de hoje no navegador, não é uma melhora).
       const audioTarget = determineAudioTarget(chosen);
-      if(audioTarget) startIsolatedAudio(audioTarget);
+      if(audioTarget){
+        if(audioTarget.mode === 'multi') startMultiSourceAudio();
+        else startIsolatedAudio(audioTarget);
+      }
       callback({ video: chosen });
     }catch(e){
       console.error('[sinal] setDisplayMediaRequestHandler falhou:', e);
