@@ -26,6 +26,7 @@
       "build/**/*",
       "!build/installerSidebar.bmp",
       "!build/installerHeader.bmp",
+      "!build/installer.nsh",
       "native/sinal-audio-loopback/target/release/sinal_audio_loopback.node"
     ],
     "asarUnpack": [
@@ -41,7 +42,8 @@
       "artifactName": "Sinal-Setup-${version}.${ext}",
       "installerSidebar": "build/installerSidebar.bmp",
       "uninstallerSidebar": "build/installerSidebar.bmp",
-      "installerHeader": "build/installerHeader.bmp"
+      "installerHeader": "build/installerHeader.bmp",
+      "include": "build/installer.nsh"
     },
     "publish": {
       "provider": "github",
