@@ -27,10 +27,23 @@ function initials(name){
 // Nomes vêm de outros participantes e não são confiáveis — sem isso, alguém
 // poderia colocar HTML/script no próprio nome e ele rodaria no navegador de
 // todo mundo na sala, já que os nomes vão parar em innerHTML.
+//
+// ATENÇÃO à implementação: a versão antiga usava textContent -> innerHTML, que
+// parece certa mas NÃO escapa aspas — o serializador de HTML só escapa &, < e >
+// em nó de texto. Em contexto de texto isso bastava, mas nos lugares onde o
+// valor ia dentro de um atributo entre aspas (src="...", data-name="...") dava
+// pra fechar a aspa e injetar um onerror=. Daí o escape manual abaixo, que
+// cobre os dois contextos. Mesmo assim, preferir montar via DOM
+// (createElement + .textContent/.src) onde der — ver renderAvatars() e
+// renderRosterPanel(); aí o problema deixa de existir em vez de depender de
+// lembrar de escapar certo toda vez.
 function escapeHtml(str){
-  const div = document.createElement('div');
-  div.textContent = str == null ? '' : String(str);
-  return div.innerHTML;
+  return String(str == null ? '' : str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 // Botões só de ícone (câmera, compartilhar) não têm texto visível — o rótulo
 // vira title/aria-label, que muda dinamicamente conforme o estado (ligado/desligado).
@@ -145,9 +158,27 @@ async function connectToRoom(code, name, mode){
 
   let token, url;
   try{
-    const avatarParam = discordUser && discordUser.avatar ? `&avatar=${encodeURIComponent(discordUser.avatar)}` : '';
-    const adminParam = discordUser && discordUser.adminProof ? `&adminProof=${encodeURIComponent(discordUser.adminProof)}` : '';
-    const res = await fetch(`/api/get-token?room=${encodeURIComponent(code)}&name=${encodeURIComponent(name)}&mode=${encodeURIComponent(mode)}${avatarParam}${adminParam}`);
+    // POST, e não GET, por dois motivos independentes:
+    //
+    // 1. Criar sala e avisar no canal do Discord são efeitos colaterais de
+    //    verdade. Num GET, qualquer página da internet podia embutir um
+    //    <img src="https://sinal.../api/get-token?...&mode=create"> e fazer o
+    //    navegador de quem visitasse criar salas e mandar mensagem no Discord
+    //    de vocês, sem clicar em nada.
+    // 2. O adminProof é uma credencial de 30 dias (ver lib/adminProof.js). Em
+    //    query string ele ia parar em log de plataforma, histórico do navegador
+    //    e cabeçalho Referer, a cada entrada em sala. No corpo do POST, não vai.
+    const res = await fetch('/api/get-token', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        room: code,
+        name,
+        mode,
+        avatar: (discordUser && discordUser.avatar) || undefined,
+        adminProof: (discordUser && discordUser.adminProof) || undefined
+      })
+    });
     if(res.status === 404){
       setEntryStatus('Sala não encontrada. Confira o código.');
       return;
@@ -260,7 +291,14 @@ function wireRoomEvents(liveRoom){
     try{
       const msg = JSON.parse(new TextDecoder().decode(payload));
       if(msg && msg.type === 'chat'){
-        renderChatMessage({ name: (participant && (participant.name || participant.identity)) || 'Alguém', text: msg.text, ts: msg.ts }, false);
+        // O maxlength="500" do input é validação só de interface — quem manda
+        // é outro navegador, e um cliente modificado pode publicar o que
+        // quiser aqui. Truncar na entrada, que é a fronteira de confiança.
+        renderChatMessage({
+          name: (participant && (participant.name || participant.identity)) || 'Alguém',
+          text: String(msg.text == null ? '' : msg.text).slice(0, 500),
+          ts: typeof msg.ts === 'number' ? msg.ts : Date.now()
+        }, false);
       }
     }catch(e){ /* payload em formato inesperado, ignora */ }
   });
@@ -397,6 +435,8 @@ function scrollChatToBottom(){
   list.scrollTop = list.scrollHeight;
 }
 
+const CHAT_MAX_MESSAGES = 200; // quantas mensagens ficam no DOM (ver poda em renderChatMessage)
+
 function renderChatMessage(msg, isMine){
   const list = document.getElementById('chatMessages');
   const empty = list.querySelector('.chat-empty');
@@ -407,6 +447,11 @@ function renderChatMessage(msg, isMine){
   row.innerHTML = `<div class="chat-msg-meta"><span class="chat-msg-name">${escapeHtml(isMine ? 'Você' : msg.name)}</span><span class="chat-msg-time">${escapeHtml(time)}</span></div><div class="chat-msg-text"></div>`;
   row.querySelector('.chat-msg-text').textContent = msg.text; // sempre textContent, nome/texto vêm de outro participante
   list.appendChild(row);
+  // Sessão longa fazia o DOM crescer sem parar — e um cliente modificado
+  // publicando em loop inflaria a memória de todo mundo na sala. O histórico
+  // não é persistido de qualquer forma (some ao sair), então podar as antigas
+  // não perde nada que já não fosse perdido.
+  while(list.children.length > CHAT_MAX_MESSAGES) list.removeChild(list.firstElementChild);
   scrollChatToBottom();
   if(!isMine && !chatOpen){ unreadChat++; updateChatBadge(); }
 }
@@ -517,7 +562,17 @@ async function toggleShare(){
   btn.classList.add('active-share');
   document.getElementById('qualityBtn').disabled = true; // só faz sentido trocar antes de começar
 
+  // A captura já começou de verdade neste ponto. Se a publicação ainda não
+  // estiver registrada (ou tiver sido interrompida no meio), sem essa guarda
+  // isso estourava um TypeError DEPOIS da tela já estar sendo compartilhada:
+  // a transmissão acontecia, mas a interface local não se atualizava — sem
+  // preview, botão sem estado de "transmitindo". Confuso de diagnosticar.
   const screenPub = room.localParticipant.getTrackPublication(Track.Source.ScreenShare);
+  if(!screenPub || !screenPub.videoTrack){
+    setRoomStatus('A captura começou mas a publicação falhou. Pare e tente de novo.', true);
+    resetShareButton();
+    return;
+  }
   const selfStream = new MediaStream([screenPub.videoTrack.mediaStreamTrack]);
   const preview = document.getElementById('selfPreview');
   preview.srcObject = selfStream;
@@ -571,7 +626,13 @@ async function toggleCamera(){
   setBtnLabel(btn, 'Desligar câmera');
   btn.classList.add('active-share');
 
+  // Mesma guarda do toggleShare() — ver o comentário lá.
   const camPub = room.localParticipant.getTrackPublication(Track.Source.Camera);
+  if(!camPub || !camPub.videoTrack){
+    setRoomStatus('A câmera ligou mas a publicação falhou. Desligue e tente de novo.', true);
+    resetCameraButton();
+    return;
+  }
   const camStream = new MediaStream([camPub.videoTrack.mediaStreamTrack]);
   addTile(room.localParticipant.identity + ':cam', myName + ' (câmera)', camStream);
   renderAvatars();
@@ -872,9 +933,22 @@ function renderAvatars(){
     av.className = 'avatar' + (isSharing ? ' sharing' : '');
     const isYou = p === room.localParticipant;
     const avatarUrl = participantAvatarUrl(p);
-    const inner = avatarUrl ? `<img src="${escapeHtml(avatarUrl)}" alt="">` : escapeHtml(initials(displayName));
-    const crownTip = participantIsAdmin(p) ? ' 👑' : '';
-    av.innerHTML = `${inner}<span class="tip">${escapeHtml(displayName)}${isYou ? ' (você)':''}${crownTip}</span>`;
+    // Montado via DOM de propósito: o avatarUrl e o nome vêm do metadata do
+    // participante, ou seja, de outra pessoa. Atribuir em .src/.textContent
+    // não tem como "escapar" pra virar marcação, diferente de interpolar numa
+    // string de innerHTML (ver o comentário em escapeHtml()).
+    if(avatarUrl){
+      const img = document.createElement('img');
+      img.src = avatarUrl;
+      img.alt = '';
+      av.appendChild(img);
+    } else {
+      av.appendChild(document.createTextNode(initials(displayName)));
+    }
+    const tip = document.createElement('span');
+    tip.className = 'tip';
+    tip.textContent = displayName + (isYou ? ' (você)' : '') + (participantIsAdmin(p) ? ' 👑' : '');
+    av.appendChild(tip);
     row.appendChild(av);
   });
   if(rosterOpen) renderRosterPanel();
@@ -897,32 +971,66 @@ function renderRosterPanel(){
   const list = document.getElementById('rosterList');
   const all = [room.localParticipant, ...room.remoteParticipants.values()];
   const viewerIsAdmin = !!(discordUser && discordUser.adminProof);
-  list.innerHTML = all.map((p) => {
+  // Montado via DOM (e não por string de innerHTML) pelo mesmo motivo de
+  // renderAvatars(): nome, identity e avatarUrl vêm de outros participantes.
+  // De quebra, o botão de expulsar não precisa mais carregar data-identity/
+  // data-name no HTML — o listener fecha em cima das variáveis daqui.
+  list.innerHTML = '';
+  all.forEach((p) => {
     const isSharing = !!(p.getTrackPublication(Track.Source.ScreenShare) || p.getTrackPublication(Track.Source.Camera));
     const isYou = p === room.localParticipant;
     const displayName = p.name || p.identity;
     const avatarUrl = participantAvatarUrl(p);
-    const avatarInner = avatarUrl ? `<img src="${escapeHtml(avatarUrl)}" alt="">` : escapeHtml(initials(displayName));
-    const crown = participantIsAdmin(p) ? '<span class="admin-crown" title="Admin da sala">👑</span>' : '';
-    const kickBtn = (viewerIsAdmin && !isYou)
-      ? `<button type="button" class="roster-kick-btn" data-identity="${escapeHtml(p.identity)}" data-name="${escapeHtml(displayName)}" title="Expulsar da sala">${ICON_KICK}</button>`
-      : '';
-    return `<div class="roster-row${isSharing ? ' sharing' : ''}">
-      <div class="roster-avatar">${avatarInner}</div>
-      <div><div class="name">${crown}${escapeHtml(displayName)}${isYou ? ' (você)' : ''}</div>${isSharing ? '<div class="tag">Compartilhando</div>' : ''}</div>
-      ${kickBtn}
-    </div>`;
-  }).join('');
 
-  if(viewerIsAdmin){
-    list.querySelectorAll('.roster-kick-btn').forEach((btn) => {
-      btn.addEventListener('click', () => {
-        const identity = btn.dataset.identity;
-        const name = btn.dataset.name;
-        if(confirm(`Expulsar ${name} da sala?`)) moderateAction('kick', identity);
+    const rowEl = document.createElement('div');
+    rowEl.className = 'roster-row' + (isSharing ? ' sharing' : '');
+
+    const avatarEl = document.createElement('div');
+    avatarEl.className = 'roster-avatar';
+    if(avatarUrl){
+      const img = document.createElement('img');
+      img.src = avatarUrl;
+      img.alt = '';
+      avatarEl.appendChild(img);
+    } else {
+      avatarEl.textContent = initials(displayName);
+    }
+    rowEl.appendChild(avatarEl);
+
+    const info = document.createElement('div');
+    const nameEl = document.createElement('div');
+    nameEl.className = 'name';
+    if(participantIsAdmin(p)){
+      const crown = document.createElement('span');
+      crown.className = 'admin-crown';
+      crown.title = 'Admin da sala';
+      crown.textContent = '👑';
+      nameEl.appendChild(crown);
+    }
+    nameEl.appendChild(document.createTextNode(displayName + (isYou ? ' (você)' : '')));
+    info.appendChild(nameEl);
+    if(isSharing){
+      const tag = document.createElement('div');
+      tag.className = 'tag';
+      tag.textContent = 'Compartilhando';
+      info.appendChild(tag);
+    }
+    rowEl.appendChild(info);
+
+    if(viewerIsAdmin && !isYou){
+      const kickBtn = document.createElement('button');
+      kickBtn.type = 'button';
+      kickBtn.className = 'roster-kick-btn';
+      kickBtn.title = 'Expulsar da sala';
+      kickBtn.innerHTML = ICON_KICK; // SVG constante do próprio código, não vem de ninguém de fora
+      kickBtn.addEventListener('click', () => {
+        if(confirm(`Expulsar ${displayName} da sala?`)) moderateAction('kick', p.identity);
       });
-    });
-  }
+      rowEl.appendChild(kickBtn);
+    }
+
+    list.appendChild(rowEl);
+  });
 }
 
 function leaveRoom(){
@@ -1102,10 +1210,43 @@ function prefillShareQuality(){
   updateQualityBtn();
 }
 
+// Ligação dos botões da interface. Ficavam como onclick="..." direto no
+// index.html, o que obrigava toda função a ser global no window e — o motivo
+// de terem saído — é justamente o que a Content-Security-Policy bloqueia
+// (ver vercel.json): com CSP ligada e handler inline, os botões simplesmente
+// param de funcionar, sem erro visível na tela.
+//
+// O <script> do app tem defer, então o HTML já está todo parseado quando isso
+// roda — não precisa esperar o DOMContentLoaded.
+[
+  ['discordLoginBtn', () => loginWithDiscord()],
+  ['createRoomBtn',   () => createRoom()],
+  ['joinRoomBtn',     () => joinRoom()],
+  ['copyCodeBtn',     (btn) => copyRoomCode(btn)],   // recebiam o `this` do onclick — agora vem do próprio listener
+  ['copyLinkBtn',     (btn) => copyRoomLink(btn)],
+  ['rosterBtn',       () => toggleRosterPanel()],
+  ['rosterCloseBtn',  () => toggleRosterPanel(false)],
+  ['chatToggleBtn',   () => toggleChatPanel()],
+  ['chatCloseBtn',    () => toggleChatPanel(false)],
+  ['leaveBtn',        () => leaveRoom()],
+  ['cameraBtn',       () => toggleCamera()],
+  ['shareBtn',        () => toggleShare()],
+  ['qualityBtn',      () => toggleShareQuality()]
+].forEach(([id, handler]) => {
+  const el = document.getElementById(id);
+  if(!el){
+    // Não deveria acontecer — mas se um id sumir do HTML numa mudança futura,
+    // é melhor gritar no console do que o botão virar decoração em silêncio.
+    console.error('Botão não encontrado no HTML:', id);
+    return;
+  }
+  el.addEventListener('click', () => handler(el));
+});
+
 window.addEventListener('DOMContentLoaded', () => {
   if(MAINTENANCE_MODE){
     document.getElementById('entryScreen').style.display = 'none';
-    document.getElementById('maintenanceScreen').style.display = 'flex';
+    document.getElementById('maintenanceScreen').classList.add('on');
     return;
   }
   loadDiscordUser();
@@ -1123,7 +1264,7 @@ window.addEventListener('beforeunload', () => {
 });
 
 // PWA: versão, registro do service worker, detecção de atualização e botão de instalação
-const APP_VERSION = '0.8.28'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
+const APP_VERSION = '0.8.31'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
 document.getElementById('versionLabel').textContent = 'v' + APP_VERSION;
 
 if('serviceWorker' in navigator){

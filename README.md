@@ -54,7 +54,9 @@ O frontend (`public/`) é HTML + CSS + JS puro — sem framework, sem bundler, s
 - **Escopo mínimo no Discord**: só `identify` (nome, avatar, ID) — sem acesso a mensagens, servidores ou permissão de agir em nome de ninguém.
 - **Segredos só no servidor.** `LIVEKIT_API_SECRET` e `DISCORD_CLIENT_SECRET` vivem exclusivamente em variáveis de ambiente das funções serverless; nunca chegam ao navegador.
 - **Isolamento estrutural do `.env`**: o diretório publicado (`public/`) é fisicamente separado da raiz do projeto onde o `.env` local vive — não depende só de `.gitignore` pra não vazar segredo em produção.
-- **Sanitização de entrada do usuário**: nomes de participantes passam por `escapeHtml()` antes de ir pro DOM — evita injeção de HTML/script via nome.
+- **Sanitização de entrada do usuário**: nome e avatar de participantes vêm de outras pessoas, então nunca são interpolados em HTML — os painéis são montados via DOM (`createElement` + `.textContent`/`.src`), e onde ainda sobra interpolação o valor passa por um `escapeHtml()` que cobre também aspas (contexto de atributo). O avatar só é aceito pelo servidor se for uma URL do CDN do Discord.
+- **Dependência de terceiro fixada**: o `livekit-client` é carregado do CDN com versão exata e `integrity` (SRI) — o navegador recusa o arquivo se ele não bater com o hash esperado.
+- **Content-Security-Policy** (+ `X-Frame-Options`, `Referrer-Policy`, `nosniff`): script só roda se vier de origem conhecida, sem `'unsafe-inline'` — script injetado não executa nem se passar por todo o resto. O app não tem nenhum handler `onclick` nem estilo inline no HTML justamente por isso.
 - **Checagem real de existência de sala** antes de gerar token de entrada — evita salas fantasma criadas por código digitado errado.
 - **Moderação sem sessão/banco de dados**: o poder de admin é provado por dois níveis de assinatura criptográfica (um comprovante HMAC gerado só depois de um login real via Discord OAuth, depois traduzido no grant nativo `roomAdmin` do próprio token do LiveKit) — nenhuma ação de moderação é aceita sem essa cadeia de verificação passar no servidor a cada chamada.
 

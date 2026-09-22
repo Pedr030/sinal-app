@@ -1,0 +1,21 @@
+name: tests
+
+# Roda nos PRs contra main/development e a cada push nelas. Usa só o test
+# runner nativo do Node (node --test) — nenhuma dependência nova, nenhum
+# serviço pago, nada além do que já está no package.json.
+on:
+  pull_request:
+    branches: [main, development]
+  push:
+    branches: [main, development]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm ci
+      - run: npm test
