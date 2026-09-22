@@ -44,7 +44,7 @@ sinal-app/
 ├── tests/                            # node:test — testa api/get-token.js real + funções puras de app.js (ver §9)
 ├── electron/                         # app desktop opcional, projeto/package.json PRÓPRIO — ver §15
 │   ├── src/                          # main.js, preload.js, picker.html/picker-preload.js
-│   └── native/sinal-audio-loopback/  # addon Rust/N-API pra áudio isolado — ver §15.2, bloqueado
+│   └── native/sinal-audio-loopback/  # addon Rust/N-API pra áudio isolado — ver §15.2, resolvido
 ├── vercel.json                      # outputDirectory="public"
 ├── package.json                     # dependência da função (livekit-server-sdk)
 ├── .env                             # LIVEKIT_*/DISCORD_CLIENT_ID/DISCORD_CLIENT_SECRET/ADMIN_DISCORD_IDS locais — NUNCA dentro de public/
@@ -350,7 +350,7 @@ O valor atual, e o porquê de cada parte:
 
 ```
 electron/
-  package.json           — deps: electron, electron-builder (dev); loopback-capture (bloqueada, ver abaixo)
+  package.json           — deps: electron, electron-builder (dev)
   build/icon.png          — copiado de public/icons/icon-512.png
   src/
     main.js                — processo principal: janela, bandeja, seletor de tela
@@ -375,7 +375,24 @@ No Windows não existe seletor nativo pro Electron (`useSystemPicker` só funcio
 - Fechar a janela (Alt+F4) **minimiza pra bandeja em vez de sair** — processo continua vivo, janela só fica invisível. Confirma o motivo nº1 de existir essa versão (segundo plano de verdade).
 - Chamado `getDisplayMedia()` padrão (mesma chamada que o `toggleShare()` do app.js faz) num teste isolado (`electron/test/e2e-video.mjs`): o seletor abriu com **5 fontes reais** (tela inteira + 4 janelas abertas de verdade: Claude, Brave, VS Code, Discord), escolher uma resolveu a Promise com uma track de vídeo **live**, 1920×1080, 30fps. Print do seletor conferido visualmente — thumbnails reais, layout combinando com a paleta do Sinal.
 
-### 15.2 Áudio isolado por processo — BLOQUEADO, não é bug de código (2026-09-22)
+### 15.2 Áudio isolado por processo — ✅ RESOLVIDO (2026-09-22)
+
+**Resolvido pelo usuário**, que achou a documentação certa depois de uma pesquisa própria (a IA que ele consultou primeiro errou — ver nota sobre isso mais abaixo, vale ler). Resumo da virada, antes de entrar nos detalhes da investigação: o caminho oficial pra ativar `AUDIOCLIENT_ACTIVATION_PARAMS` (`ActivateAudioInterfaceAsync` no dispositivo virtual) falhava nessa máquina com `E_INVALIDARG` sem explicação — mas existe um **segundo caminho oficial, documentado, que faz a mesma coisa**: `IMMDevice::Activate()` (API clássica/síncrona) num dispositivo **real**, passando o mesmo `AUDIOCLIENT_ACTIVATION_PARAMS`. Ver a nota exata na [doc do `IMMDevice::Activate`](https://learn.microsoft.com/en-us/windows/win32/api/mmdeviceapi/nf-mmdeviceapi-immdevice-activate): *"Starting in Windows 10 Build 20348, callers activating an IAudioClient can set pActivationParams to a pointer to a AUDIOCLIENT_ACTIVATION_PARAMS to configure an audio client in loopback mode with a process filter."* Trocado esse caminho em `activate_process_loopback()` (`src/lib.rs`) — **funcionou de primeira**, e o código ficou mais simples de quebra (não precisa mais de completion handler COM assíncrono nem `IAgileObject`).
+
+**Testado e confirmado de verdade, não só "compilou"**:
+- Captura básica: som real tocado, capturado com amplitude forte (29737 de um máximo de 32767).
+- **Filtro por processo funciona de verdade** (não só "destravou a captura genérica"): tocando som de um processo específico, excluir **esse** processo deu amplitude `5045`; excluir um processo irrelevante (mesma situação, mesmo som) deu `17051` — mais de 3x mais alto. A diferença prova que o `ProcessLoopbackMode`/`TargetProcessId` está filtrando de verdade.
+
+**Nota importante sobre como isso foi resolvido** — vale registrar pro padrão, não só pro resultado: no meio da investigação, o usuário trouxe uma resposta de outra IA que apontava uma causa (dizia que faltava um campo `dwSize` de 4 bytes no struct, que o `AUDIOCLIENT_ACTIVATION_PARAMS` teria 16 bytes em vez de 12). **Essa resposta estava errada** — inventou um campo que não existe (conferido na hora, direto na documentação oficial: o struct só tem `ActivationType` + a união, 2 membros, sem nenhum `dwSize`). Foi um caso de resposta de IA soando confiante e plausível (tabela bem montada, números que pareciam certos) mas fabricada. A segunda pesquisa do usuário — dessa vez trazendo o **link da documentação oficial**, não uma resposta pronta — foi o que resolveu de verdade. Lição prática: link pra fonte primária vale muito mais que resposta pronta de outra IA, mesmo (principalmente) quando a resposta pronta parece tecnicamente detalhada.
+
+---
+
+**Histórico da investigação** (mantido porque documenta bem o processo de eliminação — não precisa mais repetir nenhum desses testes, já sabemos a causa e a solução):
+
+<details>
+<summary>Investigação completa até a causa ser encontrada (clique pra expandir)</summary>
+
+**Estado antigo desse parágrafo (não é mais verdade, mantido só como contexto histórico): "BLOQUEADO, não é bug de código"**
 
 Objetivo: usar a API do Windows `AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK` (`ActivateAudioInterfaceAsync` + `AUDIOCLIENT_ACTIVATION_PARAMS`, documentada oficialmente pela Microsoft, [amostra oficial](https://learn.microsoft.com/en-us/samples/microsoft/windows-classic-samples/applicationloopbackaudio-sample/)) pra capturar áudio só do app compartilhado (modo *include*, janela específica) ou tudo menos o Discord (modo *exclude*, tela inteira).
 
@@ -403,6 +420,12 @@ Objetivo: usar a API do Windows `AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK` (
 
 **Estado real: causa raiz desconhecida.** Não é o código (mesmo bug num pacote de terceiro maduro), não é Voicemod, não é permissão, não é elevação, não é anti-cheat. Sobra: outro driver/software não identificado, alguma configuração específica dessa máquina, ou algo que ainda não foi testado.
 
-**Próximo passo, quando puder reiniciar a máquina**: o usuário não pôde reiniciar durante essa sessão (motivo prático do momento, não decisão técnica). Reiniciar e rodar de novo `node test/smoke.mjs` (em `electron/native/sinal-audio-loopback/`) é o próximo teste óbvio — driver de áudio às vezes só libera de verdade depois de reiniciar, especialmente depois de desinstalar algo como o Voicemod. Se ainda falhar depois do reboot, os próximos candidatos não testados ainda: SFC/DISM (reparo de arquivos de sistema), testar em outra máquina (pra saber se é essa build do Windows especificamente ou só essa instalação), Windows Update.
+11. ❌ **Não é falta de reiniciar**: máquina reiniciada de verdade, testado de novo com `node test/smoke.mjs` — mesmo erro exato, inclusive rodando elevado. Reboot nunca foi a causa.
 
-**Decisão pra seguir enquanto isso**: construir o resto do Electron (vídeo, já funcionando) usando áudio de sistema inteiro sem isolamento — mesmo comportamento de hoje no navegador. Não é regressão, é manter o que já existe enquanto essa investigação específica fica pendente.
+**Causa raiz real**: o caminho `ActivateAudioInterfaceAsync` + dispositivo virtual continua não funcionando nessa máquina até hoje, por motivo ainda desconhecido — mas isso deixou de importar, porque existe um caminho alternativo oficial (`IMMDevice::Activate`) que funciona. Ver o resumo no início dessa seção.
+
+</details>
+
+**Estado atual do código**: `activate_process_loopback()` em `src/lib.rs` usa `IMMDeviceEnumerator::GetDefaultAudioEndpoint()` + `IMMDevice::Activate<IAudioClient>()`. Nada de `ActivateAudioInterfaceAsync`, nada de completion handler COM, nada de `IAgileObject` — tudo síncrono, bem mais simples que a amostra oficial da Microsoft (que usa o caminho assíncrono). Testes automatizados ficaram em `electron/native/sinal-audio-loopback/test/`: `smoke.mjs` (captura básica) e `exclude-filter-test.mjs` (prova que o filtro por processo discrimina de verdade, comparando amplitude com/sem exclusão do processo certo).
+
+**Próximo passo real**: plugar isso no resto do Electron — hoje o addon só captura e devolve `Buffer` de PCM cru via callback; falta (1) descobrir o PID certo pra excluir/incluir a partir da escolha feita no `picker.html` (mapear janela escolhida → PID do processo dono, ou simplesmente sempre excluir o Discord quando for "tela inteira"), (2) transformar os `Buffer`s de PCM numa `MediaStreamTrack` de verdade no processo de renderização (via `AudioContext`/`AudioWorkletNode` + `MediaStreamAudioDestinationNode`), e (3) publicar essa track como uma track de áudio adicional no LiveKit, em paralelo à track de vídeo da tela compartilhada. Isso é trabalho de integração, não mais uma incógnita técnica.

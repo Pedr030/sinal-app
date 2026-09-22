@@ -189,7 +189,6 @@ dependencies = [
  "napi-build",
  "napi-derive",
  "windows",
- "windows-core",
 ]
 
 [[package]]

@@ -8,18 +8,20 @@
     "start": "electron .",
     "dist": "electron-builder"
   },
-  "dependencies": {
-    "loopback-capture": "^3.0.2"
-  },
   "devDependencies": {
-    "electron": "^33.0.0",
-    "electron-builder": "^25.0.0"
+    "electron": "^44.4.3",
+    "electron-builder": "^26.15.3"
   },
   "build": {
     "appId": "app.sinal.desktop",
     "productName": "Sinal",
-    "directories": { "output": "dist" },
-    "files": ["src/**/*", "build/**/*"],
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "src/**/*",
+      "build/**/*"
+    ],
     "win": {
       "target": "nsis",
       "icon": "build/icon.ico"

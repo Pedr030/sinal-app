@@ -10,8 +10,7 @@ const { contextBridge } = require('electron');
 
 contextBridge.exposeInMainWorld('sinalElectron', {
   isElectron: true
-  // Os métodos de captura de áudio isolado (loopback-capture / exclude-mode)
-  // entram aqui numa etapa seguinte, depois que o addon nativo estiver
-  // pronto — por enquanto só a flag de detecção, pra validar a parte de
-  // vídeo isoladamente antes de empilhar mais coisa em cima.
+  // Os métodos de captura de áudio isolado (addon nativo próprio,
+  // electron/native/sinal-audio-loopback — já funcionando, ver HANDOFF §15.2)
+  // entram aqui na integração com o main.js/IPC — ainda não plugado.
 });

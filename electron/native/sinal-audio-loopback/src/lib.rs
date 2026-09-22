@@ -4,36 +4,43 @@
 // microsoft/Windows-classic-samples) — ver HANDOFF.md pra por que isso é
 // código próprio em vez de um pacote de terceiro pouco maduro.
 //
-// Simplificação em relação à amostra original: a amostra usa Media
-// Foundation (MFPutWorkItem/IMFAsyncCallback) só como mecanismo de fila
-// assíncrona — aqui uma thread dedicada com WaitForSingleObject faz o mesmo
-// trabalho, sem precisar inicializar o MF inteiro.
+// ATIVAÇÃO: via IMMDevice::Activate() (API clássica/síncrona), NÃO via
+// ActivateAudioInterfaceAsync() no dispositivo virtual
+// (VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK) como a amostra oficial faz. Os dois
+// caminhos são documentados oficialmente como equivalentes pra esse caso —
+// ver a nota em IMMDevice::Activate: "Starting in Windows 10 Build 20348,
+// callers activating an IAudioClient can set pActivationParams to a pointer
+// to a AUDIOCLIENT_ACTIVATION_PARAMS to configure an audio client in
+// loopback mode with a process filter." Mudamos pra esse porque, numa
+// máquina real testada nessa sessão, o caminho assíncrono/dispositivo
+// virtual falhava consistentemente com E_INVALIDARG (pra qualquer PID, nos
+// dois modos, em código próprio E num pacote de terceiro publicado) enquanto
+// esse caminho síncrono num dispositivo REAL funciona — ver HANDOFF.md
+// seção 15.2 pro histórico completo da investigação. Bônus: fica bem mais
+// simples, não precisa de completion handler COM assíncrono nem IAgileObject.
 #![deny(unsafe_op_in_unsafe_fn)]
 
 use std::mem::size_of;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Sender};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::thread::JoinHandle;
 
 use napi::bindgen_prelude::*;
 use napi::threadsafe_function::{ErrorStrategy, ThreadsafeFunction, ThreadsafeFunctionCallMode};
 use napi_derive::napi;
 
-use windows::core::{implement, Interface, Result as WinResult, GUID, HRESULT};
+use windows::core::Result as WinResult;
 use windows::Win32::Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0};
 use windows::Win32::Media::Audio::{
-    ActivateAudioInterfaceAsync, IActivateAudioInterfaceAsyncOperation,
-    IActivateAudioInterfaceCompletionHandler, IActivateAudioInterfaceCompletionHandler_Impl,
-    IAudioCaptureClient, IAudioClient, AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM,
-    AUDCLNT_STREAMFLAGS_EVENTCALLBACK, AUDCLNT_STREAMFLAGS_LOOPBACK,
-    AUDIOCLIENT_ACTIVATION_PARAMS, AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK,
+    eConsole, eRender, IAudioCaptureClient, IAudioClient, IMMDeviceEnumerator, MMDeviceEnumerator,
+    AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM, AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
+    AUDCLNT_STREAMFLAGS_LOOPBACK, AUDIOCLIENT_ACTIVATION_PARAMS, AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK,
     AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS, PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE,
-    PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE, VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK,
-    WAVEFORMATEX, WAVE_FORMAT_PCM,
+    PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE, WAVEFORMATEX, WAVE_FORMAT_PCM,
 };
-use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, IAgileObject, COINIT_MULTITHREADED};
 use windows::Win32::System::Com::StructuredStorage::InitPropVariantFromBuffer;
+use windows::Win32::System::Com::{CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_ALL, COINIT_MULTITHREADED};
 use windows::Win32::System::Threading::{CreateEventW, WaitForSingleObject};
 
 const BITS_PER_BYTE: u32 = 8;
@@ -43,40 +50,6 @@ const BITS_PER_BYTE: u32 = 8;
 const SAMPLE_RATE: u32 = 48000;
 const CHANNELS: u16 = 2;
 const BITS_PER_SAMPLE: u16 = 16;
-
-// Handler de conclusão do ActivateAudioInterfaceAsync — a API é
-// intrinsecamente assíncrona (roda numa thread MTA do sistema), então a
-// gente implementa essa interface COM só pra devolver o resultado por um
-// canal (mpsc) pra thread de captura, que fica bloqueada esperando.
-// IAgileObject (interface marcadora, sem métodos) é necessária aqui: a
-// Microsoft documenta que o completion handler passado pra
-// ActivateAudioInterfaceAsync precisa ser "agile" (livre de apartamento) pra
-// não travar quando o sistema chama ActivateCompleted de dentro da thread MTA
-// dele. O equivalente em C++/WRL é FtmBase (RuntimeClassFlags<..., FtmBase>)
-// na amostra original — sem isso aqui, a contraparte Rust ficava incompleta.
-#[implement(IActivateAudioInterfaceCompletionHandler, IAgileObject)]
-struct CompletionHandler {
-    tx: Mutex<Option<Sender<WinResult<IActivateAudioInterfaceAsyncOperation>>>>,
-}
-
-// Marcador puro, sem métodos — só precisa "existir" pra sinalizar que o
-// objeto é agile (ver comentário acima da struct).
-impl windows::Win32::System::Com::IAgileObject_Impl for CompletionHandler_Impl {}
-
-impl IActivateAudioInterfaceCompletionHandler_Impl for CompletionHandler_Impl {
-    fn ActivateCompleted(
-        &self,
-        activate_operation: Option<&IActivateAudioInterfaceAsyncOperation>,
-    ) -> WinResult<()> {
-        if let Some(tx) = self.tx.lock().unwrap().take() {
-            let result = activate_operation
-                .cloned()
-                .ok_or_else(|| windows::core::Error::from(HRESULT(-1)));
-            let _ = tx.send(result);
-        }
-        Ok(())
-    }
-}
 
 fn activate_process_loopback(target_pid: u32, exclude: bool) -> WinResult<IAudioClient> {
     let mode = if exclude {
@@ -96,16 +69,6 @@ fn activate_process_loopback(target_pid: u32, exclude: bool) -> WinResult<IAudio
     // que a amostra em C++ monta na mão (activateParams.vt = VT_BLOB; ...),
     // só que via InitPropVariantFromBuffer (propsys.dll), a função oficial do
     // Windows pra isso — evita mexer direto nos campos da union.
-    eprintln!(
-        "[sinal-audio] AUDIOCLIENT_ACTIVATION_PARAMS: size={} bytes, ActivationType={}, TargetProcessId={}, ProcessLoopbackMode={}, raw_bytes={:02x?}",
-        size_of::<AUDIOCLIENT_ACTIVATION_PARAMS>(),
-        params.ActivationType.0,
-        unsafe { params.Anonymous.ProcessLoopbackParams.TargetProcessId },
-        unsafe { params.Anonymous.ProcessLoopbackParams.ProcessLoopbackMode.0 },
-        unsafe {
-            std::slice::from_raw_parts(&params as *const _ as *const u8, size_of::<AUDIOCLIENT_ACTIVATION_PARAMS>())
-        }
-    );
     let propvariant = unsafe {
         InitPropVariantFromBuffer(
             &params as *const _ as *const core::ffi::c_void,
@@ -113,41 +76,18 @@ fn activate_process_loopback(target_pid: u32, exclude: bool) -> WinResult<IAudio
         )?
     };
 
-    let (tx, rx) = channel::<WinResult<IActivateAudioInterfaceAsyncOperation>>();
-    let handler: IActivateAudioInterfaceCompletionHandler = CompletionHandler {
-        tx: Mutex::new(Some(tx)),
-    }
-    .into();
-
-    eprintln!("[sinal-audio] chamando ActivateAudioInterfaceAsync...");
-    let _operation: IActivateAudioInterfaceAsyncOperation = unsafe {
-        ActivateAudioInterfaceAsync(
-            VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK,
-            &IAudioClient::IID as *const GUID,
-            Some(&propvariant as *const _ as *const _),
-            &handler,
-        )
-    }
-    .map_err(|e| { eprintln!("[sinal-audio] ActivateAudioInterfaceAsync falhou: {e:?}"); e })?;
-    eprintln!("[sinal-audio] ActivateAudioInterfaceAsync ok, esperando callback...");
-
-    // Bloqueia a thread de captura (não a de JS) até a ativação terminar —
-    // mesma estratégia de m_hActivateCompleted.wait() na amostra original.
-    let operation = rx
-        .recv()
-        .map_err(|_| windows::core::Error::from(HRESULT(-1)))?
-        .map_err(|e| { eprintln!("[sinal-audio] callback devolveu erro: {e:?}"); e })?;
-    eprintln!("[sinal-audio] callback recebido, chamando GetActivateResult...");
-
-    let mut hr_result = HRESULT(0);
-    let mut interface: Option<windows::core::IUnknown> = None;
-    unsafe { operation.GetActivateResult(&mut hr_result, &mut interface) }
-        .map_err(|e| { eprintln!("[sinal-audio] GetActivateResult (chamada) falhou: {e:?}"); e })?;
-    eprintln!("[sinal-audio] GetActivateResult hr={:?}", hr_result);
-    hr_result.ok().map_err(|e| { eprintln!("[sinal-audio] hr_result interno indica erro: {e:?}"); e })?;
-    let unknown = interface.ok_or_else(|| windows::core::Error::from(HRESULT(-1)))?;
-    let audio_client: IAudioClient = unknown.cast()?;
-    eprintln!("[sinal-audio] IAudioClient obtido, inicializando...");
+    // Pega um IMMDevice REAL (o endpoint de renderização padrão) via a API
+    // clássica, e ativa o IAudioClient nele passando o mesmo
+    // AUDIOCLIENT_ACTIVATION_PARAMS de sempre — ver o comentário grande no
+    // topo do arquivo pra por que é esse caminho, e não
+    // ActivateAudioInterfaceAsync no dispositivo virtual.
+    let enumerator: IMMDeviceEnumerator = unsafe { CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL) }
+        .map_err(|e| { eprintln!("[sinal-audio] CoCreateInstance(MMDeviceEnumerator) falhou: {e:?}"); e })?;
+    let device = unsafe { enumerator.GetDefaultAudioEndpoint(eRender, eConsole) }
+        .map_err(|e| { eprintln!("[sinal-audio] GetDefaultAudioEndpoint falhou: {e:?}"); e })?;
+    let audio_client: IAudioClient = unsafe { device.Activate(CLSCTX_ALL, Some(&propvariant as *const _ as *const _)) }
+        .map_err(|e| { eprintln!("[sinal-audio] IMMDevice::Activate (process-loopback) falhou: {e:?}"); e })?;
+    eprintln!("[sinal-audio] IAudioClient obtido via IMMDevice::Activate, inicializando...");
 
     let mut format = WAVEFORMATEX::default();
     format.wFormatTag = WAVE_FORMAT_PCM as u16;
