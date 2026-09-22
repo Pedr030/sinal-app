@@ -12,7 +12,7 @@
 //  4. No Windows não existe seletor nativo pro Electron (useSystemPicker só
 //     funciona no macOS 15+), então a gente mostra nosso próprio seletor
 //     (picker.html) com os thumbnails do desktopCapturer.
-const { app, BrowserWindow, Tray, Menu, session, desktopCapturer, ipcMain, nativeImage, dialog } = require('electron');
+const { app, BrowserWindow, Tray, Menu, session, desktopCapturer, ipcMain, nativeImage } = require('electron');
 const path = require('node:path');
 const { autoUpdater } = require('electron-updater');
 
@@ -132,6 +132,50 @@ function showSourcePicker(sources){
       finish(chosen);
     });
     pickerWindow.on('closed', () => finish(null)); // fechou sem escolher = cancelou
+  });
+}
+
+// Janelinha própria pro aviso de atualização, no lugar do dialog.showMessageBox
+// nativo do Windows — pedido explícito (ver HANDOFF §19): o diálogo do SO
+// não tem como ser estilizado, quebrava a identidade visual do app bem na
+// hora que mais reforça "isso é um app de verdade". Mesmo padrão do
+// showSourcePicker: janela modal própria, some sozinha depois da escolha.
+function showUpdateDialog(info){
+  return new Promise((resolve) => {
+    let updateWindow = new BrowserWindow({
+      width: 380,
+      height: 260,
+      parent: mainWindow,
+      modal: true,
+      resizable: false,
+      minimizable: false,
+      maximizable: false,
+      frame: false,
+      backgroundColor: '#0b0c0e',
+      webPreferences: {
+        preload: path.join(__dirname, 'update-preload.js'),
+        contextIsolation: true,
+        nodeIntegration: false,
+        sandbox: true
+      }
+    });
+    updateWindow.loadFile(path.join(__dirname, 'update.html'));
+
+    let settled = false;
+    const finish = (restartNow) => {
+      if(settled) return;
+      settled = true;
+      resolve(restartNow);
+      if(updateWindow && !updateWindow.isDestroyed()) updateWindow.close();
+      updateWindow = null;
+    };
+
+    updateWindow.webContents.once('did-finish-load', () => {
+      updateWindow.webContents.send('update-info', { version: info.version });
+    });
+
+    ipcMain.once('update:choice', (event, restartNow) => finish(restartNow));
+    updateWindow.on('closed', () => finish(false)); // fechou sem escolher = "depois"
   });
 }
 
@@ -335,16 +379,8 @@ function setupAutoUpdater(){
   });
   autoUpdater.on('update-downloaded', async (info) => {
     console.log('[sinal-update] atualização baixada:', info.version);
-    const { response } = await dialog.showMessageBox(mainWindow, {
-      type: 'info',
-      title: 'Atualização do Sinal',
-      message: `Uma nova versão do Sinal (${info.version}) foi baixada.`,
-      detail: 'Reiniciar agora pra instalar, ou depois na próxima vez que abrir o app.',
-      buttons: ['Reiniciar agora', 'Depois'],
-      defaultId: 0,
-      cancelId: 1
-    });
-    if(response === 0){
+    const restartNow = await showUpdateDialog(info);
+    if(restartNow){
       isQuitting = true;
       autoUpdater.quitAndInstall();
     }

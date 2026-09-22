@@ -553,13 +553,12 @@ function toggleShareQuality(){
 }
 
 // Só existe dentro do app desktop (Electron) — botão fica escondido no site
-// normal (ver #audioToggleBtn em style.css). Desligado por padrão: o áudio
-// isolado por processo hoje NÃO isola de verdade (ver HANDOFF §15.7/§15.8 —
-// testado ao vivo, o filtro por PID não tem efeito nenhum, captura o sistema
-// inteiro do mesmo jeito) — então o padrão mais honesto é só vídeo, e quem
-// quiser tentar com áudio mesmo assim liga na mão sabendo do risco de vazar
-// a call do Discord ou qualquer outro som do PC.
-let shareElectronAudio = false;
+// normal (ver #audioToggleBtn em style.css). Ligado por padrão: a causa raiz
+// do isolamento foi achada e corrigida (HANDOFF §15.11-15.14), testada ao
+// vivo numa call real e confirmada pelo grupo em produção — o padrão
+// desligado era de quando o filtro ainda não funcionava de verdade, não faz
+// mais sentido pedir pra ligar na mão toda vez.
+let shareElectronAudio = true;
 
 function updateAudioToggleBtn(){
   const btn = document.getElementById('audioToggleBtn');
@@ -1570,7 +1569,7 @@ function prefillShareElectronAudio(){
   try{
     const saved = localStorage.getItem('sinal:shareElectronAudio');
     if(saved === '1' || saved === '0') shareElectronAudio = saved === '1';
-  }catch(e){ /* localStorage indisponível — sem problema, fica no padrão (desligado) */ }
+  }catch(e){ /* localStorage indisponível — sem problema, fica no padrão (ligado) */ }
   updateAudioToggleBtn();
 }
 
@@ -1634,7 +1633,7 @@ window.addEventListener('beforeunload', () => {
 });
 
 // PWA: versão, registro do service worker, detecção de atualização e botão de instalação
-const APP_VERSION = '0.8.37'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
+const APP_VERSION = '0.8.38'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
 // Dentro do Electron, mostra a versão do INSTALADOR (electron/package.json),
 // não a do site — ver preload.js. Fora dele (navegador normal), continua a
 // versão do deploy de sempre.
