@@ -4,7 +4,7 @@
   "type": "module",
   "description": "Dependência só das funções serverless (api/*.js) que geram token de acesso do LiveKit e cuidam do login/moderação. O site em si (index.html/style.css/app.js) continua sem build step.",
   "scripts": {
-    "test": "node --test"
+    "test": "node --test tests/*.test.mjs"
   },
   "dependencies": {
     "livekit-server-sdk": "^2.13.1"

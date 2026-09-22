@@ -1,0 +1,38 @@
+{
+  "name": "sinal-desktop",
+  "version": "0.2.0",
+  "private": true,
+  "description": "Empacotamento desktop do Sinal (Electron) — mesmo site de producao, com captura de tela/audio nativa porque o navegador nao resolve o vazamento de audio do Discord nem o segundo plano de verdade. Ver HANDOFF.md secao Electron.",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder"
+  },
+  "devDependencies": {
+    "electron": "^44.4.3",
+    "electron-builder": "^26.15.3"
+  },
+  "build": {
+    "appId": "app.sinal.desktop",
+    "productName": "Sinal",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "src/**/*",
+      "build/**/*",
+      "native/sinal-audio-loopback/target/release/sinal_audio_loopback.node"
+    ],
+    "asarUnpack": [
+      "native/sinal-audio-loopback/target/release/sinal_audio_loopback.node"
+    ],
+    "win": {
+      "target": "nsis",
+      "icon": "build/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  }
+}

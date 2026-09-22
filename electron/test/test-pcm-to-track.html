@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html><body>
+<script>
+// Testa isoladamente: PCM sintético (uma onda senoidal, não dado real do
+// addon) -> fila -> ScriptProcessorNode -> MediaStreamAudioDestinationNode
+// -> MediaStreamTrack. Confirma que sai áudio de verdade (não silêncio) do
+// outro lado, gravando a track resultante com um segundo AudioContext e
+// medindo a amplitude captada.
+async function run(){
+  const audioCtx = new AudioContext({ sampleRate: 48000 });
+
+  const destination = audioCtx.createMediaStreamDestination();
+  // 2 canais de ENTRADA (não 0) de propósito: um ScriptProcessorNode com 0
+  // canais de entrada declarados parece não ser "puxado" de verdade pelo
+  // motor de áudio em alguns casos, mesmo com uma fonte conectada -- só
+  // ignoramos o inputBuffer mesmo, a saída vem inteira da fila.
+  const processor = audioCtx.createScriptProcessor(4096, 2, 2);
+  const queue = [];
+  let readIndex = 0;
+
+  processor.onaudioprocess = (event) => {
+    const left = event.outputBuffer.getChannelData(0);
+    const right = event.outputBuffer.getChannelData(1);
+    for(let i = 0; i < left.length; i++){
+      if(queue.length === 0){ left[i] = 0; right[i] = 0; continue; }
+      const chunk = queue[0];
+      left[i] = chunk.left[readIndex];
+      right[i] = chunk.right[readIndex];
+      readIndex++;
+      if(readIndex >= chunk.left.length){ queue.shift(); readIndex = 0; }
+    }
+  };
+
+  processor.connect(destination);
+  const silentSource = audioCtx.createConstantSource();
+  silentSource.offset.value = 0;
+  silentSource.connect(processor);
+  silentSource.start();
+
+  // Alimenta a fila com uma senoide de 440Hz por ~1s, em pedaços de 4096
+  // frames (imitando os chunks que o addon nativo manda).
+  const totalFrames = 48000;
+  const chunkFrames = 4096;
+  let phase = 0;
+  for(let offset = 0; offset < totalFrames; offset += chunkFrames){
+    const n = Math.min(chunkFrames, totalFrames - offset);
+    const left = new Float32Array(n);
+    const right = new Float32Array(n);
+    for(let i = 0; i < n; i++){
+      const s = Math.sin(2 * Math.PI * 440 * phase / 48000) * 0.5;
+      left[i] = s; right[i] = s;
+      phase++;
+    }
+    queue.push({ left, right });
+  }
+
+  const track = destination.stream.getAudioTracks()[0];
+  window.__trackInfo = { kind: track.kind, readyState: track.readyState, enabled: track.enabled, label: track.label };
+
+  // Agora GRAVA a própria track resultante com um segundo AudioContext, pra
+  // confirmar que tem áudio de verdade saindo (não só "a API não jogou erro").
+  const recordCtx = new AudioContext({ sampleRate: 48000 });
+  const source = recordCtx.createMediaStreamSource(new MediaStream([track]));
+  const analyser = recordCtx.createAnalyser();
+  analyser.fftSize = 2048;
+  source.connect(analyser);
+
+  await new Promise((r) => setTimeout(r, 600)); // deixa a fila tocar um pouco
+
+  const data = new Float32Array(analyser.fftSize);
+  analyser.getFloatTimeDomainData(data);
+  let maxAmp = 0;
+  for(let i = 0; i < data.length; i++) maxAmp = Math.max(maxAmp, Math.abs(data[i]));
+
+  window.__result = { ...window.__trackInfo, maxAmpCaptado: maxAmp, filaRestante: queue.length };
+}
+run();
+</script>
+</body></html>

@@ -16,7 +16,7 @@ Em agosto de 2026, a ANPD determinou que o Discord suspendesse compartilhamento 
 - **Hospedagem: Vercel**. Site: `https://sinal-app-stream.vercel.app`. Deploy automático via GitHub (`git push` na `main` → produção; push em qualquer outra branch, ex: `development` → *preview deploy* com URL própria, não mexe em produção — ver §10). Antes disso o projeto passou por uma versão hospedada no Netlify (~1 dia, v0.8.0–v0.8.2) — migrado depois de bater no limite de créditos grátis de build do mês (não era um problema estrutural do Netlify, foi consumo de uma sessão de iteração rápida, ~4 deploys de produção num dia só). Os arquivos específicos do Netlify (`netlify/`, `netlify.toml`) foram removidos do projeto — ver §11 se precisar do histórico completo.
 - **PWA instalável** (manifest + service worker) — dá pra "instalar" como app, sem barra de navegador, ícone próprio.
 
-Por que não Electron/app nativo (motivo que não mudou com a migração pro LiveKit): o ambiente onde eu rodo (Claude/Anthropic) não tem acesso à internet pra baixar/compilar toolchains como Electron, e mesmo que desse, não seria prudente entregar um `.exe` de uma conversa de IA pro usuário rodar. Web + PWA continua sendo o equilíbrio certo.
+~~Por que não Electron/app nativo~~ — **desatualizado, não vale mais**. Essa frase valia num ambiente sandboxed sem acesso a ferramentas de build reais; a partir de 2026-09-22 o projeto passou a rodar com acesso de verdade a `winget`/`cargo`/MSVC/execução de processo nessa máquina, e o app desktop começou a ser construído de fato — ver §15. O site web + PWA continua existindo e sendo o jeito principal de usar o Sinal (o Electron é um segundo cliente opcional, não substitui nada).
 
 **O que "backend" significa aqui, na prática, pros amigos**: nada muda pra quem usa — continuam só abrindo um link, sem conta, sem instalar nada. O backend é infraestrutura que só o dono do projeto configura uma vez (servidor LiveKit + variáveis de ambiente na plataforma de hospedagem).
 
@@ -41,10 +41,14 @@ sinal-app/
 │   └── moderate.js                  # ações de admin (expulsar, desligar tela/câmera) — ver §8.2
 ├── lib/
 │   └── adminProof.js                # assina/verifica o comprovante de admin (HMAC) — usado por discord-callback.js e get-token.js
+├── tests/                            # node:test — testa api/get-token.js real + funções puras de app.js (ver §9)
+├── electron/                         # app desktop opcional, projeto/package.json PRÓPRIO — ver §15
+│   ├── src/                          # main.js, preload.js, picker.html/picker-preload.js
+│   └── native/sinal-audio-loopback/  # addon Rust/N-API pra áudio isolado — ver §15.2, resolvido
 ├── vercel.json                      # outputDirectory="public"
 ├── package.json                     # dependência da função (livekit-server-sdk)
 ├── .env                             # LIVEKIT_*/DISCORD_CLIENT_ID/DISCORD_CLIENT_SECRET/ADMIN_DISCORD_IDS locais — NUNCA dentro de public/
-├── .gitignore                       # exclui .env, node_modules, .vercel, o zip antigo do Netlify Drop
+├── .gitignore                       # exclui .env, node_modules, .vercel, build do electron, o zip antigo do Netlify Drop
 └── HANDOFF.md
 ```
 
@@ -203,6 +207,7 @@ Pedido explícito do usuário (2026-08-24), quebrando conscientemente o princíp
 - `0.8.29` publicada (2026-09-21) — **lote de segurança**, sem mudança visível de UI. Origem: uma auditoria externa de código trazida pelo usuário (arquivo `SINAL-AUDITORIA-E-SPEC.md`, fora do repo). Quatro correções: (1) **XSS armazenado** em contexto de atributo — `escapeHtml()` não escapava aspas, e `renderAvatars()`/`renderRosterPanel()` passaram a ser montadas via DOM em vez de interpolação (ver o aviso em §6.1, que é a parte importante pra não repetir); (2) `avatar` agora é validado no servidor (`get-token.js`) contra o formato de URL do CDN do Discord — fecha o mesmo XSS por outro lado, o beacon de IP e o disparo do webhook sem login; (3) `livekit-client` **fixado na versão `2.22.3` com SRI** no `index.html` — a URL do jsDelivr sem `@versão` servia sempre a última publicada, então uma major nova quebraria produção sem ninguém ter feito deploy (verificado na hora da mudança: a URL sem versão servia exatamente o `2.22.3`, byte a byte, então fixar foi no-op de comportamento); (4) afirmação errada sobre sanitização corrigida no `README.md`. Restante da auditoria (CSP, `onclick` inline, `POST` pros efeitos colaterais, podar chat) ficou pra lotes seguintes.
 - `0.8.30` publicada (2026-09-21) — **Content-Security-Policy ligada** (`vercel.json`), junto com `X-Frame-Options: DENY`, `Referrer-Policy` e `X-Content-Type-Options: nosniff`. Pra isso ser possível, os **13 `onclick="..."` do `index.html` viraram `addEventListener`** num bloco único no fim do `app.js`, e o único `style="display:none"` inline (tela de manutenção) virou a classe `.on` no CSS — CSP bloqueia handler e estilo inline, e o sintoma seria botão que simplesmente para de funcionar, sem erro na tela. **Leia a §14 antes de adicionar qualquer recurso externo novo.**
 - `0.8.31` publicada (2026-09-21) — **lote de segurança/qualidade, último da leva trazida pela auditoria externa** (ver nota da v0.8.29). Seis mudanças: (1) `POST /api/get-token` substitui o `GET` — a criação de sala e o aviso no Discord são efeito colateral de verdade, e um `GET` com efeito colateral podia ser disparado por qualquer `<img src="...">` de fora ou por um bot de preview de link tocando a URL; `room`/`name`/`mode`/`avatar`/`adminProof` agora vão no corpo JSON, não na query string; (2) o `adminProof` — credencial de 30 dias — sai da URL (evita log de plataforma/histórico/`Referer`) e vai no corpo também; (3) chat: mensagens recebidas são truncadas em 500 caracteres na entrada (o `maxlength` do input é só validação de UI, um cliente modificado podia publicar qualquer tamanho) e o painel poda pra no máximo 200 mensagens no DOM (`CHAT_MAX_MESSAGES`), pra sessão longa não crescer memória sem limite; (4) `toggleShare()`/`toggleCamera()` ganharam guarda contra `getTrackPublication()` devolver vazio logo após a captura começar — antes estourava `TypeError` com a tela já sendo compartilhada de verdade mas a UI local sem atualizar; (5) polimento de CSS: `.connTestResult` (resíduo da era PeerJS) removido, `prefers-reduced-motion` ganhou `animation-iteration-count:1` (sem isso os LEDs com `blink: infinite` continuavam piscando pra sempre, só que a 0.01ms por ciclo — o oposto do que a preferência pede), e `.chat-panel`/`.roster-panel` usam `100dvh` (o `100vh` não descontava a barra de endereço no mobile, cortando a linha de digitar do chat). `public/sw.js` ganhou uma guarda pra deixar POST passar direto (só GET é cacheável — sem isso o `respondWith` recebia `undefined` e quebrava a própria requisição). Testado com o arquivo real `api/get-token.js` rodando contra um LiveKit fake (16 casos, cobrindo POST/404/create/avatar malicioso no corpo/corpo inválido) e com as funções reais do `app.js` extraídas e exercitadas num navegador (POST sem query string, poda do chat em 250 mensagens, CSS aplicado).
+- `0.8.32` publicada (2026-09-22) — **`app.js` ganha suporte a áudio isolado quando rodando dentro do app desktop (Electron)**, ver HANDOFF §15.3. `createElectronIsolatedAudioTrack()` (novo, antes do `toggleShare()`) monta uma `MediaStreamTrack` a partir dos pedaços de PCM recebidos de `window.sinalElectron.onAudioChunk()` e publica como track extra (`Track.Source.ScreenShareAudio`) — só ativa se `window.sinalElectron.isElectron` existir, então **não muda nada pra quem usa o site normal no navegador**. `toggleShare()` (parar) e `leaveRoom()` chamam `teardownElectronIsolatedAudio()` pra não deixar a captura nativa rodando pra sempre em segundo plano. Testado de ponta a ponta contra o LiveKit self-hosted real (sala criada de verdade, vídeo e áudio isolado publicados com sucesso) — ver §15.3 pros detalhes.
 
 ## 10. Fluxo de trabalho combinado com o usuário
 
@@ -337,3 +342,107 @@ O valor atual, e o porquê de cada parte:
 **Recurso externo novo (CDN, fonte, API, domínio) exige adicionar o domínio na diretiva certa**, senão o navegador bloqueia e o sintoma costuma ser silencioso.
 
 **Como testar antes de publicar**: a CSP não aparece rodando o `public/` num servidor estático qualquer — os headers vêm do `vercel.json`, que só é aplicado pela Vercel. Na sessão da v0.8.30 isso foi contornado com um servidor de teste que **lê o `vercel.json` real** e reemite os mesmos headers (`csp-test` no `.claude/launch.json`), pra não testar uma coisa e publicar outra. Vale refazer esse caminho em qualquer mudança de CSP: subir, abrir o console do navegador e procurar por `Refused to...` — é assim que violação aparece.
+
+## 15. App desktop (Electron) — em andamento, começado em 2026-09-22
+
+**Motivação**: navegador não resolve dois problemas reais — (1) não fica em segundo plano de verdade (depende de manter a aba/janela aberta), e (2) não isola áudio por aplicativo, então compartilhar "áudio do sistema" durante um jogo também vaza a voz da call do Discord pra quem assiste (eco). Ver auditoria externa (`SINAL-AUDITORIA-E-SPEC.md`, Parte 5) pro contexto completo da decisão Electron vs Tauri.
+
+**Estrutura**: `electron/` é um projeto **separado** do `package.json` raiz (que é só da API serverless) — tem seu próprio `package.json`, `node_modules`, etc. Não interfere no deploy da Vercel.
+
+```
+electron/
+  package.json           — deps: electron, electron-builder (dev)
+  build/icon.png          — copiado de public/icons/icon-512.png
+  src/
+    main.js                — processo principal: janela, bandeja, seletor de tela
+    preload.js              — contextBridge pra janela principal (expõe window.sinalElectron)
+    picker.html              — UI do seletor de tela/janela (janela própria, nunca carrega o site do Sinal)
+    picker-preload.js         — contextBridge do picker (escopo minimo, separado do preload principal)
+  native/sinal-audio-loopback/ — addon Rust/N-API pra áudio isolado por processo — ver "Áudio: bloqueado" abaixo
+```
+
+### 15.1 Vídeo — funcionando, testado de ponta a ponta
+
+A `main.js` carrega a URL de produção real (`https://sinal-app-stream.vercel.app`) — **não** duplica o site, é a mesma UI de sempre rodando dentro de uma casca nativa.
+
+**Descoberta importante que mudou o plano original**: `setScreenShareEnabled()` do LiveKit tem bug conhecido no Electron (`DOMException: Not supported`), mas isso é evitável **sem mudar uma linha do `app.js`** — o Electron tem `session.setDisplayMediaRequestHandler()`, que intercepta o `getDisplayMedia()` padrão que o LiveKit já chama por baixo. Registrando esse handler na `main`, o `toggleShare()` do app.js funciona **exatamente como está hoje**, sem nenhum branch condicional "se Electron, faça diferente".
+
+No Windows não existe seletor nativo pro Electron (`useSystemPicker` só funciona no macOS 15+), então a gente mostra um seletor próprio (`picker.html`) com os thumbnails reais do `desktopCapturer.getSources()`.
+
+⚠️ **Bug real, pego em teste, documentado pra não repetir**: `session.defaultSession` só existe depois do `app.whenReady()` resolver. Registrar `setDisplayMediaRequestHandler` no nível superior do módulo (fora do `whenReady().then()`) derruba o processo inteiro com `TypeError: Session can only be received when app is ready` antes mesmo de abrir qualquer janela — aconteceu de verdade rodando `electron src/main.js`, com popup de erro na tela. Corrigido movendo o registro do handler pra dentro do callback do `whenReady()`.
+
+**Testado de ponta a ponta e confirmado funcionando (2026-09-22)**:
+- `electron src/main.js` real: abre, carrega o site de produção de verdade (título "SINAL — sala de tela ao vivo", conteúdo idêntico ao navegador), sem crash.
+- Fechar a janela (Alt+F4) **minimiza pra bandeja em vez de sair** — processo continua vivo, janela só fica invisível. Confirma o motivo nº1 de existir essa versão (segundo plano de verdade).
+- Chamado `getDisplayMedia()` padrão (mesma chamada que o `toggleShare()` do app.js faz) num teste isolado (`electron/test/e2e-video.mjs`): o seletor abriu com **5 fontes reais** (tela inteira + 4 janelas abertas de verdade: Claude, Brave, VS Code, Discord), escolher uma resolveu a Promise com uma track de vídeo **live**, 1920×1080, 30fps. Print do seletor conferido visualmente — thumbnails reais, layout combinando com a paleta do Sinal.
+
+### 15.2 Áudio isolado por processo — ✅ RESOLVIDO (2026-09-22)
+
+**Resolvido pelo usuário**, que achou a documentação certa depois de uma pesquisa própria (a IA que ele consultou primeiro errou — ver nota sobre isso mais abaixo, vale ler). Resumo da virada, antes de entrar nos detalhes da investigação: o caminho oficial pra ativar `AUDIOCLIENT_ACTIVATION_PARAMS` (`ActivateAudioInterfaceAsync` no dispositivo virtual) falhava nessa máquina com `E_INVALIDARG` sem explicação — mas existe um **segundo caminho oficial, documentado, que faz a mesma coisa**: `IMMDevice::Activate()` (API clássica/síncrona) num dispositivo **real**, passando o mesmo `AUDIOCLIENT_ACTIVATION_PARAMS`. Ver a nota exata na [doc do `IMMDevice::Activate`](https://learn.microsoft.com/en-us/windows/win32/api/mmdeviceapi/nf-mmdeviceapi-immdevice-activate): *"Starting in Windows 10 Build 20348, callers activating an IAudioClient can set pActivationParams to a pointer to a AUDIOCLIENT_ACTIVATION_PARAMS to configure an audio client in loopback mode with a process filter."* Trocado esse caminho em `activate_process_loopback()` (`src/lib.rs`) — **funcionou de primeira**, e o código ficou mais simples de quebra (não precisa mais de completion handler COM assíncrono nem `IAgileObject`).
+
+**Testado e confirmado de verdade, não só "compilou"**:
+- Captura básica: som real tocado, capturado com amplitude forte (29737 de um máximo de 32767).
+- **Filtro por processo funciona de verdade** (não só "destravou a captura genérica"): tocando som de um processo específico, excluir **esse** processo deu amplitude `5045`; excluir um processo irrelevante (mesma situação, mesmo som) deu `17051` — mais de 3x mais alto. A diferença prova que o `ProcessLoopbackMode`/`TargetProcessId` está filtrando de verdade.
+
+**Nota importante sobre como isso foi resolvido** — vale registrar pro padrão, não só pro resultado: no meio da investigação, o usuário trouxe uma resposta de outra IA que apontava uma causa (dizia que faltava um campo `dwSize` de 4 bytes no struct, que o `AUDIOCLIENT_ACTIVATION_PARAMS` teria 16 bytes em vez de 12). **Essa resposta estava errada** — inventou um campo que não existe (conferido na hora, direto na documentação oficial: o struct só tem `ActivationType` + a união, 2 membros, sem nenhum `dwSize`). Foi um caso de resposta de IA soando confiante e plausível (tabela bem montada, números que pareciam certos) mas fabricada. A segunda pesquisa do usuário — dessa vez trazendo o **link da documentação oficial**, não uma resposta pronta — foi o que resolveu de verdade. Lição prática: link pra fonte primária vale muito mais que resposta pronta de outra IA, mesmo (principalmente) quando a resposta pronta parece tecnicamente detalhada.
+
+---
+
+**Histórico da investigação** (mantido porque documenta bem o processo de eliminação — não precisa mais repetir nenhum desses testes, já sabemos a causa e a solução):
+
+<details>
+<summary>Investigação completa até a causa ser encontrada (clique pra expandir)</summary>
+
+**Estado antigo desse parágrafo (não é mais verdade, mantido só como contexto histórico): "BLOQUEADO, não é bug de código"**
+
+Objetivo: usar a API do Windows `AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK` (`ActivateAudioInterfaceAsync` + `AUDIOCLIENT_ACTIVATION_PARAMS`, documentada oficialmente pela Microsoft, [amostra oficial](https://learn.microsoft.com/en-us/samples/microsoft/windows-classic-samples/applicationloopbackaudio-sample/)) pra capturar áudio só do app compartilhado (modo *include*, janela específica) ou tudo menos o Discord (modo *exclude*, tela inteira).
+
+**Decisão de arquitetura**: escrito como addon nativo próprio (`electron/native/sinal-audio-loopback/`, Rust + `windows-rs` + N-API), em vez de depender do pacote pronto `wasapi-loopback` — esse é só GitHub dependency (não publicado no npm), sem histórico de manutenção (2 commits), rodando com acesso a áudio dentro do instalador que os amigos vão rodar. Decisão do usuário, ver conversa da sessão.
+
+**Toolchain instalado** (não estava presente antes): Visual Studio Build Tools 2022 (workload C++ + Windows SDK) via `winget install Microsoft.VisualStudio.2022.BuildTools`, e Rust via `rustup` (`winget install Rustlang.Rustup` deixou um instalador interativo travado esperando input — contornado baixando `rustup-init.exe` direto e rodando com `-y --profile minimal`). Ambos confirmados funcionando (`cargo build` de um projeto sanity-check linkou certinho contra o MSVC).
+
+**O addon compila e carrega no Node normalmente** (`AudioLoopback` class, métodos `start(pid, exclude, callback)`/`stop()`). O bug não é de compilação nem de tipos — é a própria ativação da API que o Windows recusa.
+
+**Sintoma**: `ActivateAudioInterfaceAsync` despacha OK e o callback assíncrono dispara, mas `GetActivateResult()` devolve `E_INVALIDARG` (`0x80070057`, "Parâmetro incorreto") — **nos dois modos** (include e exclude), pra qualquer PID testado (inclusive o próprio processo, o Explorer, um processo tocando som de verdade).
+
+**Investigação feita, tudo eliminado como causa** (não repetir esses testes, já foram feitos):
+1. ✅ Bytes do blob `AUDIOCLIENT_ACTIVATION_PARAMS` conferidos manualmente — 12 bytes, campos exatos, sem erro de alinhamento/padding.
+2. ✅ Comparado campo a campo com a amostra oficial da Microsoft E com um projeto de referência real (`WerdoxDev/loopback-capture`, C++/N-API) — construção idêntica.
+3. ✅ `IAgileObject` adicionado ao completion handler (documentado como necessário pra evitar deadlock/erro de marshaling) — não mudou o resultado.
+4. ❌ **Não é bug do código**: instalei o pacote npm real `loopback-capture` (publicado, mantido, binário pré-compilado) e testei os dois modos, no mesmo PID — **falha idêntica**, sem nem reportar erro (a API deles é silenciosa em erro).
+5. ❌ **Não é Voicemod**: a lista de dispositivos de áudio tinha o driver virtual do Voicemod (suspeito clássico de quebrar API avançada de WASAPI) — usuário desinstalou, mesmo erro exato depois.
+6. ❌ **Não é permissão/privacidade do Windows**: não existe categoria de privacidade (`CapabilityAccessManager\ConsentStore`) pra isso — conferida a lista completa de categorias, nenhuma bate.
+7. ❌ **Não é elevação**: testado como Administrador (UAC aceito pelo usuário), mesmo erro exato.
+8. ❌ **Não é anti-cheat**: `vgk`/`vgc` (Riot Vanguard), `EasyAntiCheat_EOS`, `BEService` (BattlEye) estão instalados nessa máquina (é PC de jogo) mas **parados** no momento do teste — não é isso.
+9. ✅ **Confirmado que a captura básica funciona**: sistema inteiro sem filtro por processo (API mais antiga) captura áudio real perfeitamente — testado tocando som de verdade (`tada.wav`) durante a captura, amplitude real detectada. O problema é específico da ativação `PROCESS_LOOPBACK`, não da pipeline de áudio em geral.
+10. ⚠️ **Tentativa de descartar "toda API assíncrona nova está quebrada" foi inconclusiva** — um teste rápido usando `ActivateAudioInterfaceAsync` com ativação DEFAULT (sem blob de processo, contra o device ID real do endpoint padrão) devolveu um erro **diferente** (`0x80070002`, arquivo não encontrado) — mas é mais provável que seja bug no script de diagnóstico rápido (`examples/diag_default_activation.rs`) do que uma descoberta real. **Não tratar esse resultado como conclusão.**
+
+**Hipótese descartada por falta de evidência real**: cheguei a especular que fosse uma regressão conhecida dessa build do Windows (`25H2`, `10.0.26200`, UBR 9457) — mas ao checar a fonte primária, o relato que citei era de um bug bem mais grave e diferente (dispositivos de áudio inteiros sumindo do sistema), não bate com nosso sintoma (dispositivo funciona normal, só essa API específica recusa). **Não repetir essa afirmação sem evidência nova e melhor.**
+
+**Estado real: causa raiz desconhecida.** Não é o código (mesmo bug num pacote de terceiro maduro), não é Voicemod, não é permissão, não é elevação, não é anti-cheat. Sobra: outro driver/software não identificado, alguma configuração específica dessa máquina, ou algo que ainda não foi testado.
+
+11. ❌ **Não é falta de reiniciar**: máquina reiniciada de verdade, testado de novo com `node test/smoke.mjs` — mesmo erro exato, inclusive rodando elevado. Reboot nunca foi a causa.
+
+**Causa raiz real**: o caminho `ActivateAudioInterfaceAsync` + dispositivo virtual continua não funcionando nessa máquina até hoje, por motivo ainda desconhecido — mas isso deixou de importar, porque existe um caminho alternativo oficial (`IMMDevice::Activate`) que funciona. Ver o resumo no início dessa seção.
+
+</details>
+
+**Estado atual do código**: `activate_process_loopback()` em `src/lib.rs` usa `IMMDeviceEnumerator::GetDefaultAudioEndpoint()` + `IMMDevice::Activate<IAudioClient>()`. Nada de `ActivateAudioInterfaceAsync`, nada de completion handler COM, nada de `IAgileObject` — tudo síncrono, bem mais simples que a amostra oficial da Microsoft (que usa o caminho assíncrono). Testes automatizados ficaram em `electron/native/sinal-audio-loopback/test/`: `smoke.mjs` (captura básica) e `exclude-filter-test.mjs` (prova que o filtro por processo discrimina de verdade, comparando amplitude com/sem exclusão do processo certo).
+
+### 15.3 Integração completa — ✅ FUNCIONANDO de ponta a ponta (2026-09-22)
+
+Terminado na mesma sessão que resolveu a §15.2. Os três pedaços que faltavam, todos implementados e testados contra o LiveKit self-hosted **real** (não mock):
+
+1. **PID certo a partir da escolha no seletor** — duas novas funções no addon nativo (`get_window_process_id(hwnd)`, `find_discord_root_pid()`), ambas testadas contra processos reais rodando na máquina (`GetWindowThreadProcessId`/`CreateToolhelp32Snapshot`, ver `src/lib.rs`). Compartilhar uma janela específica → modo *include* nessa janela; compartilhar a tela inteira → modo *exclude* sempre no PID raiz do Discord (acha a raiz da árvore de processos, não um `Discord.exe` filho qualquer, senão `PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE` não exclui a árvore toda).
+2. **`main.js`** decide o alvo em `determineAudioTarget()`, inicia a captura nativa assim que o `setDisplayMediaRequestHandler` resolve a fonte, e manda cada pedaço de PCM pro renderer via `webContents.send('sinal:audio-chunk', buf)`. `preload.js` expõe `window.sinalElectron.onAudioChunk(callback)` e `.stopIsolatedAudio()`.
+3. **`app.js`** (`createElectronIsolatedAudioTrack()`, antes do `toggleShare()`) monta uma `MediaStreamTrack` de verdade a partir dos pedaços PCM via `ScriptProcessorNode` + `MediaStreamAudioDestinationNode`, e publica como track de áudio extra (`Track.Source.ScreenShareAudio`) junto com a track de vídeo. Chamado só se `window.sinalElectron.isElectron` existir — no site normal (navegador), esse código nem roda.
+
+⚠️ **Pegadinha real encontrada e corrigida**: `ScriptProcessorNode` criado com **0 canais de entrada** (`createScriptProcessor(4096, 0, 2)`) não é "puxado" de verdade pelo motor de áudio do Chromium mesmo com uma fonte conectada — o `onaudioprocess` roda, a fila esvazia, mas sai só silêncio. Corrigido declarando 2 canais de entrada (ignorados, a saída vem inteira da fila interna) + uma `ConstantSourceNode` muda conectada como "motor". Validado isolado antes de integrar: uma senoide sintética de amplitude `0.5` saiu do outro lado com amplitude captada `0.4999...` (`electron/test/test-pcm-to-track.html`).
+
+**Testado de ponta a ponta contra o LiveKit self-hosted real** (`electron/test/e2e-full-integration.mjs`, roda o `app.js` modificado servido local via `vercel dev`, não a versão publicada): criou uma sala de verdade, compartilhou a tela inteira, e **tanto a track de vídeo quanto a de áudio isolado publicaram com sucesso** — `videoPublicado: true`, `audioIsoladoPublicado: true`, `audioTrackKind: "audio"`.
+
+**Limpeza adicionada**: `toggleShare()` (parar compartilhamento) e `leaveRoom()` chamam `teardownElectronIsolatedAudio()` — sem isso no `leaveRoom()`, sair da sala compartilhando deixava a captura nativa rodando pra sempre em segundo plano no processo principal.
+
+**Empacotamento pro instalador**: `cargo build --release` (não a build debug) é o artefato que vai pro `.exe` — `package.json` do electron tem `files`/`asarUnpack` apontando pro `.node` de release (módulo nativo não pode ficar dentro do `.asar`, senão `require()` não consegue `dlopen`). Testado: `npm run dist` empacota certinho (`.node` aparece em `resources/app.asar.unpacked/native/...`) e o `.exe` gerado roda sem erro de addon.
+
+**O que ainda não foi testado**: qualidade percebida do áudio numa sessão real e longa com outra pessoa ouvindo (só testado tecnicamente — chega, tem amplitude real, mas não houve teste de "like ficou bom de ouvir"), e o caso "compartilhar uma janela específica" com áudio isolado de verdade (o teste de ponta a ponta usou tela inteira/exclude-Discord; o `getWindowProcessId` foi validado separadamente mas não nesse fluxo completo).
