@@ -533,6 +533,53 @@ function toggleElectronAudio(){
   updateAudioToggleBtn();
 }
 
+// ---------------- CHECKLIST DE FONTES (modo "compartilhar tela inteira", só Electron) ----------------
+// Só existe quando compartilhando a TELA INTEIRA (não uma janela específica)
+// — main.js manda 'sinal:audio-sources' periodicamente nesse modo, nunca no
+// modo janela (que já isola um app só sozinho, ver HANDOFF §15.12/§15.13).
+// Construído via createElement/textContent (não innerHTML) porque exeName
+// vem do nome de processos do Windows — nada garante que não tenha
+// caractere estranho, mesma cautela de renderAvatars()/renderRosterPanel().
+function renderAudioSourcesPanel(sources){
+  const panel = document.getElementById('audioSourcesPanel');
+  const list = document.getElementById('audioSourcesList');
+  if(!panel || !list) return;
+  list.innerHTML = '';
+  if(!sources || sources.length === 0){
+    panel.classList.remove('on');
+    return;
+  }
+  panel.classList.add('on');
+  sources.forEach((source) => {
+    const item = document.createElement('div');
+    item.className = 'audio-source-item';
+    const checkboxId = 'audioSource_' + source.pid;
+
+    const checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    checkbox.id = checkboxId;
+    checkbox.checked = source.enabled;
+    checkbox.addEventListener('change', () => {
+      if(window.sinalElectron) window.sinalElectron.toggleAudioSource(source.pid, source.exeName, checkbox.checked);
+    });
+
+    const label = document.createElement('label');
+    label.setAttribute('for', checkboxId);
+    label.textContent = source.exeName;
+
+    item.appendChild(checkbox);
+    item.appendChild(label);
+    list.appendChild(item);
+  });
+}
+
+function hideAudioSourcesPanel(){
+  const panel = document.getElementById('audioSourcesPanel');
+  const list = document.getElementById('audioSourcesList');
+  if(panel) panel.classList.remove('on');
+  if(list) list.innerHTML = '';
+}
+
 // ---------------- ÁUDIO ISOLADO (só dentro do app desktop/Electron) ----------------
 // O navegador (e o getDisplayMedia padrão dentro do Electron) só oferece
 // "áudio do sistema inteiro" ao compartilhar tela — o que inclui a voz da
@@ -566,22 +613,40 @@ function createElectronIsolatedAudioTrack(){
   // não é "puxado" de verdade pelo motor de áudio do Chromium, mesmo com
   // uma fonte conectada (ver electron/test/test-pcm-to-track.html).
   const processor = audioCtx.createScriptProcessor(4096, 2, 2);
-  const queue = []; // fila de {left, right} Float32Array, um item por pedaço recebido
-  let queuedFrames = 0;
-  const MAX_QUEUED_FRAMES = 48000 * 2; // ~2s de margem — além disso descarta, pra não acumular atraso crescente
-  let readIndex = 0;
+  // Uma fila por PID de origem — no modo "compartilhar tela inteira" pode
+  // ter várias fontes simultâneas (ver HANDOFF §15.13), cada uma mandando
+  // seus próprios pedaços de PCM; a mistura acontece aqui, somando amostra
+  // por amostra de cada fila ativa no momento de montar o buffer de saída.
+  // No modo "compartilhar uma janela" é só uma fila mesmo (um PID só) — o
+  // mesmo código atende os dois casos sem precisar de branch.
+  const MAX_QUEUED_FRAMES = 48000 * 2; // ~2s de margem por fonte — além disso descarta, pra não acumular atraso crescente
+  const sources = new Map(); // pid -> { queue: [{left,right}], readIndex, queuedFrames }
+
+  function sourceState(pid){
+    let s = sources.get(pid);
+    if(!s){ s = { queue: [], readIndex: 0, queuedFrames: 0 }; sources.set(pid, s); }
+    return s;
+  }
 
   processor.onaudioprocess = (event) => {
     const left = event.outputBuffer.getChannelData(0);
     const right = event.outputBuffer.getChannelData(1);
     for(let i = 0; i < left.length; i++){
-      if(queue.length === 0){ left[i] = 0; right[i] = 0; continue; }
-      const chunk = queue[0];
-      left[i] = chunk.left[readIndex];
-      right[i] = chunk.right[readIndex];
-      readIndex++;
-      queuedFrames--;
-      if(readIndex >= chunk.left.length){ queue.shift(); readIndex = 0; }
+      let l = 0, r = 0;
+      for(const s of sources.values()){
+        if(s.queue.length === 0) continue;
+        const chunk = s.queue[0];
+        l += chunk.left[s.readIndex];
+        r += chunk.right[s.readIndex];
+        s.readIndex++;
+        s.queuedFrames--;
+        if(s.readIndex >= chunk.left.length){ s.queue.shift(); s.readIndex = 0; }
+      }
+      // Somar N fontes pode passar de ±1.0 — clampa em vez de deixar
+      // estourar (distorção feia) ou normalizar (mudaria o volume toda
+      // hora que uma fonte entra/sai, pior ainda).
+      left[i] = Math.max(-1, Math.min(1, l));
+      right[i] = Math.max(-1, Math.min(1, r));
     }
   };
 
@@ -596,13 +661,13 @@ function createElectronIsolatedAudioTrack(){
 
   // window.sinalElectron.onAudioChunk: buf chega como Uint8Array de PCM
   // 16-bit LE intercalado estéreo, 48kHz — mesmo formato fixo que o addon
-  // nativo sempre usa.
-  window.sinalElectron.onAudioChunk((buf) => {
-    if(queuedFrames > MAX_QUEUED_FRAMES){
-      // Captura adiantou muito da reprodução — descarta o acumulado em vez
-      // de deixar o atraso crescer pra sempre (prioriza "tempo real", não
-      // "não perder nada", igual o resto do app faz com vídeo).
-      queue.length = 0; readIndex = 0; queuedFrames = 0;
+  // nativo sempre usa. `pid` identifica de qual fonte veio.
+  window.sinalElectron.onAudioChunk((pid, buf) => {
+    const s = sourceState(pid);
+    if(s.queuedFrames > MAX_QUEUED_FRAMES){
+      // Essa fonte adiantou muito da reprodução — descarta só o acumulado
+      // dela (as outras fontes não são afetadas).
+      s.queue.length = 0; s.readIndex = 0; s.queuedFrames = 0;
     }
     const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
     const frameCount = Math.floor(buf.length / 4); // 4 bytes por frame (2 canais × 16 bits)
@@ -612,9 +677,20 @@ function createElectronIsolatedAudioTrack(){
       left[i] = view.getInt16(i * 4, true) / 32768;
       right[i] = view.getInt16(i * 4 + 2, true) / 32768;
     }
-    queue.push({ left, right });
-    queuedFrames += frameCount;
+    s.queue.push({ left, right });
+    s.queuedFrames += frameCount;
   });
+
+  // Fonte parou de vez (app fechou, ver scanAudioSources em main.js) — some
+  // com a fila dela em vez de deixar um resquício mudo pra sempre no Map.
+  window.sinalElectron.onAudioSourceRemoved((pid) => {
+    sources.delete(pid);
+  });
+
+  // Checklist de apps detectados (só chega evento aqui no modo "tela
+  // inteira" — ver scanAudioSources em main.js; no modo janela nunca
+  // dispara, o painel fica escondido o tempo todo).
+  window.sinalElectron.onAudioSources(renderAudioSourcesPanel);
 
   electronAudioCtx = audioCtx;
   return destination.stream.getAudioTracks()[0];
@@ -622,6 +698,7 @@ function createElectronIsolatedAudioTrack(){
 
 function teardownElectronIsolatedAudio(){
   if(window.sinalElectron) window.sinalElectron.stopIsolatedAudio();
+  hideAudioSourcesPanel();
   if(electronAudioCtx){
     electronAudioCtx.close().catch(() => {});
     electronAudioCtx = null;
@@ -1426,7 +1503,7 @@ window.addEventListener('beforeunload', () => {
 });
 
 // PWA: versão, registro do service worker, detecção de atualização e botão de instalação
-const APP_VERSION = '0.8.33'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
+const APP_VERSION = '0.8.34'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
 document.getElementById('versionLabel').textContent = 'v' + APP_VERSION;
 
 if('serviceWorker' in navigator){

@@ -214,6 +214,16 @@ body.in-room footer .version{margin-top:0;}
 #audioToggleBtn.audio-on{ color:var(--tune); }
 #audioToggleBtn.audio-on .icon-speaker{ display:block; }
 #audioToggleBtn.audio-on .icon-speaker-muted{ display:none; }
+/* Checklist de apps incluídos na captura multi-fonte (só existe compartilhando
+   a tela inteira dentro do Electron — ver scanAudioSources em main.js e
+   HANDOFF §15.13). Escondido por padrão, .on quando há fontes detectadas. */
+.audio-sources-panel{ display:none; background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:10px 14px; margin-top:10px; }
+.audio-sources-panel.on{ display:block; }
+.audio-sources-title{ font-size:11px; color:var(--fog); letter-spacing:.5px; margin-bottom:6px; }
+.audio-sources-list{ display:flex; flex-wrap:wrap; gap:8px 16px; }
+.audio-source-item{ display:flex; align-items:center; gap:6px; font-size:13px; color:var(--ink); }
+.audio-source-item input{ accent-color:var(--tune); cursor:pointer; }
+.audio-source-item label{ cursor:pointer; }
 .chat-badge{
   position:absolute; top:3px; right:3px; min-width:16px; height:16px; padding:0 4px;
   border-radius:8px; background:var(--rec); color:#fff; font-size:10px; font-weight:700;
