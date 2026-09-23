@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<title>Sinal</title>
+<style>
+  /* Mesma paleta/padrão do update.html — marca do Sinal em vez de tela
+     branca/preta genérica enquanto o site (produção, via rede) carrega
+     dentro da janela principal. Sem fonte externa de propósito, igual o
+     update.html: não pode depender de rede pra desenhar, é justamente
+     a tela que cobre o tempo de espera da rede. */
+  :root{
+    --void:#0b0c0e; --ink:#eef1f0; --fog:#888d90; --tune:#ffb020;
+  }
+  *{ box-sizing:border-box; }
+  body{
+    margin:0; height:100vh; overflow:hidden; -webkit-app-region:drag;
+    background:
+      radial-gradient(ellipse 500px 260px at 15% -10%, #1a1512 0%, transparent 62%),
+      var(--void);
+    color:var(--ink); font-family:'Segoe UI', system-ui, sans-serif;
+    display:flex; flex-direction:column; align-items:center; justify-content:center;
+    gap:14px;
+  }
+  .brand{ display:flex; align-items:center; gap:8px; }
+  .rec-led{
+    width:8px; height:8px; border-radius:50%; background:#ff4438;
+    box-shadow:0 0 0 3px #ff443822; animation:pulse 1.4s ease-in-out infinite;
+  }
+  @keyframes pulse{ 0%,100%{ opacity:1; } 50%{ opacity:.35; } }
+  .wordmark{ font-size:22px; font-weight:800; letter-spacing:3px; text-transform:uppercase; }
+  .hint{ color:var(--fog); font-size:12px; letter-spacing:.5px; }
+</style>
+</head>
+<body>
+  <div class="brand">
+    <span class="rec-led"></span>
+    <span class="wordmark">Sinal</span>
+  </div>
+  <span class="hint">carregando…</span>
+</body>
+</html>

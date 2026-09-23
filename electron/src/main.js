@@ -60,10 +60,41 @@ try{
 }
 
 let mainWindow = null;
+let splashWindow = null;
 let tray = null;
 let pickerWindow = null;
 let isQuitting = false;
 let audioLoopback = null; // instância ativa do AudioLoopback nativo, se houver
+
+// Tela de splash com a cara do Sinal (mesmo padrão do update.html) enquanto
+// o site de produção carrega pela rede — sem isso, abrir o app mostrava uma
+// janela branca/preta em branco por uma fração de segundo antes do conteúdo
+// aparecer (pedido do usuário, ver HANDOFF §19 "outras ideias cogitadas").
+// Não tem preload/IPC — arquivo local estático, só decorativo.
+function createSplashWindow(){
+  splashWindow = new BrowserWindow({
+    width: 320,
+    height: 200,
+    frame: false,
+    resizable: false,
+    movable: false,
+    skipTaskbar: true,
+    backgroundColor: '#0b0c0e',
+    webPreferences: { sandbox: true }
+  });
+  splashWindow.loadFile(path.join(__dirname, 'splash.html'));
+}
+
+function closeSplashAndShowMain(){
+  if(splashWindow && !splashWindow.isDestroyed()){
+    splashWindow.close();
+    splashWindow = null;
+  }
+  if(mainWindow && !mainWindow.isDestroyed()){
+    mainWindow.show();
+    mainWindow.focus();
+  }
+}
 
 function createMainWindow(initialRoomCode){
   mainWindow = new BrowserWindow({
@@ -71,6 +102,8 @@ function createMainWindow(initialRoomCode){
     height: 800,
     title: 'Sinal',
     icon: path.join(__dirname, '../build/icon.png'),
+    show: false, // só aparece depois que o site termina de carregar (ver abaixo)
+    backgroundColor: '#0b0c0e', // se algo aparecer antes do CSS, é escuro, não branco
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -83,6 +116,13 @@ function createMainWindow(initialRoomCode){
     ? `${SINAL_URL}/?sala=${encodeURIComponent(initialRoomCode)}`
     : SINAL_URL;
   mainWindow.loadURL(startUrl);
+
+  // Troca do splash pra janela de verdade assim que o carregamento
+  // terminar — de um jeito (carregou) ou de outro (falhou, ex: sem rede).
+  // Sem o did-fail-load, uma falha de rede deixaria a pessoa presa
+  // olhando pro splash pra sempre, sem nenhum feedback de erro.
+  mainWindow.webContents.once('did-finish-load', closeSplashAndShowMain);
+  mainWindow.webContents.once('did-fail-load', closeSplashAndShowMain);
 
   // Fechar a janela só minimiza pra bandeja — é o motivo nº1 de existir essa
   // versão desktop (background de verdade, ver auditoria Parte 5). Só fecha
@@ -475,6 +515,7 @@ app.whenReady().then(() => {
   // nele antes de criar a janela, pra já abrir direto na sala certa em vez
   // de abrir vazio e só depois navegar.
   const launchUrl = process.argv.find((arg) => arg.startsWith('sinal://'));
+  createSplashWindow();
   createMainWindow(extractRoomCodeFromProtocolUrl(launchUrl));
   createTray();
   setupAutoUpdater();
