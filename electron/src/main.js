@@ -379,10 +379,21 @@ function setupAutoUpdater(){
   });
   autoUpdater.on('update-downloaded', async (info) => {
     console.log('[sinal-update] atualização baixada:', info.version);
-    const restartNow = await showUpdateDialog(info);
-    if(restartNow){
-      isQuitting = true;
-      autoUpdater.quitAndInstall();
+    const askToRestart = async () => {
+      const restartNow = await showUpdateDialog(info);
+      if(restartNow){
+        isQuitting = true;
+        autoUpdater.quitAndInstall();
+      }
+    };
+    // a checagem roda sozinha a cada 4h mesmo com a janela minimizada na
+    // bandeja (ex: jogando com o Sinal só rodando em segundo plano) — sem
+    // isso a caixa apareceria do nada nessa hora, podendo roubar foco de
+    // um jogo em modo janela/borderless. Espera reabrir pra interromper.
+    if(mainWindow.isVisible()){
+      askToRestart();
+    } else {
+      mainWindow.once('show', askToRestart);
     }
   });
 
