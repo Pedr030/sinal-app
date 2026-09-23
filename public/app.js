@@ -1460,39 +1460,19 @@ function prefillJoinCode(){
   }catch(e){ /* localStorage indisponível — sem problema, só não pré-preenche */ }
 }
 
-// Oferece abrir o app desktop pra quem chegou via link de convite (?sala=)
-// só no navegador normal — dentro do Electron já tá no app, não faz sentido.
-// Se a pessoa já marcou "sempre abrir automaticamente" antes (localStorage),
-// tenta direto em vez de mostrar o banner de novo — mas SEM esconder o
-// formulário normal: se o app não estiver instalado (ou foi desinstalado
-// depois de marcar essa opção), essa tentativa só falha em silêncio e a
-// pessoa segue usando a página normalmente, sem ficar travada em lugar nenhum.
+// Quem chegou via link de convite (?sala=) e ainda tá no navegador normal
+// (dentro do Electron já tá no app, não faz sentido) — tenta abrir o
+// protocolo sinal://. Se o app estiver instalado, o próprio navegador
+// mostra um prompt nativo perguntando "Abrir Sinal?" (com opção de sempre
+// permitir, embutida no navegador — não precisa duplicar isso aqui). Se
+// não tiver instalado, essa tentativa só falha em silêncio e a pessoa
+// segue direto pro formulário normal da página, sem nenhum aviso feio.
 function setupOpenInApp(){
   if(window.sinalElectron?.isElectron) return;
   const params = new URLSearchParams(window.location.search);
   const sala = params.get('sala');
   if(!sala) return;
-
-  const protoUrl = 'sinal://join?sala=' + encodeURIComponent(sala);
-  let remembered = false;
-  try{ remembered = localStorage.getItem('sinal:autoOpenApp') === '1'; }catch(e){}
-
-  if(remembered){
-    window.location.href = protoUrl;
-    return;
-  }
-
-  const banner = document.getElementById('openAppBanner');
-  const btn = document.getElementById('openAppBtn');
-  const remember = document.getElementById('openAppRemember');
-  if(!banner || !btn) return;
-  banner.hidden = false;
-  btn.addEventListener('click', () => {
-    if(remember?.checked){
-      try{ localStorage.setItem('sinal:autoOpenApp', '1'); }catch(e){}
-    }
-    window.location.href = protoUrl;
-  });
+  window.location.href = 'sinal://join?sala=' + encodeURIComponent(sala);
 }
 
 // pré-preenche o nome com o último usado, salvo em getName() ao entrar numa
@@ -1681,7 +1661,7 @@ window.addEventListener('beforeunload', () => {
 });
 
 // PWA: versão, registro do service worker, detecção de atualização e botão de instalação
-const APP_VERSION = '0.8.39'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
+const APP_VERSION = '0.8.40'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
 // Dentro do Electron, mostra a versão do INSTALADOR (electron/package.json),
 // não a do site — ver preload.js. Fora dele (navegador normal), continua a
 // versão do deploy de sempre.
