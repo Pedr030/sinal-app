@@ -16,6 +16,14 @@
 !define MUI_DIRECTORYPAGE_TEXTCOLOR "EEF1F0"  ; sem isso o texto fica preto (padrão do sistema) em cima do fundo escuro
 !define MUI_INSTFILESPAGE_COLORS "EEF1F0 0B0C0E"  ; log de instalação: --ink sobre --void
 
+; Checkbox "Executar o Sinal" (página de finalização) ficava com texto preto
+; mesmo com MUI_TEXTCOLOR definido — bug conhecido do próprio NSIS
+; (Pages\Finish.nsh, comentário deles: "SetCtlColors does not change the
+; check/radio text color, bug #443"). O fix (SetWindowTheme no checkbox) já
+; existe pronto lá, só que vem condicionado a "só aplica em modo de alto
+; contraste do Windows" — esse define força aplicar sempre.
+!define MUI_FORCECLASSICCONTROLS
+
 ; Cobertura disso: boas-vindas e finalização ficam 100% no tema (é onde o
 ; MUI2 recolore a própria página, não só o cabeçalho), e o cabeçalho escuro
 ; aparece em toda página que tiver um.
