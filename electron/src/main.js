@@ -12,8 +12,9 @@
 //  4. No Windows não existe seletor nativo pro Electron (useSystemPicker só
 //     funciona no macOS 15+), então a gente mostra nosso próprio seletor
 //     (picker.html) com os thumbnails do desktopCapturer.
-const { app, BrowserWindow, Tray, Menu, session, desktopCapturer, ipcMain, nativeImage } = require('electron');
+const { app, BrowserWindow, Tray, Menu, session, desktopCapturer, ipcMain, nativeImage, globalShortcut, screen } = require('electron');
 const path = require('node:path');
+const fs = require('node:fs');
 const { autoUpdater } = require('electron-updater');
 
 // URL de produção real — mesma que https://sinal-app-stream.vercel.app serve
@@ -58,6 +59,46 @@ try{
 }catch(e){
   console.error('[sinal] addon de áudio isolado não carregou (sala funciona sem isso):', e.message);
 }
+
+// Settings do app desktop (atalho global) — guardadas num JSON próprio na
+// pasta de dados do usuário, NÃO no localStorage do site. Motivo: o atalho
+// precisa ser registrado no processo principal já em app.whenReady(), antes
+// da página sequer começar a carregar — o processo principal não tem como
+// ler o localStorage de uma página web (isso é sandboxed pro renderer).
+// De propósito só guarda o mínimo necessário pra essa feature — nada
+// pessoal (nome, sala, etc — isso continua só no localStorage do site).
+const SETTINGS_PATH = path.join(app.getPath('userData'), 'settings.json');
+const DEFAULT_SETTINGS = {
+  shortcutEnabled: true,
+  shortcut: 'Control+Alt+S',
+  quickShareWholeScreen: false
+};
+
+function loadSettings(){
+  try{
+    const raw = fs.readFileSync(SETTINGS_PATH, 'utf-8');
+    return { ...DEFAULT_SETTINGS, ...JSON.parse(raw) };
+  }catch(e){
+    return { ...DEFAULT_SETTINGS }; // primeira vez, arquivo corrompido, etc — cai no padrão
+  }
+}
+
+function saveSettings(settings){
+  try{
+    fs.writeFileSync(SETTINGS_PATH, JSON.stringify(settings, null, 2));
+  }catch(e){
+    console.error('[sinal] não consegui salvar settings.json:', e.message);
+  }
+}
+
+let appSettings = loadSettings();
+
+// Setado pelo renderer (via requestQuickShare(), ver preload.js) bem antes
+// de chamar toggleShare() quando: era pra COMEÇAR a compartilhar (não
+// parar) via atalho E a preferência "tela inteira direto" tá ligada. Um
+// tiro só — consumido (e resetado) na próxima chamada de getDisplayMedia,
+// não fica "grudado" afetando um compartilhamento manual depois.
+let skipPickerOnce = false;
 
 let mainWindow = null;
 let splashWindow = null;
@@ -485,7 +526,20 @@ app.whenReady().then(() => {
         thumbnailSize: { width: 300, height: 200 },
         fetchWindowIcons: true
       });
-      const chosen = await showSourcePicker(sources);
+
+      let chosen;
+      if(skipPickerOnce){
+        skipPickerOnce = false;
+        // desktopCapturer não garante ordem, então casa pelo display_id
+        // com o monitor primário de verdade em vez de só pegar sources[0].
+        const primaryId = String(screen.getPrimaryDisplay().id);
+        chosen = sources.find((s) => s.id.startsWith('screen:') && s.display_id === primaryId)
+          || sources.find((s) => s.id.startsWith('screen:'))
+          || null;
+      } else {
+        chosen = await showSourcePicker(sources);
+      }
+
       if(!chosen){
         // Cancelou o seletor — devolve vazio, o getDisplayMedia() do lado do
         // app.js rejeita como se a pessoa tivesse cancelado o seletor nativo do
@@ -519,7 +573,53 @@ app.whenReady().then(() => {
   createMainWindow(extractRoomCodeFromProtocolUrl(launchUrl));
   createTray();
   setupAutoUpdater();
+
+  registerShareShortcut();
 });
+
+// Atalho global pra compartilhar/parar de compartilhar sem precisar focar a
+// janela — pedido do usuário (ver HANDOFF §19). Só manda o aviso pro
+// renderer chamar a MESMA toggleShare() do botão — essa função já funciona
+// mesmo fora de uma sala (é um no-op, `if(!room) return`), então não
+// precisa checar estado nenhum aqui do lado do processo principal. Não
+// força a janela a aparecer: parar de compartilhar às pressas sem precisar
+// alt-tab é o cenário que mais importa aqui.
+//
+// Reutilizável: chamada no início E toda vez que a aba de settings muda o
+// atalho ou liga/desliga ele (ver ipcMain.handle('sinal:set-settings')
+// abaixo) — sempre desregistra o anterior antes, senão um rebind ficaria
+// com os dois atalhos (o velho E o novo) registrados ao mesmo tempo.
+function registerShareShortcut(){
+  globalShortcut.unregisterAll();
+  if(!appSettings.shortcutEnabled) return true;
+  const ok = globalShortcut.register(appSettings.shortcut, () => {
+    if(mainWindow && !mainWindow.isDestroyed()){
+      mainWindow.webContents.send('sinal:toggle-share-shortcut');
+    }
+  });
+  if(!ok){
+    console.error(`[sinal] não consegui registrar o atalho ${appSettings.shortcut} (outro programa já usa essa combinação?)`);
+  }
+  return ok;
+}
+
+app.on('will-quit', () => { globalShortcut.unregisterAll(); });
+
+// Settings da aba de configurações (ver public/app.js) — só o necessário
+// pra essa feature, nada pessoal (ver comentário em SETTINGS_PATH).
+ipcMain.handle('sinal:get-settings', () => appSettings);
+
+ipcMain.handle('sinal:set-settings', (event, partial) => {
+  appSettings = { ...appSettings, ...partial };
+  saveSettings(appSettings);
+  const shortcutRegistered = registerShareShortcut();
+  return { settings: appSettings, shortcutRegistered };
+});
+
+// Chamado pelo renderer bem antes de toggleShare() quando o atalho disparou
+// COMEÇANDO um compartilhamento (não parando) com "tela inteira direto"
+// ligado — ver setupGlobalShareShortcut() em app.js.
+ipcMain.on('sinal:request-quick-share', () => { skipPickerOnce = true; });
 
 // Abrir via link sinal:// com o app JÁ rodando: o Windows lança um processo
 // novo (que perde o lock lá em cima e sai na hora), mas antes disso emite

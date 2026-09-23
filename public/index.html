@@ -61,6 +61,9 @@
   <div class="install-actions">
     <button id="installBtn">Adicionar atalho (PWA)</button>
     <a id="downloadDesktopBtn" class="btn-link" href="https://github.com/Pedr030/sinal-app/releases/latest" target="_blank" rel="noopener">Baixar Sinal Desktop</a>
+    <button type="button" id="settingsBtn" class="icon-btn" title="Configurações" aria-label="Configurações">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+    </button>
   </div>
 </header>
 
@@ -210,6 +213,36 @@
   <span class="mono">Nova versão disponível</span>
   <button class="primary" id="updateBtn">Atualizar</button>
 </div>
+
+<!-- Só existe/abre dentro do Electron (settingsBtn some no site normal) —
+     ver setupSettingsPanel() em app.js. Atalho global pra compartilhar. -->
+<div id="settingsOverlay" class="settings-overlay" hidden>
+  <div class="settings-panel">
+    <div class="settings-panel-header">
+      <span>Configurações</span>
+      <button type="button" id="settingsCloseBtn" class="settings-close" aria-label="Fechar">&times;</button>
+    </div>
+
+    <label class="settings-row">
+      <input type="checkbox" id="settingsShortcutEnabled">
+      Atalho global pra compartilhar/parar de compartilhar
+    </label>
+
+    <div class="settings-row settings-shortcut-row">
+      <span class="mono" id="settingsShortcutDisplay">Ctrl+Alt+S</span>
+      <button type="button" id="settingsRebindBtn">Gravar novo atalho</button>
+    </div>
+    <div id="settingsRebindHint" class="settings-hint" hidden>Pressione a combinação desejada… (Esc cancela)</div>
+
+    <label class="settings-row">
+      <input type="checkbox" id="settingsQuickShare">
+      Ao usar o atalho, compartilhar a tela inteira direto (sem escolher)
+    </label>
+
+    <div id="settingsError" class="settings-error" hidden></div>
+  </div>
+</div>
+
 <script src="app.js" defer></script>
 </body>
 </html>

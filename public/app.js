@@ -573,6 +573,12 @@ function toggleShareQuality(){
 // mais sentido pedir pra ligar na mão toda vez.
 let shareElectronAudio = true;
 
+// Cache local das settings do app desktop (atalho global) — carregadas de
+// verdade via IPC em setupSettingsPanel() (assíncrono); valor inicial aqui
+// só cobre a janela de corrida entre o app abrir e essa carga terminar,
+// com o mesmo padrão do main.js (ver DEFAULT_SETTINGS lá).
+let electronSettings = { shortcutEnabled: true, shortcut: 'Control+Alt+S', quickShareWholeScreen: false };
+
 function updateAudioToggleBtn(){
   const btn = document.getElementById('audioToggleBtn');
   if(!btn) return;
@@ -1600,6 +1606,136 @@ function prefillShareElectronAudio(){
   updateAudioToggleBtn();
 }
 
+// Atalho global (registrado em main.js, configurável via settingsPanel
+// abaixo, dispara mesmo com a janela minimizada) — chama a MESMA
+// toggleShare() do botão. Ela já é um no-op fora de uma sala (`if(!room)
+// return`), então não precisa checar sala nenhuma aqui.
+function setupGlobalShareShortcut(){
+  if(!(window.sinalElectron && window.sinalElectron.isElectron)) return;
+  window.sinalElectron.onToggleShareShortcut(() => {
+    // Se é pra COMEÇAR (não tem publicação de tela ainda) e a preferência
+    // "tela inteira direto" tá ligada, avisa o processo principal ANTES de
+    // chamar toggleShare() — ele vai pular o seletor na próxima chamada de
+    // getDisplayMedia (ver skipPickerOnce em main.js).
+    if(room){
+      const { Track } = LivekitClient;
+      const isSharing = !!room.localParticipant.getTrackPublication(Track.Source.ScreenShare);
+      if(!isSharing && electronSettings.quickShareWholeScreen){
+        window.sinalElectron.requestQuickShare();
+      }
+    }
+    toggleShare();
+  });
+}
+
+// Formata o acelerador no formato do Electron ("Control+Alt+S") pro jeito
+// que Windows costuma mostrar tecla de atalho ("Ctrl+Alt+S").
+function formatShortcutForDisplay(accelerator){
+  return (accelerator || '').replace(/Control/g, 'Ctrl').replace(/Super/g, 'Win');
+}
+
+// Painel de configurações do app desktop — hoje só o atalho global, mas
+// pensado pra crescer (ver HANDOFF §26). Settings vivem num JSON próprio do
+// Electron (não localStorage), lidas/gravadas via IPC (getSettings/
+// setSettings em preload.js) — main.js precisa delas prontas antes da
+// página existir, pra registrar o atalho já no app.whenReady().
+function setupSettingsPanel(){
+  if(!(window.sinalElectron && window.sinalElectron.isElectron)) return;
+
+  const overlay = document.getElementById('settingsOverlay');
+  const btn = document.getElementById('settingsBtn');
+  const closeBtn = document.getElementById('settingsCloseBtn');
+  const shortcutEnabledCb = document.getElementById('settingsShortcutEnabled');
+  const quickShareCb = document.getElementById('settingsQuickShare');
+  const shortcutDisplay = document.getElementById('settingsShortcutDisplay');
+  const rebindBtn = document.getElementById('settingsRebindBtn');
+  const rebindHint = document.getElementById('settingsRebindHint');
+  const errorEl = document.getElementById('settingsError');
+
+  const showError = (msg) => { errorEl.textContent = msg; errorEl.hidden = false; };
+  const clearError = () => { errorEl.hidden = true; };
+
+  function applySettingsToUI(settings){
+    electronSettings = settings;
+    shortcutEnabledCb.checked = settings.shortcutEnabled;
+    quickShareCb.checked = settings.quickShareWholeScreen;
+    shortcutDisplay.textContent = formatShortcutForDisplay(settings.shortcut);
+  }
+
+  window.sinalElectron.getSettings().then(applySettingsToUI);
+
+  btn.addEventListener('click', () => { overlay.hidden = false; clearError(); });
+  const closeOverlay = () => { overlay.hidden = true; cancelRebind(); };
+  closeBtn.addEventListener('click', closeOverlay);
+  overlay.addEventListener('click', (e) => { if(e.target === overlay) closeOverlay(); });
+
+  shortcutEnabledCb.addEventListener('change', async () => {
+    clearError();
+    const res = await window.sinalElectron.setSettings({ shortcutEnabled: shortcutEnabledCb.checked });
+    applySettingsToUI(res.settings);
+    if(shortcutEnabledCb.checked && !res.shortcutRegistered){
+      showError('Não consegui ativar esse atalho — outro programa já deve estar usando essa combinação.');
+    }
+  });
+
+  quickShareCb.addEventListener('change', async () => {
+    const res = await window.sinalElectron.setSettings({ quickShareWholeScreen: quickShareCb.checked });
+    applySettingsToUI(res.settings);
+  });
+
+  // Gravação de nova combinação: espera o próximo keydown com pelo menos um
+  // modificador (Ctrl/Alt/Win) + uma tecla final simples (letra/número/F1-F24).
+  // Esc cancela sem mudar nada.
+  let capturing = false;
+  function cancelRebind(){
+    if(!capturing) return;
+    capturing = false;
+    rebindHint.hidden = true;
+    document.removeEventListener('keydown', onRebindKeydown, true);
+  }
+
+  function onRebindKeydown(e){
+    e.preventDefault();
+    if(e.key === 'Escape'){ cancelRebind(); return; }
+    if(['Control','Alt','Shift','Meta'].includes(e.key)) return; // ainda só o modificador, espera a tecla final
+
+    const parts = [];
+    if(e.ctrlKey) parts.push('Control');
+    if(e.altKey) parts.push('Alt');
+    if(e.shiftKey) parts.push('Shift');
+    if(e.metaKey) parts.push('Super');
+    if(parts.length === 0){
+      showError('Precisa de pelo menos uma tecla modificadora (Ctrl, Alt...) junto.');
+      return;
+    }
+
+    let key;
+    if(/^F([1-9]|1[0-9]|2[0-4])$/.test(e.key)) key = e.key;
+    else if(e.key.length === 1) key = e.key.toUpperCase();
+    else { showError('Essa tecla não é suportada, tenta outra combinação.'); return; }
+
+    parts.push(key);
+    const accelerator = parts.join('+');
+    cancelRebind();
+    clearError();
+
+    window.sinalElectron.setSettings({ shortcut: accelerator }).then((res) => {
+      applySettingsToUI(res.settings);
+      if(!res.shortcutRegistered && res.settings.shortcutEnabled){
+        showError('Não consegui registrar essa combinação — outro programa já deve estar usando.');
+      }
+    });
+  }
+
+  rebindBtn.addEventListener('click', () => {
+    if(capturing) return;
+    capturing = true;
+    clearError();
+    rebindHint.hidden = false;
+    document.addEventListener('keydown', onRebindKeydown, true);
+  });
+}
+
 // Ligação dos botões da interface. Ficavam como onclick="..." direto no
 // index.html, o que obrigava toda função a ser global no window e — o motivo
 // de terem saído — é justamente o que a Content-Security-Policy bloqueia
@@ -1652,6 +1788,8 @@ window.addEventListener('DOMContentLoaded', () => {
   prefillShareElectronAudio();
   renderDiscordStatus();
   setupOpenInApp();
+  setupGlobalShareShortcut();
+  setupSettingsPanel();
 });
 
 // Tenta desconectar educadamente ao fechar/recarregar a aba, pra sumir na
@@ -1661,7 +1799,7 @@ window.addEventListener('beforeunload', () => {
 });
 
 // PWA: versão, registro do service worker, detecção de atualização e botão de instalação
-const APP_VERSION = '0.8.41'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
+const APP_VERSION = '0.8.42'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
 // Dentro do Electron, mostra a versão do INSTALADOR (electron/package.json),
 // não a do site — ver preload.js. Fora dele (navegador normal), continua a
 // versão do deploy de sempre.

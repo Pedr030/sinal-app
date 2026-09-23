@@ -56,5 +56,23 @@ contextBridge.exposeInMainWorld('sinalElectron', {
     ipcRenderer.removeAllListeners('sinal:audio-sources');
     ipcRenderer.removeAllListeners('sinal:audio-source-removed');
     ipcRenderer.send('sinal:audio-stop');
-  }
+  },
+
+  // Atalho global (padrão Ctrl+Alt+S, configurável — ver settings abaixo,
+  // registrado em main.js) — dispara mesmo com a janela minimizada/sem
+  // foco, pra compartilhar/parar sem precisar alt-tab.
+  onToggleShareShortcut: (callback) => {
+    ipcRenderer.on('sinal:toggle-share-shortcut', () => callback());
+  },
+
+  // Aba de configurações (atalho global) — settings ficam num JSON próprio
+  // do app, não no localStorage do site (ver comentário em main.js/
+  // SETTINGS_PATH sobre o porquê).
+  getSettings: () => ipcRenderer.invoke('sinal:get-settings'),
+  setSettings: (partial) => ipcRenderer.invoke('sinal:set-settings', partial),
+
+  // Chamado logo antes de toggleShare() quando o atalho disparou começando
+  // um compartilhamento com "tela inteira direto" ligado — main.js pula o
+  // seletor nessa próxima chamada de getDisplayMedia.
+  requestQuickShare: () => ipcRenderer.send('sinal:request-quick-share')
 });
