@@ -24,7 +24,12 @@
 
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#0b0c0e">
-<link rel="icon" href="icons/icon-192.png">
+<!-- favicon.ico é a fonte de verdade pra aba do navegador — alguns
+     contextos (aba fixada, histórico, alguns navegadores) buscam
+     /favicon.ico direto, ignorando o <link> abaixo. Sem ele, cai no globo
+     genérico mesmo com o <link> presente. -->
+<link rel="icon" href="favicon.ico" sizes="any">
+<link rel="icon" href="icons/icon-192.png" type="image/png">
 <link rel="apple-touch-icon" href="icons/icon-192.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=JetBrains+Mono:wght@400;500;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -54,8 +59,8 @@
     </div>
   </div>
   <div class="install-actions">
-    <button id="installBtn">Instalar app</button>
-    <a id="downloadDesktopBtn" class="btn-link" href="https://github.com/Pedr030/sinal-app/releases/latest" target="_blank" rel="noopener">Baixar app desktop</a>
+    <button id="installBtn">Adicionar atalho (PWA)</button>
+    <a id="downloadDesktopBtn" class="btn-link" href="https://github.com/Pedr030/sinal-app/releases/latest" target="_blank" rel="noopener">Baixar Sinal Desktop</a>
   </div>
 </header>
 
