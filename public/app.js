@@ -132,6 +132,14 @@ document.addEventListener('visibilitychange', () => {
   }
 });
 
+// Avisa que uma transmissão NOVA começou (não dispara de novo só por
+// clicar "assistir" num card que já existia, nem ao sincronizar quem já
+// tava compartilhando antes de eu entrar — só no TrackPublished de verdade).
+function notifyNewShare(){
+  playNotifyChime();
+  flashTabTitle();
+}
+
 // ---------------- ENTRY / CONEXÃO COM A SALA ----------------
 function createRoom(){
   getAudioCtx();
@@ -250,8 +258,13 @@ function wireRoomEvents(liveRoom){
     renderAvatars();
     // Com autoSubscribe:false, publicar não inscreve sozinho — mostra o
     // card "clique pra assistir" em vez de puxar vídeo/áudio na hora.
-    if(publication.source === Track.Source.Camera) addPendingTile(participant.identity + ':cam', participant, true);
-    else if(publication.source === Track.Source.ScreenShare) addPendingTile(participant.identity, participant, false);
+    if(publication.source === Track.Source.Camera){
+      addPendingTile(participant.identity + ':cam', participant, true);
+      notifyNewShare();
+    } else if(publication.source === Track.Source.ScreenShare){
+      addPendingTile(participant.identity, participant, false);
+      notifyNewShare();
+    }
   });
   liveRoom.on(RoomEvent.TrackUnpublished, (publication, participant) => {
     if(!isCurrent()) return;
@@ -1156,7 +1169,6 @@ function addTile(id, name, stream){
   }
 
   tiles.set(id, tile);
-  if(!isSelf){ playNotifyChime(); flashTabTitle(); }
 
   if(pinnedOrder.length === 0){
     // a primeira transmissão a aparecer já entra em destaque
@@ -1448,6 +1460,41 @@ function prefillJoinCode(){
   }catch(e){ /* localStorage indisponível — sem problema, só não pré-preenche */ }
 }
 
+// Oferece abrir o app desktop pra quem chegou via link de convite (?sala=)
+// só no navegador normal — dentro do Electron já tá no app, não faz sentido.
+// Se a pessoa já marcou "sempre abrir automaticamente" antes (localStorage),
+// tenta direto em vez de mostrar o banner de novo — mas SEM esconder o
+// formulário normal: se o app não estiver instalado (ou foi desinstalado
+// depois de marcar essa opção), essa tentativa só falha em silêncio e a
+// pessoa segue usando a página normalmente, sem ficar travada em lugar nenhum.
+function setupOpenInApp(){
+  if(window.sinalElectron?.isElectron) return;
+  const params = new URLSearchParams(window.location.search);
+  const sala = params.get('sala');
+  if(!sala) return;
+
+  const protoUrl = 'sinal://join?sala=' + encodeURIComponent(sala);
+  let remembered = false;
+  try{ remembered = localStorage.getItem('sinal:autoOpenApp') === '1'; }catch(e){}
+
+  if(remembered){
+    window.location.href = protoUrl;
+    return;
+  }
+
+  const banner = document.getElementById('openAppBanner');
+  const btn = document.getElementById('openAppBtn');
+  const remember = document.getElementById('openAppRemember');
+  if(!banner || !btn) return;
+  banner.hidden = false;
+  btn.addEventListener('click', () => {
+    if(remember?.checked){
+      try{ localStorage.setItem('sinal:autoOpenApp', '1'); }catch(e){}
+    }
+    window.location.href = protoUrl;
+  });
+}
+
 // pré-preenche o nome com o último usado, salvo em getName() ao entrar numa
 // sala. Só precisa rodar no carregamento inicial — diferente do código da
 // sala, o campo de nome não é tocado em nenhum outro momento da sessão, então
@@ -1624,6 +1671,7 @@ window.addEventListener('DOMContentLoaded', () => {
   prefillShareQuality();
   prefillShareElectronAudio();
   renderDiscordStatus();
+  setupOpenInApp();
 });
 
 // Tenta desconectar educadamente ao fechar/recarregar a aba, pra sumir na
@@ -1633,7 +1681,7 @@ window.addEventListener('beforeunload', () => {
 });
 
 // PWA: versão, registro do service worker, detecção de atualização e botão de instalação
-const APP_VERSION = '0.8.38'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
+const APP_VERSION = '0.8.39'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
 // Dentro do Electron, mostra a versão do INSTALADOR (electron/package.json),
 // não a do site — ver preload.js. Fora dele (navegador normal), continua a
 // versão do deploy de sempre.

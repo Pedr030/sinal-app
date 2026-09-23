@@ -20,6 +20,27 @@ const { autoUpdater } = require('electron-updater');
 // pro navegador. Ver README/HANDOFF pra histórico de migração de domínio.
 const SINAL_URL = 'https://sinal-app-stream.vercel.app';
 
+// Protocolo customizado (sinal://) pra links de convite abrirem o app
+// instalado em vez de só o navegador — ver "Abrir no app" em public/app.js
+// (o botão que gera esse link) e HANDOFF.md. Formato: sinal://join?sala=CODIGO.
+//
+// Instância única: sem isso, clicar um link sinal:// com o app já aberto
+// abriria um processo Electron NOVO do zero (nova janela, nova sessão) em
+// vez de só focar o que já tá rodando — pior ainda, o áudio isolado nativo
+// não teria como coexistir com duas instâncias capturando ao mesmo tempo.
+// Precisa ser a primeira coisa a rodar: se perder o lock, sai na hora sem
+// registrar janela/bandeja/nada.
+const gotSingleInstanceLock = app.requestSingleInstanceLock();
+if(!gotSingleInstanceLock){
+  app.quit();
+}
+app.setAsDefaultProtocolClient('sinal');
+
+function extractRoomCodeFromProtocolUrl(url){
+  const m = /[?&]sala=([^&]+)/.exec(url || '');
+  return m ? decodeURIComponent(m[1]) : null;
+}
+
 // Addon nativo de áudio isolado por processo (ver HANDOFF §15.2) — carregado
 // com try/catch de propósito: se o binário não existir (plataforma errada,
 // build não rodou) ou falhar por qualquer motivo, o app inteiro não pode
@@ -44,7 +65,7 @@ let pickerWindow = null;
 let isQuitting = false;
 let audioLoopback = null; // instância ativa do AudioLoopback nativo, se houver
 
-function createMainWindow(){
+function createMainWindow(initialRoomCode){
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 800,
@@ -58,7 +79,10 @@ function createMainWindow(){
     }
   });
 
-  mainWindow.loadURL(SINAL_URL);
+  const startUrl = initialRoomCode
+    ? `${SINAL_URL}/?sala=${encodeURIComponent(initialRoomCode)}`
+    : SINAL_URL;
+  mainWindow.loadURL(startUrl);
 
   // Fechar a janela só minimiza pra bandeja — é o motivo nº1 de existir essa
   // versão desktop (background de verdade, ver auditoria Parte 5). Só fecha
@@ -446,9 +470,31 @@ app.whenReady().then(() => {
     }
   });
 
-  createMainWindow();
+  // Abrir via link sinal:// (app ainda fechado): no Windows a URL chega como
+  // um argumento de linha de comando desse primeiro lançamento — procura
+  // nele antes de criar a janela, pra já abrir direto na sala certa em vez
+  // de abrir vazio e só depois navegar.
+  const launchUrl = process.argv.find((arg) => arg.startsWith('sinal://'));
+  createMainWindow(extractRoomCodeFromProtocolUrl(launchUrl));
   createTray();
   setupAutoUpdater();
+});
+
+// Abrir via link sinal:// com o app JÁ rodando: o Windows lança um processo
+// novo (que perde o lock lá em cima e sai na hora), mas antes disso emite
+// esse evento na instância original com a URL na linha de comando — foca a
+// janela existente e navega pra sala em vez de deixar passar batido.
+app.on('second-instance', (event, commandLine) => {
+  if(mainWindow){
+    if(mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.show();
+    mainWindow.focus();
+  }
+  const url = commandLine.find((arg) => arg.startsWith('sinal://'));
+  const code = extractRoomCodeFromProtocolUrl(url);
+  if(code && mainWindow){
+    mainWindow.loadURL(`${SINAL_URL}/?sala=${encodeURIComponent(code)}`);
+  }
 });
 
 app.on('window-all-closed', () => {
