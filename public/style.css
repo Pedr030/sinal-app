@@ -140,10 +140,14 @@ body.electron-app #downloadDesktopBtn{display:none !important;}
 body.electron-app #settingsBtn{display:inline-flex;}
 
 .settings-overlay{
+  display:none; /* [hidden] e classe têm a mesma especificidade — sem isso,
+    display:flex sempre ganharia do atributo hidden, deixando o painel
+    visível o tempo todo mesmo com hidden setado (bug real, achado em teste) */
   position:fixed; inset:0; z-index:200;
   background:rgba(0,0,0,.6);
-  display:flex; align-items:center; justify-content:center;
+  align-items:center; justify-content:center;
 }
+.settings-overlay:not([hidden]){ display:flex; }
 .settings-panel{
   width:380px; max-width:92vw;
   background:var(--panel); border:1px solid var(--line); border-radius:var(--radius);
@@ -170,6 +174,8 @@ body.electron-app #settingsBtn{display:inline-flex;}
 .settings-shortcut-row button{font-size:12.5px; padding:8px 14px; height:auto;}
 .settings-hint{font-size:12px; color:var(--fog); margin-top:-8px;}
 .settings-error{font-size:12.5px; color:var(--rec);}
+.settings-row-disabled{opacity:.4; pointer-events:none;}
+.settings-row-disabled .mono{color:var(--fog);}
 
 /* ---------- MANUTENÇÃO (cobre a tela inteira, ver MAINTENANCE_MODE em app.js) ---------- */
 #maintenanceScreen{
