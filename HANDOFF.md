@@ -828,3 +828,15 @@ Apontado pelo usuário ao testar: o app desktop hoje só tem o que foi explicita
 - **QoL pedido**: com "Atalho global" desmarcado, os controles dependentes dele (combinação atual, "Gravar novo atalho", "tela inteira direto") ficam visualmente apagados (`opacity:.4`) e não clicáveis (`pointer-events:none`) em vez de continuar normais sem fazer efeito nenhum — volta ao normal ao marcar de novo.
 
 **Checkbox "Executar o Sinal" (página de finalização) com texto preto, mesmo com `MUI_TEXTCOLOR` definido** — bug conhecido e documentado no próprio código-fonte do NSIS (`Pages\Finish.nsh`, comentário deles: "SetCtlColors does not change the check/radio text color, bug #443"). O fix oficial (`SetWindowTheme` no checkbox) já existe pronto ali, só que só é aplicado automaticamente quando o Windows está em modo de alto contraste — `!define MUI_FORCECLASSICCONTROLS` (adicionado no topo do `installer.nsh`) força aplicar sempre, sem precisar de nenhum código próprio.
+
+**Banner "Nova versão disponível" (PWA/service worker) escondido dentro do Electron** — pedido do usuário: redundante ali, já que o app desktop tem seu próprio fluxo de update de verdade (troca o instalador inteiro, ver §16/§20), não só recarrega a página. Continua aparecendo normalmente no site/PWA fora do Electron, onde ainda faz sentido. Dupla proteção, mesmo padrão já usado pro botão de instalar PWA: guarda em JS (não tenta mostrar dentro do Electron) + `body.electron-app #updateBar{display:none !important;}` no CSS.
+
+## 27. Paginação no seletor de tela/janela (picker.html)
+
+**Bug relatado pelo usuário**: com até 6 fontes (2 linhas de 3), o seletor (`electron/src/picker.html`, janela fixa 720×480) ficava ótimo — mas com mais de 6 (ex: 10 janelas abertas), ficava difícil identificar a fonte certa. Investigado com cuidado antes de mexer: **não era bug de CSS/overflow** (medi as coordenadas reais dos elementos via `getBoundingClientRect()` — nenhuma sobreposição de verdade acontecia), era questão de usabilidade mesmo — muita miniatura pequena espremida, difícil de distinguir de relance.
+
+**Implementado**: paginação — 6 fontes por página (exatamente o tanto que já ficava bom, 2 linhas de 3, sem apertar nada), com números de página no rodapé (ao lado do botão "Cancelar") quando tiver mais de uma página. Janela continua do mesmo tamanho fixo, sem precisar redimensionar nem espremer conteúdo. Também adicionado `title` (tooltip nativo) no nome de cada fonte, pra mostrar o nome completo quando ele trunca com reticências.
+
+**Testado**: preview isolado do `picker.html` (arquivo local, sem processo Electron — mesmo padrão seguro do `splash.html`), com 10 fontes falsas — página 1 mostra as 6 primeiras, clicar "2" mostra as 4 restantes, botão da página atual destacado, paginação some sozinha com ≤6 fontes, estado vazio ("nada disponível") continua funcionando.
+
+**Precisa de instalador novo** — `picker.html` é empacotado junto com o app (não vem do site).
