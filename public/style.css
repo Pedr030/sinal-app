@@ -289,6 +289,33 @@ body.electron-app #updateBar{display:none !important;}
 .icon-btn.copied .icon-copy{ display:none; }
 .icon-btn.copied .icon-check{ display:block; }
 .icon-btn.mono{ font-size:12px; font-weight:700; letter-spacing:.5px; color:var(--fog); }
+
+/* Qualidade da transmissão (Leve/Nítido/Fluido) — botão abre um menu pra
+   cima (a barra fica no rodapé). No app desktop com instalador novo a
+   escolha vai pro seletor de tela, então o botão some (body.picker-quality,
+   ver applySettingsToUI em app.js). */
+.quality-wrap{ position:relative; display:inline-flex; }
+body.picker-quality .quality-wrap{ display:none; }
+#qualityBtn{ width:auto; min-width:46px; padding:0 10px; gap:5px; }
+#qualityBtn .quality-caret{ width:11px; height:11px; opacity:.7; }
+#qualityBtn[aria-expanded="true"]{ color:var(--tune); border-color:var(--tune); }
+.quality-menu{
+  position:absolute; bottom:calc(100% + 8px); right:0; z-index:20; min-width:230px;
+  background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:4px;
+  box-shadow:0 10px 30px rgba(0,0,0,.45); flex-direction:column; gap:2px;
+}
+.quality-menu:not([hidden]){ display:flex; }
+.quality-option{
+  display:flex; flex-direction:column; align-items:flex-start; gap:2px; width:100%; height:auto;
+  text-align:left; background:transparent; border:1px solid transparent; border-radius:6px;
+  padding:8px 10px; color:var(--ink); cursor:pointer;
+}
+.quality-option:hover:not(:disabled){ background:rgba(255,255,255,.06); }
+.quality-option.selected{ border-color:var(--tune); background:var(--tune-dim); }
+.quality-option.selected .quality-option-name{ color:var(--tune); }
+.quality-option:disabled{ opacity:.4; cursor:not-allowed; }
+.quality-option-name{ font-size:13px; font-weight:600; }
+.quality-option-desc{ font-size:11px; color:var(--fog); letter-spacing:.3px; white-space:nowrap; }
 /* Só existe dentro do app desktop (Electron) — app.js põe a classe .on
    quando detecta window.sinalElectron. Escondido por padrão pra não
    confundir quem usa o site normal, onde esse botão não faz nada (ver
