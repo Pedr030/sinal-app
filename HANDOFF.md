@@ -870,3 +870,26 @@ Apontado pelo usuário ao testar: o app desktop hoje só tem o que foi explicita
 - Testado no navegador com sala/track falsos: tile próprio de tela tem a bolinha nova (câmera não; remoto continua com a de conexão), amostra sem limitação fica verde, amostra com `cpu` fica amarela com o status e a taxa certos, e a corrida ao parar mantém "Assistindo".
 
 **Como usar pra diagnosticar**: quem compartilha olha o próprio status/bolinha; quem assiste passa o mouse no tile de quem compartilha. Juntos: se quem assiste recebe 1920×1080 limpo e quem envia não mostra limitação, tá tudo certo; se quem envia mostra "limitado pela CPU", a saída é o preset 720p (menos pra codificar); "pelo upload", idem ou melhorar a conexão; se quem envia tá limpo mas quem assiste recebe pouco kbps/perda, aí é rede/servidor.
+
+**✅ Confirmado numa call real (2026-09-29)**: depois da v0.8.45 publicada, o usuário relatou transmissão visivelmente melhor e o tooltip mostrando a resolução cheia certinho. O vídeo "farinhado" era mesmo a camada baixa do simulcast, e desligar o simulcast na tela resolveu. Ainda pendente de confirmação real: o atraso do áudio isolado (precisa de alguém compartilhando pelo app desktop com áudio ligado, na versão nova) e o comportamento da VM com várias telas em 1080p ao mesmo tempo por bastante tempo.
+
+## 29. Configurações de QoL: iniciar com o Windows, abrir minimizado, lembrar apps excluídos do áudio (2026-09-29)
+
+**Pedido do usuário** (combinado antes de implementar): três opções novas no painel de configurações, que agora é organizado em seções (Atalho, Inicialização, Apps excluídos do áudio).
+
+**Decisões de comportamento (fechadas com o usuário antes de codar)**:
+- **Iniciar com o Windows** e **abrir minimizado** começam **desligados** — o app não se coloca pra abrir no boot sem a pessoa pedir.
+- **"Minimizado" só vale quando o app abre sozinho com o Windows** (igual Discord): clicar no atalho sempre abre a janela normal — senão a pessoa clica no ícone e nada aparece. No painel, é sub-opção apagada quando "iniciar com o Windows" tá desligado (mesmo padrão do atalho global).
+- **Apps excluídos**: desmarcou no checklist de áudio (modo tela inteira), fica lembrado automaticamente; o painel mostra a lista com `×` pra voltar a incluir — pra não virar estado escondido ("por que tal app nunca sai no áudio?").
+
+**Implementação (`electron/src/main.js`)**:
+- `DEFAULT_SETTINGS` ganhou `startWithWindows:false`, `startMinimized:false`, `excludedAudioApps:[]` (nomes de executável em minúsculo). `settings.json` de versões antigas carrega com esses padrões (a leitura mescla com os padrões).
+- `applyLoginItemSetting()` → `app.setLoginItemSettings({ openAtLogin, args: ['--hidden'] })`. O `--hidden` vai **sempre** nos argumentos; quem decide se abre escondido é `startMinimized`, lido na hora de abrir (`startHidden = argv tem --hidden && startMinimized`) — ligar/desligar "minimizado" não mexe no registro. Reaplicado a cada abertura e a cada mudança de settings (mantém a entrada apontando pro `.exe` atual). **Não roda em dev** (`!app.isPackaged`) — registraria o `electron.exe` cru pra abrir no boot.
+- Abrindo escondido: sem splash e sem mostrar a janela (o site carrega igual por trás). A janela aparece pela bandeja ou clicando no atalho de novo (`second-instance`, que já mostrava a janela). A caixa de update também espera a janela aparecer (§22), então não pula na cara no boot.
+- O `Set` `disabledExeNames` (zerado a cada compartilhamento) foi trocado por `appSettings.excludedAudioApps`: o `sinal:audio-toggle-source` grava no `settings.json`, e o scan de fontes lê de lá. Remover pela aba de settings durante um compartilhamento ativo volta a capturar o app no próximo scan (2s).
+
+**Implementação (`public/`)**: seções novas no `#settingsOverlay`; `setupSettingsPanel()` renderiza a lista (via DOM, nome vem do Windows), recarrega as settings **toda vez que o painel abre** (a lista muda por fora, pelo checklist durante o compartilhamento). **Compatibilidade**: o site novo chega pelo Vercel antes do instalador novo — com o `main.js` da v0.3.8 as chaves novas nem existem, e ligar a opção não faria nada, então as seções só aparecem quando o `main.js` já as conhece (`'startWithWindows' in settings` / `Array.isArray(excludedAudioApps)`). Os canais IPC não mudaram, só as chaves.
+
+**Testado**: painel no navegador com `main.js` simulado (mesma lógica de mescla): seções aparecem, "minimizado" apagado até ligar "iniciar com o Windows", mudanças salvam, remover item da lista funciona até o estado vazio, reabrir o painel pega a lista mudada por fora; com `main.js` antigo simulado as seções ficam escondidas (`display:none` de verdade) e a do atalho continua. `node --check` limpo. **Não testado ainda com o app empacotado de verdade** — o registro no boot do Windows só funciona no instalado (v0.3.9), e o `--hidden` e a persistência da exclusão rodam no processo principal. Pra testar: ligar as duas opções, reiniciar o PC (deve aparecer só o ícone na bandeja); desmarcar um app no checklist, parar e compartilhar a tela inteira de novo (deve continuar desmarcado).
+
+**Fluxo de versão ajustado**: o bump do instalador (`electron/package.json`) passou a ir junto no `development`, antes do PR — nas últimas releases o commit de versão foi feito direto no `main` depois do merge, fugindo do fluxo combinado.

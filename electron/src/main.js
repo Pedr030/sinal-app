@@ -60,18 +60,27 @@ try{
   console.error('[sinal] addon de áudio isolado não carregou (sala funciona sem isso):', e.message);
 }
 
-// Settings do app desktop (atalho global) — guardadas num JSON próprio na
-// pasta de dados do usuário, NÃO no localStorage do site. Motivo: o atalho
-// precisa ser registrado no processo principal já em app.whenReady(), antes
-// da página sequer começar a carregar — o processo principal não tem como
-// ler o localStorage de uma página web (isso é sandboxed pro renderer).
+// Settings do app desktop (atalho global, inicialização, apps excluídos do
+// áudio) — guardadas num JSON próprio na pasta de dados do usuário, NÃO no
+// localStorage do site. Motivo: o atalho e o "abrir escondido" precisam ser
+// decididos no processo principal já em app.whenReady(), antes da página
+// sequer começar a carregar — o processo principal não tem como ler o
+// localStorage de uma página web (isso é sandboxed pro renderer).
 // De propósito só guarda o mínimo necessário pra essa feature — nada
 // pessoal (nome, sala, etc — isso continua só no localStorage do site).
 const SETTINGS_PATH = path.join(app.getPath('userData'), 'settings.json');
 const DEFAULT_SETTINGS = {
   shortcutEnabled: true,
   shortcut: 'Control+Alt+S',
-  quickShareWholeScreen: false
+  quickShareWholeScreen: false,
+  // Os dois começam desligados — o app não se coloca pra abrir com o
+  // Windows sem a pessoa pedir.
+  startWithWindows: false,
+  startMinimized: false,
+  // Nomes de executável em minúsculo (ex: "spotify.exe"), marcados como
+  // "não incluir no áudio" no checklist do modo tela inteira — lembrado
+  // entre compartilhamentos, removível pela aba de configurações.
+  excludedAudioApps: []
 };
 
 function loadSettings(){
@@ -92,6 +101,20 @@ function saveSettings(settings){
 }
 
 let appSettings = loadSettings();
+
+// Iniciar com o Windows: entrada na chave Run do registro, com `--hidden`
+// sempre nos argumentos — quem decide se abre escondido é a preferência
+// startMinimized, lida em tempo de execução (assim ligar/desligar
+// "minimizado" não precisa mexer no registro). Reaplicado a cada
+// abertura, não só quando muda: mantém a entrada apontando pro .exe atual
+// mesmo depois de reinstalar. Em dev (npm start) não mexe — registraria o
+// electron.exe cru pra abrir no boot.
+const HIDDEN_LAUNCH_ARG = '--hidden';
+
+function applyLoginItemSetting(){
+  if(!app.isPackaged) return;
+  app.setLoginItemSettings({ openAtLogin: !!appSettings.startWithWindows, args: [HIDDEN_LAUNCH_ARG] });
+}
 
 // Setado pelo renderer (via requestQuickShare(), ver preload.js) bem antes
 // de chamar toggleShare() quando: era pra COMEÇAR a compartilhar (não
@@ -137,7 +160,7 @@ function closeSplashAndShowMain(){
   }
 }
 
-function createMainWindow(initialRoomCode){
+function createMainWindow(initialRoomCode, startHidden){
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 800,
@@ -162,8 +185,14 @@ function createMainWindow(initialRoomCode){
   // terminar — de um jeito (carregou) ou de outro (falhou, ex: sem rede).
   // Sem o did-fail-load, uma falha de rede deixaria a pessoa presa
   // olhando pro splash pra sempre, sem nenhum feedback de erro.
-  mainWindow.webContents.once('did-finish-load', closeSplashAndShowMain);
-  mainWindow.webContents.once('did-fail-load', closeSplashAndShowMain);
+  // Abrindo escondido (Windows iniciando + "minimizado" ligado) não tem
+  // splash nem janela: o site carrega igual por trás, e a janela só
+  // aparece quando a pessoa abrir pela bandeja ou clicar no atalho de novo
+  // (esse segundo clique cai no 'second-instance', que já mostra a janela).
+  if(!startHidden){
+    mainWindow.webContents.once('did-finish-load', closeSplashAndShowMain);
+    mainWindow.webContents.once('did-fail-load', closeSplashAndShowMain);
+  }
 
   // Fechar a janela só minimiza pra bandeja — é o motivo nº1 de existir essa
   // versão desktop (background de verdade, ver auditoria Parte 5). Só fecha
@@ -346,8 +375,14 @@ function startIsolatedAudio(target){
 // em public/app.js), não aqui.
 const MULTI_SCAN_INTERVAL_MS = 2000;
 const multiSources = new Map(); // pid -> { loopback, exeName }
-const disabledExeNames = new Set(); // apps desmarcados na hora pelo usuário (ver toggle na UI)
 let multiScanTimer = null;
+
+// Apps desmarcados no checklist ficam em appSettings.excludedAudioApps
+// (settings.json) — antes era um Set zerado a cada compartilhamento, e a
+// pessoa tinha que desmarcar os mesmos apps toda vez.
+function excludedAudioApps(){
+  return Array.isArray(appSettings.excludedAudioApps) ? appSettings.excludedAudioApps : [];
+}
 
 // Nunca aparece na lista nem no checklist — Discord e o próprio Sinal são
 // sempre fora, não é uma escolha do usuário (ver HANDOFF §15.11/§15.13).
@@ -400,7 +435,7 @@ function scanAudioSources(){
     if(seenPids.has(s.pid)) continue; // listAudioSessions às vezes repete PID (mais de uma sessão no mesmo processo)
     seenPids.add(s.pid);
     if(!isEligibleSource(s, discordRootPid)) continue;
-    const enabled = !disabledExeNames.has(s.exeName.toLowerCase());
+    const enabled = !excludedAudioApps().includes(s.exeName.toLowerCase());
     candidates.push({ pid: s.pid, exeName: s.exeName, enabled });
     if(enabled && !multiSources.has(s.pid)) startSourceCapture(s.pid, s.exeName);
   }
@@ -417,7 +452,6 @@ function scanAudioSources(){
 
 function startMultiSourceAudio(){
   stopIsolatedAudio();
-  disabledExeNames.clear();
   scanAudioSources();
   multiScanTimer = setInterval(scanAudioSources, MULTI_SCAN_INTERVAL_MS);
   console.log('[sinal-audio] captura multi-fonte iniciada');
@@ -430,14 +464,14 @@ function stopMultiSourceAudio(){
 
 // Renderer avisa quando o usuário marca/desmarca um app na lista de fontes
 // (checkbox por app, só existe no modo multi — ver public/app.js).
+// Fica lembrado (settings.json) pros próximos compartilhamentos.
 ipcMain.on('sinal:audio-toggle-source', (event, { pid, exeName, enabled }) => {
   const exe = (exeName || '').toLowerCase();
-  if(enabled){
-    disabledExeNames.delete(exe);
-  }else{
-    disabledExeNames.add(exe);
-    if(multiSources.has(pid)) stopSourceCapture(pid);
-  }
+  if(!exe) return;
+  const others = excludedAudioApps().filter((e) => e !== exe);
+  appSettings = { ...appSettings, excludedAudioApps: enabled ? others : [...others, exe] };
+  saveSettings(appSettings);
+  if(!enabled && multiSources.has(pid)) stopSourceCapture(pid);
 });
 
 // Renderer avisa quando parou de compartilhar (ver public/app.js toggleShare)
@@ -569,12 +603,17 @@ app.whenReady().then(() => {
   // nele antes de criar a janela, pra já abrir direto na sala certa em vez
   // de abrir vazio e só depois navegar.
   const launchUrl = process.argv.find((arg) => arg.startsWith('sinal://'));
-  createSplashWindow();
-  createMainWindow(extractRoomCodeFromProtocolUrl(launchUrl));
+  // `--hidden` só vem da entrada de "iniciar com o Windows" — abrir pelo
+  // atalho/menu iniciar nunca tem, então nesse caso a janela aparece
+  // normal mesmo com "minimizado" ligado.
+  const startHidden = process.argv.includes(HIDDEN_LAUNCH_ARG) && !!appSettings.startMinimized;
+  if(!startHidden) createSplashWindow();
+  createMainWindow(extractRoomCodeFromProtocolUrl(launchUrl), startHidden);
   createTray();
   setupAutoUpdater();
 
   registerShareShortcut();
+  applyLoginItemSetting();
 });
 
 // Atalho global pra compartilhar/parar de compartilhar sem precisar focar a
@@ -613,6 +652,7 @@ ipcMain.handle('sinal:set-settings', (event, partial) => {
   appSettings = { ...appSettings, ...partial };
   saveSettings(appSettings);
   const shortcutRegistered = registerShareShortcut();
+  applyLoginItemSetting();
   return { settings: appSettings, shortcutRegistered };
 });
 
