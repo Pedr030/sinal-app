@@ -675,20 +675,53 @@ function createElectronIsolatedAudioTrack(){
   // testado que um ScriptProcessorNode com 0 canais de entrada declarados
   // não é "puxado" de verdade pelo motor de áudio do Chromium, mesmo com
   // uma fonte conectada (ver electron/test/test-pcm-to-track.html).
-  const processor = audioCtx.createScriptProcessor(4096, 2, 2);
+  // 2048 frames (~43ms) em vez de 4096 (~85ms): corta metade da latência
+  // fixa desse bloco. Contrapartida: roda na thread principal, então um
+  // engasgo maior que ~43ms dela vira um estalo audível — se isso aparecer
+  // com frequência, volta pra 4096 (e sobe TARGET_QUEUED_FRAMES junto).
+  const processor = audioCtx.createScriptProcessor(2048, 2, 2);
   // Uma fila por PID de origem — no modo "compartilhar tela inteira" pode
   // ter várias fontes simultâneas (ver HANDOFF §15.13), cada uma mandando
   // seus próprios pedaços de PCM; a mistura acontece aqui, somando amostra
   // por amostra de cada fila ativa no momento de montar o buffer de saída.
   // No modo "compartilhar uma janela" é só uma fila mesmo (um PID só) — o
   // mesmo código atende os dois casos sem precisar de branch.
-  const MAX_QUEUED_FRAMES = 48000 * 2; // ~2s de margem por fonte — além disso descarta, pra não acumular atraso crescente
+  //
+  // Limite de fila: a reprodução consome exatamente em tempo real, então
+  // qualquer sobra acumulada (engasgo da thread principal, IPC chegando em
+  // rajada) nunca é recuperada sozinha — vira atraso permanente. O limite
+  // antigo era 2s (e zerava tudo quando estourava), o que dava exatamente o
+  // sintoma relatado: áudio atrasando cada vez mais, normalizando de repente
+  // e recomeçando o ciclo. Agora, passou de ~250ms, corta só o excesso mais
+  // antigo de volta pra ~100ms — atraso sempre limitado, ao custo de um
+  // pulinho curto de vez em quando. O alvo precisa ficar acima do tamanho do
+  // bloco do processor (2048), senão o próximo bloco depois de um corte sai
+  // incompleto.
+  const TARGET_QUEUED_FRAMES = 4800;  // ~100ms
+  const MAX_QUEUED_FRAMES = 12000;    // ~250ms
   const sources = new Map(); // pid -> { queue: [{left,right}], readIndex, queuedFrames }
 
   function sourceState(pid){
     let s = sources.get(pid);
     if(!s){ s = { queue: [], readIndex: 0, queuedFrames: 0 }; sources.set(pid, s); }
     return s;
+  }
+
+  function trimToTarget(s){
+    let excess = s.queuedFrames - TARGET_QUEUED_FRAMES;
+    while(excess > 0 && s.queue.length){
+      const remainingInChunk = s.queue[0].left.length - s.readIndex;
+      if(remainingInChunk <= excess){
+        s.queue.shift();
+        s.readIndex = 0;
+        s.queuedFrames -= remainingInChunk;
+        excess -= remainingInChunk;
+      }else{
+        s.readIndex += excess;
+        s.queuedFrames -= excess;
+        excess = 0;
+      }
+    }
   }
 
   processor.onaudioprocess = (event) => {
@@ -727,11 +760,6 @@ function createElectronIsolatedAudioTrack(){
   // nativo sempre usa. `pid` identifica de qual fonte veio.
   window.sinalElectron.onAudioChunk((pid, buf) => {
     const s = sourceState(pid);
-    if(s.queuedFrames > MAX_QUEUED_FRAMES){
-      // Essa fonte adiantou muito da reprodução — descarta só o acumulado
-      // dela (as outras fontes não são afetadas).
-      s.queue.length = 0; s.readIndex = 0; s.queuedFrames = 0;
-    }
     const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
     const frameCount = Math.floor(buf.length / 4); // 4 bytes por frame (2 canais × 16 bits)
     const left = new Float32Array(frameCount);
@@ -742,6 +770,8 @@ function createElectronIsolatedAudioTrack(){
     }
     s.queue.push({ left, right });
     s.queuedFrames += frameCount;
+    // por fonte — as outras fontes não são afetadas
+    if(s.queuedFrames > MAX_QUEUED_FRAMES) trimToTarget(s);
   });
 
   // Fonte parou de vez (app fechou, ver scanAudioSources em main.js) — some
@@ -978,10 +1008,15 @@ async function sampleTileDetailedStats(tileId, track){
   });
   if(!inbound) return;
 
-  const prev = qualityStatsPrev.get(tileId) || { lost: 0, received: 0 };
+  const prev = qualityStatsPrev.get(tileId) || { lost: 0, received: 0, bytes: null, ts: null };
   const deltaLost = Math.max(0, (inbound.packetsLost || 0) - prev.lost);
   const deltaReceived = Math.max(0, (inbound.packetsReceived || 0) - prev.received);
-  qualityStatsPrev.set(tileId, { lost: inbound.packetsLost || 0, received: inbound.packetsReceived || 0 });
+  qualityStatsPrev.set(tileId, {
+    lost: inbound.packetsLost || 0,
+    received: inbound.packetsReceived || 0,
+    bytes: inbound.bytesReceived || 0,
+    ts: inbound.timestamp
+  });
 
   const total = deltaLost + deltaReceived;
   const lossPct = total > 0 ? (deltaLost / total) * 100 : 0;
@@ -989,7 +1024,19 @@ async function sampleTileDetailedStats(tileId, track){
   // a unidade que faz sentido mostrar pra gente.
   const jitterMs = inbound.jitter != null ? Math.round(inbound.jitter * 1000) : null;
 
-  const parts = [`perda: ${lossPct.toFixed(1)}%`];
+  // Resolução/fps/taxa que chegam de verdade — diagnóstico pra vídeo
+  // "farinhado" (ver HANDOFF §28): 960×540 a ~3fps = camada baixa do
+  // simulcast; 1920×1080 com kbps baixo = banda/servidor; resolução menor
+  // com fps normal = o PC de quem compartilha reduzindo sozinho (CPU/upload).
+  const parts = [];
+  if(inbound.frameWidth && inbound.frameHeight) parts.push(`${inbound.frameWidth}×${inbound.frameHeight}`);
+  if(inbound.framesPerSecond != null) parts.push(`${Math.round(inbound.framesPerSecond)}fps`);
+  if(prev.bytes != null && prev.ts != null && inbound.timestamp > prev.ts){
+    // bytes → bits, dividido por ms = kbit/s
+    const kbps = Math.round(((inbound.bytesReceived || 0) - prev.bytes) * 8 / (inbound.timestamp - prev.ts));
+    parts.push(`${kbps} kbps`);
+  }
+  parts.push(`perda: ${lossPct.toFixed(1)}%`);
   if(jitterMs != null) parts.push(`jitter: ${jitterMs}ms`);
   qualityDetails.set(tileId, parts.join(' · '));
   renderQualityTooltip(tileId);
@@ -1807,7 +1854,7 @@ window.addEventListener('beforeunload', () => {
 });
 
 // PWA: versão, registro do service worker, detecção de atualização e botão de instalação
-const APP_VERSION = '0.8.43'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
+const APP_VERSION = '0.8.44'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
 // Dentro do Electron, mostra a versão do INSTALADOR (electron/package.json),
 // não a do site — ver preload.js. Fora dele (navegador normal), continua a
 // versão do deploy de sempre.
@@ -1827,8 +1874,11 @@ if('serviceWorker' in navigator){
         const newWorker = reg.installing;
         if(!newWorker) return;
         newWorker.addEventListener('statechange', () => {
-          // 'installed' + já existia um controller = isso é uma atualização, não a primeira instalação
-          if(newWorker.state === 'installed' && navigator.serviceWorker.controller){
+          // 'installed' + já existia um controller = isso é uma atualização, não a primeira instalação.
+          // Dentro do Electron esse banner é redundante — o app já tem seu próprio
+          // fluxo de update de verdade (troca o instalador inteiro, não só a página).
+          if(newWorker.state === 'installed' && navigator.serviceWorker.controller
+            && !(window.sinalElectron && window.sinalElectron.isElectron)){
             document.getElementById('updateBar').style.display = 'flex';
           }
         });
