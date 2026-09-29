@@ -1,0 +1,3 @@
+# Arquivos que rodam na VM (Linux): sempre com quebra de linha LF, em qualquer
+# máquina — CRLF do Windows quebra o arquivo .service do systemd.
+tools/vm-dashboard/vm/* text eol=lf
