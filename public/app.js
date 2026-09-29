@@ -246,13 +246,27 @@ function wireRoomEvents(liveRoom){
 
   liveRoom.on(RoomEvent.TrackSubscribed, (...args) => { if(isCurrent()) handleTrackAdded(...args); });
   liveRoom.on(RoomEvent.TrackUnsubscribed, (...args) => { if(isCurrent()) handleTrackRemoved(...args); });
-  liveRoom.on(RoomEvent.ParticipantConnected, () => { if(isCurrent()) renderAvatars(); });
+  liveRoom.on(RoomEvent.ParticipantConnected, (participant) => {
+    if(!isCurrent()) return;
+    renderAvatars();
+    // Quem chega agora não sabe quem já tá assistindo o quê — cada um manda
+    // o próprio estado só pra essa pessoa (ver "Quem está assistindo").
+    sendWatchSync([participant.identity]);
+  });
   liveRoom.on(RoomEvent.ParticipantDisconnected, (participant) => {
     if(!isCurrent()) return;
     removeTile(participant.identity);
     removeTile(participant.identity + ':cam');
+    forgetViewer(participant.identity);
+    clearViewers(participant.identity);
+    clearViewers(participant.identity + ':cam');
+    myWatching.delete(participant.identity);
+    myWatching.delete(participant.identity + ':cam');
     renderAvatars();
   });
+  // Depois de uma queda e volta, mensagens podem ter se perdido no meio —
+  // reenvia o estado completo pra sala toda.
+  liveRoom.on(RoomEvent.Reconnected, () => { if(isCurrent()) sendWatchSync(); });
   liveRoom.on(RoomEvent.TrackPublished, (publication, participant) => {
     if(!isCurrent()) return;
     renderAvatars();
@@ -275,14 +289,15 @@ function wireRoomEvents(liveRoom){
       const tileId = publication.source === Track.Source.Camera ? participant.identity + ':cam' : participant.identity;
       const tile = tiles.get(tileId);
       if(tile && tile.classList.contains('pending-tile')) removeTile(tileId);
+      clearViewers(tileId); // transmissão acabou — a próxima começa com ninguém assistindo
     }
   });
   // Cobre parar de compartilhar pelo controle nativo do navegador ("Parar
   // apresentação"), não só pelo nosso próprio botão.
   liveRoom.on(RoomEvent.LocalTrackUnpublished, (publication) => {
     if(!isCurrent()) return;
-    if(publication.source === Track.Source.ScreenShare) resetShareButton();
-    if(publication.source === Track.Source.Camera) resetCameraButton();
+    if(publication.source === Track.Source.ScreenShare){ resetShareButton(); clearViewers(liveRoom.localParticipant.identity); }
+    if(publication.source === Track.Source.Camera){ resetCameraButton(); clearViewers(liveRoom.localParticipant.identity + ':cam'); }
   });
   // Reação a mute forçado por admin (api/moderate.js) — 3ª tentativa
   // (2026-08-24). As duas primeiras usavam setCameraEnabled(false)/
@@ -335,6 +350,8 @@ function wireRoomEvents(liveRoom){
           text: String(msg.text == null ? '' : msg.text).slice(0, 500),
           ts: typeof msg.ts === 'number' ? msg.ts : Date.now()
         }, false);
+      } else if(msg && (msg.type === 'watch' || msg.type === 'watch-sync') && participant){
+        handleWatchMessage(msg, participant);
       }
     }catch(e){ /* payload em formato inesperado, ignora */ }
   });
@@ -381,6 +398,7 @@ function handleTrackAdded(track, publication, participant){
     // estável o evento não vem de novo nunca (a bolinha ficava cinza em
     // "Medindo conexão..." pra sempre). Puxa o valor atual na criação.
     updateQualityDot(participant.identity, participant.connectionQuality);
+    setWatching(tileId, true);
   }
 }
 
@@ -401,6 +419,7 @@ function handleTrackRemoved(track, publication, participant){
     qualityBaseLabel.delete(tileId);
     qualityStatsPrev.delete(tileId);
     removeTile(tileId);
+    setWatching(tileId, false);
     // Isso dispara tanto quando a PESSOA para de compartilhar quanto quando
     // EU clico em "parar de assistir" (setSubscribed(false), ver
     // stopWatchingTile). Só nesse segundo caso a publicação ainda existe —
@@ -1128,6 +1147,108 @@ const ICON_EYE_OFF = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none
 const ICON_KICK = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="8.5" cy="7" r="4"></circle><line x1="18" y1="8" x2="23" y2="13"></line><line x1="23" y1="8" x2="18" y2="13"></line></svg>';
 const ICON_DOTS = '<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><circle cx="12" cy="5" r="1.8"></circle><circle cx="12" cy="12" r="1.8"></circle><circle cx="12" cy="19" r="1.8"></circle></svg>';
 const ICON_PLAY = '<svg viewBox="0 0 24 24" width="32" height="32" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>';
+const ICON_PIP = '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"></rect><rect x="12" y="12" width="7" height="5" rx="1" fill="currentColor"></rect></svg>';
+const ICON_EYE_SMALL = '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"></path><circle cx="12" cy="12" r="3"></circle></svg>';
+
+// ---------------- Quem está assistindo (👁 N no rótulo do tile) ----------------
+// O servidor do LiveKit não conta pra ninguém quem se inscreveu em qual
+// track, então cada um avisa a sala pelo canal de dados (mesmo do chat)
+// quando começa/para de assistir. Todo mundo vê a contagem de toda
+// transmissão (decisão do usuário, igual ao Discord), sem aviso sonoro.
+// Quem assiste é sempre o `participant` que o LiveKit diz que mandou a
+// mensagem — nunca um campo do payload — então ninguém se passa por outro.
+const tileViewers = new Map(); // tileId -> Map(identity -> nome), quem tá assistindo aquela transmissão
+const myWatching = new Set();  // tileIds remotos que EU tô assistindo agora
+
+function ownerOfTile(tileId){ return tileId.endsWith(':cam') ? tileId.slice(0, -4) : tileId; }
+
+// Só aceita alvo que é uma pessoa que existe na sala — mensagem de cliente
+// modificado não consegue encher o Map com lixo.
+function isKnownTile(tileId){
+  if(!room || typeof tileId !== 'string' || tileId.length > 300) return false;
+  const owner = ownerOfTile(tileId);
+  return owner === room.localParticipant.identity || room.remoteParticipants.has(owner);
+}
+
+function setViewer(tileId, identity, name, on){
+  let viewers = tileViewers.get(tileId);
+  if(on){
+    if(!viewers){ viewers = new Map(); tileViewers.set(tileId, viewers); }
+    viewers.set(identity, name);
+  } else if(viewers){
+    viewers.delete(identity);
+    if(viewers.size === 0) tileViewers.delete(tileId);
+  }
+  renderViewers(tileId);
+}
+
+function clearViewers(tileId){
+  if(tileViewers.delete(tileId)) renderViewers(tileId);
+}
+
+function forgetViewer(identity){
+  tileViewers.forEach((viewers, tileId) => {
+    if(!viewers.delete(identity)) return;
+    if(viewers.size === 0) tileViewers.delete(tileId);
+    renderViewers(tileId);
+  });
+}
+
+function renderViewers(tileId){
+  const tile = tiles.get(tileId);
+  const label = tile && tile.querySelector('.label');
+  if(!label) return;
+  let el = label.querySelector('.viewers');
+  const viewers = tileViewers.get(tileId);
+  if(!viewers || viewers.size === 0){
+    if(el) el.remove();
+    return;
+  }
+  if(!el){
+    el = document.createElement('span');
+    el.className = 'viewers';
+    label.appendChild(el);
+  }
+  el.innerHTML = ICON_EYE_SMALL + '<span></span>';
+  el.lastChild.textContent = String(viewers.size);
+  el.title = 'Assistindo: ' + [...viewers.values()].join(', ');
+}
+
+function publishWatch(msg, destinationIdentities){
+  if(!room || !room.localParticipant) return;
+  const opts = { reliable: true, topic: 'watch' };
+  if(destinationIdentities) opts.destinationIdentities = destinationIdentities;
+  Promise.resolve(room.localParticipant.publishData(new TextEncoder().encode(JSON.stringify(msg)), opts))
+    .catch((e) => console.warn('[sinal] aviso de "assistindo" não foi enviado:', e));
+}
+
+// Estado completo (e não só o último evento): quem recebe apaga o que sabia
+// de mim e fica com essa lista — serve tanto pra quem acabou de entrar
+// quanto pra reconciliar depois de uma reconexão.
+function sendWatchSync(destinationIdentities){
+  if(destinationIdentities && myWatching.size === 0) return; // quem chegou agora já parte do zero
+  publishWatch({ type: 'watch-sync', targets: [...myWatching] }, destinationIdentities);
+}
+
+function setWatching(tileId, on){
+  if(!room || on === myWatching.has(tileId)) return;
+  if(on) myWatching.add(tileId); else myWatching.delete(tileId);
+  setViewer(tileId, room.localParticipant.identity, 'Você', on);
+  publishWatch({ type: 'watch', target: tileId, on });
+}
+
+function handleWatchMessage(msg, participant){
+  const identity = participant.identity;
+  const name = participant.name || identity;
+  const valid = (t) => isKnownTile(t) && ownerOfTile(t) !== identity; // ninguém "assiste" a si mesmo
+  if(msg.type === 'watch'){
+    if(valid(msg.target)) setViewer(msg.target, identity, name, !!msg.on);
+    return;
+  }
+  if(!Array.isArray(msg.targets)) return;
+  forgetViewer(identity);
+  msg.targets.slice(0, 20).forEach((t) => { if(valid(t)) setViewer(t, identity, name, true); });
+}
 
 // ---------------- "Clique pra assistir" (igual ao Discord — ver HANDOFF) ----------------
 // Com autoSubscribe:false, uma transmissão publicada não chega sozinha pra
@@ -1162,6 +1283,7 @@ function addPendingTile(tileId, participant, isCamera){
     document.getElementById('filmstrip').appendChild(tile);
   }
   updateStageVisibility();
+  renderViewers(tileId);
 }
 
 // Inscreve na(s) publicação(ões) daquela fonte — vídeo e, se existir, o
@@ -1215,7 +1337,9 @@ function addTile(id, name, stream){
   tile.innerHTML = `
     <video autoplay playsinline></video>
     <div class="tile-hidden-overlay"><span class="mono">Vídeo desativado</span></div>
+    <div class="pip-overlay"><span class="mono">Em janela flutuante</span></div>
     <button class="fs-btn" title="Tela cheia">⛶</button>
+    ${!isSelf && document.pictureInPictureEnabled ? `<button class="pip-btn" title="Janela flutuante">${ICON_PIP}</button>` : ''}
     ${isSelf ? '' : `
     <div class="tile-controls">
       <button type="button" class="ctl-btn mute-btn" title="Mutar/desmutar">${ICON_VOLUME}</button>
@@ -1236,6 +1360,28 @@ function addTile(id, name, stream){
     e.stopPropagation();
     video.requestFullscreen && video.requestFullscreen();
   });
+  // Janela flutuante (picture-in-picture nativo do Chromium): o <video>
+  // continua sendo esse mesmo elemento, só é desenhado numa janela por cima
+  // de tudo — áudio, volume e mudo continuam no tile. Uma por vez (limite
+  // do navegador): abrir outra devolve a anterior sozinha.
+  const pipBtn = tile.querySelector('.pip-btn');
+  if(pipBtn){
+    pipBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if(document.pictureInPictureElement === video){
+        document.exitPictureInPicture().catch(() => {});
+      } else {
+        video.requestPictureInPicture().catch((err) => console.warn('[sinal] janela flutuante falhou:', err));
+      }
+    });
+    video.addEventListener('enterpictureinpicture', () => tile.classList.add('in-pip'));
+    video.addEventListener('leavepictureinpicture', () => {
+      tile.classList.remove('in-pip');
+      // Fechar no X da janelinha pausa o vídeo (comportamento do Chromium) —
+      // de volta no tile, tem que continuar ao vivo.
+      if(!tile.classList.contains('render-off')) video.play().catch(() => {});
+    });
+  }
   tile.addEventListener('click', () => togglePin(id));
 
   if(!isSelf){
@@ -1304,10 +1450,16 @@ function addTile(id, name, stream){
     document.getElementById('filmstrip').appendChild(tile);
   }
   updateStageVisibility();
+  renderViewers(id);
 }
 
 function removeTile(id){
   const el = tiles.get(id);
+  // Transmissão acabou ou parei de assistir — a janela flutuante não pode
+  // ficar pra trás congelada no último quadro.
+  if(el && document.pictureInPictureElement && el.contains(document.pictureInPictureElement)){
+    document.exitPictureInPicture().catch(() => {});
+  }
   if(el) el.remove();
   tiles.delete(id);
   const idx = pinnedOrder.indexOf(id);
@@ -1530,6 +1682,9 @@ function leaveRoom(){
   qualityBaseLabel.clear();
   qualityDetails.clear();
   qualityStatsPrev.clear();
+  tileViewers.clear();
+  myWatching.clear();
+  if(document.pictureInPictureElement) document.exitPictureInPicture().catch(() => {});
   tiles.forEach(el => el.remove());
   tiles.clear();
   pinnedOrder = [];
@@ -1994,7 +2149,7 @@ window.addEventListener('beforeunload', () => {
 });
 
 // PWA: versão, registro do service worker, detecção de atualização e botão de instalação
-const APP_VERSION = '0.8.46'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
+const APP_VERSION = '0.8.47'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
 // Dentro do Electron, mostra a versão do INSTALADOR (electron/package.json),
 // não a do site — ver preload.js. Fora dele (navegador normal), continua a
 // versão do deploy de sempre.

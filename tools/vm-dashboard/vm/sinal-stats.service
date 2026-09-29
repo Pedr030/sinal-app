@@ -1,0 +1,28 @@
+[Unit]
+Description=Sinal - coletor de metricas da VM (so leitura, sem porta aberta)
+After=network-online.target docker.service
+
+[Service]
+ExecStart=/usr/bin/python3 /opt/sinal-stats/collector.py
+Restart=always
+RestartSec=10
+
+# Teto rígido: nunca passa disso, aconteça o que acontecer. Se estourar a
+# memória, o Linux mata SÓ este serviço (e o systemd sobe de novo) — o
+# LiveKit não é afetado.
+MemoryMax=40M
+CPUQuota=5%
+Nice=10
+
+# Só leitura em tudo, menos as duas pastas próprias.
+StateDirectory=sinal-stats
+StateDirectoryMode=0755
+RuntimeDirectory=sinal-stats
+RuntimeDirectoryMode=0755
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
