@@ -840,3 +840,19 @@ Apontado pelo usuário ao testar: o app desktop hoje só tem o que foi explicita
 **Testado**: preview isolado do `picker.html` (arquivo local, sem processo Electron — mesmo padrão seguro do `splash.html`), com 10 fontes falsas — página 1 mostra as 6 primeiras, clicar "2" mostra as 4 restantes, botão da página atual destacado, paginação some sozinha com ≤6 fontes, estado vazio ("nada disponível") continua funcionando.
 
 **Precisa de instalador novo** — `picker.html` é empacotado junto com o app (não vem do site).
+
+## 28. Áudio isolado atrasando + diagnóstico de vídeo "farinhado" (2026-09-28)
+
+**Bug relatado pelo usuário, assistindo a tela de um amigo**: áudio atrasado em relação ao vídeo — "vai aumentando, por um instante normaliza e repete o ciclo".
+
+**Causa**: a fila de áudio isolado (`createElectronIsolatedAudioTrack()` em `public/app.js`, lado de quem compartilha pelo app desktop) aceitava até **2s** acumulados por fonte, e só zerava tudo quando estourava. Como a reprodução consome exatamente em tempo real, qualquer sobra acumulada (engasgo da thread principal, IPC chegando em rajada) nunca era recuperada — virava atraso permanente, subindo até 2s, zerando e recomeçando. Exatamente o ciclo relatado.
+
+**Corrigido**:
+- Fila agora fica perto de ~100ms (`TARGET_QUEUED_FRAMES = 4800`): passou de ~250ms (`MAX_QUEUED_FRAMES = 12000`), `trimToTarget()` corta só o excesso mais antigo de volta pro alvo — atraso sempre limitado, ao custo de um pulinho curto ocasional em vez de 2s de atraso.
+- `ScriptProcessor` de 4096 pra 2048 frames (~85ms → ~43ms de latência fixa). **Contrapartida registrada**: roda na thread principal, então engasgo dela maior que ~43ms vira estalo audível. Se estalos aparecerem com frequência, voltar pra 4096 e subir `TARGET_QUEUED_FRAMES` (o alvo precisa ficar acima do tamanho do bloco). Migrar pra `AudioWorkletNode` (thread de áudio própria) resolveria de vez, mas precisa de arquivo de worklet separado — ver comentário no código.
+- **Testado com o código real** no navegador (mock de `window.sinalElectron`): 300ms de áudio empurrados de uma vez → o código cortou os 160ms mais antigos e tocou só os 140ms mais recentes, exatamente o previsto. Não testado ainda numa call real (depende de alguém compartilhar pelo app desktop com áudio ligado).
+- Só `public/app.js` — vai pelo Vercel, não precisa de instalador novo.
+
+**Vídeo "farinhado" (pixelado/granulado) — ainda sem causa confirmada.** Três suspeitos, cada um com correção diferente: (1) o PC de quem compartilha reduzindo qualidade/resolução sozinho por CPU (codificar 1080p30 com jogo rodando) ou upload; (2) a VM `E2.1.Micro` (1/8 de núcleo) sem dar conta de repassar 6 Mbps pra cada espectador; (3) o espectador recebendo a camada baixa do simulcast do LiveKit (padrão pra tela: metade da resolução a 3fps, escolhida quando o tile fica menor que ~960px de largura por causa do `adaptiveStream: true`). Primeiro dado real (print do usuário): perda 0% e jitter 1ms do lado de quem assiste — rede limpa, enfraquece a hipótese (2) pelo menos desse lado.
+
+**Diagnóstico adicionado, em vez de chutar**: o tooltip da bolinha de qualidade de cada tile (`sampleTileDetailedStats()`) agora mostra também **resolução recebida, fps e kbps** (a taxa precisa de duas amostras, então aparece a partir da segunda, ~4s depois). Como ler: 960×540 a ~3fps → camada baixa do simulcast (3); 1920×1080 com kbps baixo → banda/servidor (2); resolução menor com fps normal → PC de quem compartilha reduzindo sozinho (1). Próximo passo: passar o mouse no tile do amigo numa call real e decidir a correção pelos números.
