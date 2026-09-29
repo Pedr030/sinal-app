@@ -211,8 +211,22 @@ function createMainWindow(initialRoomCode, startHidden){
 }
 
 function createTray(){
-  const icon = nativeImage.createFromPath(path.join(__dirname, '../build/icon.png'));
-  tray = new Tray(icon.resize({ width: 16, height: 16 }));
+  // Uma imagem com várias resoluções (16/20/24/32px = escala 100/125/150/200%)
+  // em vez de uma só de 16px: em tela com escala (comum em notebook), o
+  // Windows desenha a bandeja maior e esticava os 16px, deixando o ícone
+  // borrado. Assim ele escolhe a representação certa pra cada tela.
+  const source = nativeImage.createFromPath(path.join(__dirname, '../build/icon.png'));
+  const icon = nativeImage.createEmpty();
+  for(const scaleFactor of [1, 1.25, 1.5, 2]){
+    const size = Math.round(16 * scaleFactor);
+    icon.addRepresentation({
+      scaleFactor,
+      width: size,
+      height: size,
+      buffer: source.resize({ width: size, height: size, quality: 'best' }).toPNG()
+    });
+  }
+  tray = new Tray(icon);
   tray.setToolTip('Sinal');
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: 'Abrir Sinal', click: () => { mainWindow.show(); mainWindow.focus(); } },
