@@ -1752,11 +1752,11 @@ function formatShortcutForDisplay(accelerator){
   return (accelerator || '').replace(/Control/g, 'Ctrl').replace(/Super/g, 'Win');
 }
 
-// Painel de configurações do app desktop — hoje só o atalho global, mas
-// pensado pra crescer (ver HANDOFF §26). Settings vivem num JSON próprio do
-// Electron (não localStorage), lidas/gravadas via IPC (getSettings/
-// setSettings em preload.js) — main.js precisa delas prontas antes da
-// página existir, pra registrar o atalho já no app.whenReady().
+// Painel de configurações do app desktop (ver HANDOFF §26/§29). Settings
+// vivem num JSON próprio do Electron (não localStorage), lidas/gravadas via
+// IPC (getSettings/setSettings em preload.js) — main.js precisa delas
+// prontas antes da página existir (registrar o atalho, decidir se abre
+// escondido) já no app.whenReady().
 function setupSettingsPanel(){
   if(!(window.sinalElectron && window.sinalElectron.isElectron)) return;
 
@@ -1769,9 +1769,45 @@ function setupSettingsPanel(){
   const rebindBtn = document.getElementById('settingsRebindBtn');
   const rebindHint = document.getElementById('settingsRebindHint');
   const errorEl = document.getElementById('settingsError');
+  const startupSection = document.getElementById('settingsStartupSection');
+  const startWithWindowsCb = document.getElementById('settingsStartWithWindows');
+  const startMinimizedCb = document.getElementById('settingsStartMinimized');
+  const audioSection = document.getElementById('settingsAudioSection');
+  const excludedList = document.getElementById('settingsExcludedList');
 
   const showError = (msg) => { errorEl.textContent = msg; errorEl.hidden = false; };
   const clearError = () => { errorEl.hidden = true; };
+
+  function renderExcludedList(apps){
+    excludedList.innerHTML = '';
+    if(!apps.length){
+      const empty = document.createElement('span');
+      empty.className = 'settings-excluded-empty';
+      empty.textContent = 'Nenhum app excluído.';
+      excludedList.appendChild(empty);
+      return;
+    }
+    apps.forEach((exe) => {
+      // nome vem do Windows (processo), monta via DOM em vez de innerHTML
+      const item = document.createElement('span');
+      item.className = 'settings-excluded-item';
+      const name = document.createElement('span');
+      name.textContent = exe;
+      const remove = document.createElement('button');
+      remove.type = 'button';
+      remove.textContent = '×';
+      remove.title = 'Voltar a incluir no áudio';
+      remove.setAttribute('aria-label', `Voltar a incluir ${exe} no áudio`);
+      remove.addEventListener('click', async () => {
+        const res = await window.sinalElectron.setSettings({
+          excludedAudioApps: (electronSettings.excludedAudioApps || []).filter((e) => e !== exe)
+        });
+        applySettingsToUI(res.settings);
+      });
+      item.append(name, remove);
+      excludedList.appendChild(item);
+    });
+  }
 
   function applySettingsToUI(settings){
     electronSettings = settings;
@@ -1786,11 +1822,34 @@ function setupSettingsPanel(){
     quickShareCb.disabled = !enabled;
     document.getElementById('settingsShortcutRow').classList.toggle('settings-row-disabled', !enabled);
     document.getElementById('settingsQuickShareRow').classList.toggle('settings-row-disabled', !enabled);
+
+    // O site novo chega pelo Vercel antes do instalador novo: com um
+    // main.js antigo essas chaves nem existem, e ligar a opção não faria
+    // nada — então as seções só aparecem quando o main.js já as conhece.
+    const supportsStartup = 'startWithWindows' in settings;
+    startupSection.hidden = !supportsStartup;
+    if(supportsStartup){
+      startWithWindowsCb.checked = !!settings.startWithWindows;
+      startMinimizedCb.checked = !!settings.startMinimized;
+      // "minimizado" só vale ao abrir junto com o Windows — mesmo padrão
+      // de dependência do atalho acima
+      startMinimizedCb.disabled = !settings.startWithWindows;
+      document.getElementById('settingsStartMinimizedRow').classList.toggle('settings-row-disabled', !settings.startWithWindows);
+    }
+    const supportsExcluded = Array.isArray(settings.excludedAudioApps);
+    audioSection.hidden = !supportsExcluded;
+    if(supportsExcluded) renderExcludedList(settings.excludedAudioApps);
   }
 
   window.sinalElectron.getSettings().then(applySettingsToUI);
 
-  btn.addEventListener('click', () => { overlay.hidden = false; clearError(); });
+  // Recarrega ao abrir: a lista de excluídos muda por fora do painel (quando
+  // a pessoa desmarca um app no checklist de áudio durante o compartilhamento).
+  btn.addEventListener('click', () => {
+    overlay.hidden = false;
+    clearError();
+    window.sinalElectron.getSettings().then(applySettingsToUI);
+  });
   const closeOverlay = () => { overlay.hidden = true; cancelRebind(); };
   closeBtn.addEventListener('click', closeOverlay);
   overlay.addEventListener('click', (e) => { if(e.target === overlay) closeOverlay(); });
@@ -1806,6 +1865,16 @@ function setupSettingsPanel(){
 
   quickShareCb.addEventListener('change', async () => {
     const res = await window.sinalElectron.setSettings({ quickShareWholeScreen: quickShareCb.checked });
+    applySettingsToUI(res.settings);
+  });
+
+  startWithWindowsCb.addEventListener('change', async () => {
+    const res = await window.sinalElectron.setSettings({ startWithWindows: startWithWindowsCb.checked });
+    applySettingsToUI(res.settings);
+  });
+
+  startMinimizedCb.addEventListener('change', async () => {
+    const res = await window.sinalElectron.setSettings({ startMinimized: startMinimizedCb.checked });
     applySettingsToUI(res.settings);
   });
 
@@ -1925,7 +1994,7 @@ window.addEventListener('beforeunload', () => {
 });
 
 // PWA: versão, registro do service worker, detecção de atualização e botão de instalação
-const APP_VERSION = '0.8.45'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
+const APP_VERSION = '0.8.46'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
 // Dentro do Electron, mostra a versão do INSTALADOR (electron/package.json),
 // não a do site — ver preload.js. Fora dele (navegador normal), continua a
 // versão do deploy de sempre.

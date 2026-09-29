@@ -150,7 +150,7 @@ body.electron-app #updateBar{display:none !important;}
 }
 .settings-overlay:not([hidden]){ display:flex; }
 .settings-panel{
-  width:380px; max-width:92vw;
+  width:380px; max-width:92vw; max-height:90vh; overflow-y:auto;
   background:var(--panel); border:1px solid var(--line); border-radius:var(--radius);
   padding:20px; display:flex; flex-direction:column; gap:16px;
 }
@@ -177,6 +177,28 @@ body.electron-app #updateBar{display:none !important;}
 .settings-error{font-size:12.5px; color:var(--rec);}
 .settings-row-disabled{opacity:.4; pointer-events:none;}
 .settings-row-disabled .mono{color:var(--fog);}
+
+/* display só quando não tiver [hidden] — mesma pegadinha do overlay acima
+   (classe e atributo empatam em especificidade, display da classe ganharia) */
+.settings-section{display:none; flex-direction:column; gap:12px;}
+.settings-section:not([hidden]){display:flex;}
+.settings-section + .settings-section{border-top:1px solid var(--line); padding-top:16px;}
+.settings-section-title{
+  font-family:'JetBrains Mono'; font-size:10.5px; letter-spacing:1px; text-transform:uppercase; color:var(--fog);
+}
+.settings-note{font-size:12px; color:var(--fog); line-height:1.5;}
+.settings-excluded-list{display:flex; flex-wrap:wrap; gap:8px;}
+.settings-excluded-item{
+  display:inline-flex; align-items:center; gap:6px;
+  background:var(--panel-2); border:1px solid var(--line); border-radius:6px;
+  padding:4px 4px 4px 10px; font-size:12.5px; color:var(--ink);
+}
+.settings-excluded-item button{
+  background:transparent; border:none; color:var(--fog); font-size:15px; line-height:1;
+  padding:2px 6px; height:auto; width:auto; cursor:pointer;
+}
+.settings-excluded-item button:hover{color:var(--rec);}
+.settings-excluded-empty{font-size:12.5px; color:var(--fog); font-style:italic;}
 
 /* ---------- MANUTENÇÃO (cobre a tela inteira, ver MAINTENANCE_MODE em app.js) ---------- */
 #maintenanceScreen{

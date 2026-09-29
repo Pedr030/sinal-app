@@ -215,7 +215,9 @@
 </div>
 
 <!-- Só existe/abre dentro do Electron (settingsBtn some no site normal) —
-     ver setupSettingsPanel() em app.js. Atalho global pra compartilhar. -->
+     ver setupSettingsPanel() em app.js. As seções de Inicialização e Áudio
+     só aparecem quando o main.js instalado já suporta essas settings (ver
+     comentário lá sobre instalador antigo + site novo). -->
 <div id="settingsOverlay" class="settings-overlay" hidden>
   <div class="settings-panel">
     <div class="settings-panel-header">
@@ -223,23 +225,44 @@
       <button type="button" id="settingsCloseBtn" class="settings-close" aria-label="Fechar">&times;</button>
     </div>
 
-    <label class="settings-row">
-      <input type="checkbox" id="settingsShortcutEnabled">
-      Atalho global pra compartilhar/parar de compartilhar
-    </label>
+    <div class="settings-section">
+      <div class="settings-section-title">Atalho</div>
+      <label class="settings-row">
+        <input type="checkbox" id="settingsShortcutEnabled">
+        Atalho global pra compartilhar/parar de compartilhar
+      </label>
 
-    <div class="settings-row settings-shortcut-row" id="settingsShortcutRow">
-      <span class="mono" id="settingsShortcutDisplay">Ctrl+Alt+S</span>
-      <button type="button" id="settingsRebindBtn">Gravar novo atalho</button>
+      <div class="settings-row settings-shortcut-row" id="settingsShortcutRow">
+        <span class="mono" id="settingsShortcutDisplay">Ctrl+Alt+S</span>
+        <button type="button" id="settingsRebindBtn">Gravar novo atalho</button>
+      </div>
+      <div id="settingsRebindHint" class="settings-hint" hidden>Pressione a combinação desejada… (Esc cancela)</div>
+
+      <label class="settings-row" id="settingsQuickShareRow">
+        <input type="checkbox" id="settingsQuickShare">
+        Ao usar o atalho, compartilhar a tela inteira direto (sem escolher)
+      </label>
+
+      <div id="settingsError" class="settings-error" hidden></div>
     </div>
-    <div id="settingsRebindHint" class="settings-hint" hidden>Pressione a combinação desejada… (Esc cancela)</div>
 
-    <label class="settings-row" id="settingsQuickShareRow">
-      <input type="checkbox" id="settingsQuickShare">
-      Ao usar o atalho, compartilhar a tela inteira direto (sem escolher)
-    </label>
+    <div class="settings-section" id="settingsStartupSection" hidden>
+      <div class="settings-section-title">Inicialização</div>
+      <label class="settings-row">
+        <input type="checkbox" id="settingsStartWithWindows">
+        Iniciar com o Windows
+      </label>
+      <label class="settings-row" id="settingsStartMinimizedRow">
+        <input type="checkbox" id="settingsStartMinimized">
+        Abrir minimizado na bandeja (quando iniciar com o Windows)
+      </label>
+    </div>
 
-    <div id="settingsError" class="settings-error" hidden></div>
+    <div class="settings-section" id="settingsAudioSection" hidden>
+      <div class="settings-section-title">Apps excluídos do áudio</div>
+      <div class="settings-note">Apps que você desmarca no checklist de áudio (compartilhando a tela inteira) continuam fora nas próximas vezes.</div>
+      <div id="settingsExcludedList" class="settings-excluded-list"></div>
+    </div>
   </div>
 </div>
 
