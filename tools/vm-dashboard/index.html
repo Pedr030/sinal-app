@@ -1,0 +1,351 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sinal · VM</title>
+<style>
+  :root{
+    --void:#0b0c0e; --panel:#17191c; --panel-2:#1f2225; --line:#2b2e33;
+    --ink:#eef1f0; --fog:#888d90; --rec:#ff4438; --tune:#ffb020;
+    --blue:#4ea1ff; --green:#3ecf6e; --violet:#b58cff;
+  }
+  *{ box-sizing:border-box; }
+  body{ margin:0; background:var(--void); color:var(--ink); font:14px/1.4 system-ui, -apple-system, 'Segoe UI', sans-serif; }
+  .mono{ font-family:ui-monospace, 'JetBrains Mono', Consolas, monospace; }
+  header{
+    display:flex; align-items:center; gap:14px; flex-wrap:wrap;
+    padding:16px 20px; border-bottom:1px solid var(--line); position:sticky; top:0; background:var(--void); z-index:5;
+  }
+  h1{ font-size:17px; margin:0; letter-spacing:.5px; }
+  h1 span{ color:var(--fog); font-weight:400; }
+  .status{ display:flex; align-items:center; gap:7px; color:var(--fog); font-size:12.5px; }
+  .dot{ width:8px; height:8px; border-radius:50%; background:#4c5157; }
+  .dot.live{ background:var(--green); box-shadow:0 0 0 3px #3ecf6e33; }
+  .dot.err{ background:var(--rec); }
+  .ranges{ margin-left:auto; display:flex; gap:4px; background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:3px; }
+  .ranges button{
+    background:transparent; border:0; color:var(--fog); padding:6px 12px; border-radius:6px; cursor:pointer; font:inherit; font-size:12.5px;
+  }
+  .ranges button.on{ background:var(--panel-2); color:var(--tune); }
+  main{ padding:18px 20px 40px; max-width:1400px; margin:0 auto; }
+  /* 6 cartões: 6, 3 ou 2 por linha — nunca sobra linha pela metade */
+  .cards{ display:grid; grid-template-columns:repeat(6, 1fr); gap:12px; margin-bottom:18px; }
+  @media (max-width:1250px){ .cards{ grid-template-columns:repeat(3, 1fr); } }
+  @media (max-width:620px){ .cards{ grid-template-columns:repeat(2, 1fr); } }
+  .card{ background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:13px 15px; }
+  .card .k{ color:var(--fog); font-size:11.5px; text-transform:uppercase; letter-spacing:.8px; }
+  .card .v{ font-size:24px; margin-top:4px; font-weight:600; }
+  .card .v small{ font-size:13px; color:var(--fog); font-weight:400; }
+  .card .s{ color:var(--fog); font-size:12px; margin-top:3px; }
+  .card.warn .v{ color:var(--tune); }
+  .card.bad .v{ color:var(--rec); }
+  .charts{ display:grid; grid-template-columns:repeat(auto-fit, minmax(440px, 1fr)); gap:14px; }
+  .chart{ background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:12px 14px 8px; }
+  .chart-head{ display:flex; align-items:baseline; gap:10px; flex-wrap:wrap; margin-bottom:6px; }
+  .chart-head h2{ font-size:13px; margin:0; font-weight:600; }
+  .legend{ display:flex; gap:12px; flex-wrap:wrap; font-size:11.5px; color:var(--fog); }
+  .legend i{ display:inline-block; width:9px; height:9px; border-radius:2px; margin-right:5px; vertical-align:-1px; }
+  .peak{ margin-left:auto; color:var(--fog); font-size:11.5px; }
+  .peak b{ color:var(--ink); font-weight:600; }
+  canvas{ width:100%; height:190px; display:block; }
+  .tip{
+    position:fixed; pointer-events:none; background:#000d; border:1px solid var(--line); border-radius:6px;
+    padding:7px 9px; font-size:12px; display:none; z-index:10; white-space:nowrap;
+  }
+  .note{ color:var(--fog); font-size:12px; margin-top:16px; }
+  .error{ background:#ff443818; border:1px solid #ff443855; color:#ffb3ad; padding:10px 14px; border-radius:8px; margin-bottom:14px; display:none; }
+  @media (max-width:520px){ .charts{ grid-template-columns:1fr; } main{ padding:14px 16px 30px; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>SINAL <span>· VM</span></h1>
+  <div class="status"><span class="dot" id="dot"></span><span id="statusText">conectando...</span></div>
+  <div class="ranges" id="ranges">
+    <button data-span="3600" class="on">1h</button>
+    <button data-span="86400">24h</button>
+    <button data-span="604800">7 dias</button>
+    <button data-span="2592000">30 dias</button>
+  </div>
+</header>
+<main>
+  <div class="error" id="error"></div>
+  <div class="cards" id="cards"></div>
+  <div class="charts" id="charts"></div>
+  <p class="note">
+    CPU em % da VM inteira. <b>Steal</b> = tempo que a Oracle segurou a nossa fatia de CPU (a E2.1.Micro tem uma fração de núcleo):
+    se ele sobe junto com o uso, é o teto da máquina. Linha fina = pico do intervalo.
+    Histórico fino (10s) guardado por 3 dias, de 1 min por 30 dias.
+  </p>
+</main>
+<div class="tip mono" id="tip"></div>
+<script>
+const $ = (id) => document.getElementById(id);
+let span = 3600;
+let points = [];      // histórico do período + amostras ao vivo
+let lastLive = null;
+
+// ---------------- definição dos gráficos ----------------
+const CHARTS = [
+  { id:'cpu', title:'CPU', unit:'%', max:100, series:[
+    { label:'uso', color:'var(--tune)', get:p => p.cpu, peak:p => p.cpuMax },
+    { label:'steal', color:'var(--rec)', get:p => p.steal, peak:p => p.stealMax },
+  ]},
+  { id:'mem', title:'Memória', unit:'MB', maxFrom:p => p.memTotal, series:[
+    { label:'RAM usada', color:'var(--blue)', get:p => p.memUsed, peak:p => p.memUsedMax },
+    { label:'swap usado', color:'var(--violet)', get:p => p.swapUsed, peak:p => p.swapUsedMax },
+  ]},
+  { id:'net', title:'Rede', unit:'Mbps', series:[
+    { label:'saindo', color:'var(--tune)', get:p => p.tx, peak:p => p.txMax },
+    { label:'entrando', color:'var(--blue)', get:p => p.rx, peak:p => p.rxMax },
+  ]},
+  { id:'pps', title:'Pacotes por segundo', unit:'pps', series:[
+    { label:'saindo', color:'var(--tune)', get:p => p.ppsOut, peak:p => p.ppsOutMax },
+    { label:'entrando', color:'var(--blue)', get:p => p.ppsIn, peak:p => p.ppsInMax },
+  ]},
+  { id:'lk', title:'Sinal', unit:'', step:true, minMax:4, series:[
+    { label:'pessoas', color:'var(--green)', get:p => p.lk ? p.lk.people : null },
+    { label:'telas', color:'var(--tune)', get:p => p.lk ? p.lk.screens : null },
+    { label:'câmeras', color:'var(--blue)', get:p => p.lk ? p.lk.cams : null },
+  ]},
+  { id:'ct', title:'CPU por programa', unit:'%', series:[
+    { label:'livekit', color:'var(--tune)', get:p => ct(p, 'livekit', 'cpu'), peak:p => ct(p, 'livekit', 'cpuMax') },
+    { label:'caddy', color:'var(--blue)', get:p => ct(p, 'caddy', 'cpu'), peak:p => ct(p, 'caddy', 'cpuMax') },
+    { label:'redis', color:'var(--violet)', get:p => ct(p, 'redis', 'cpu'), peak:p => ct(p, 'redis', 'cpuMax') },
+  ]},
+];
+function ct(p, name, field){
+  const c = p.ct && p.ct[name];
+  if(!c) return null;
+  return c[field] != null ? c[field] : c.cpu;
+}
+
+// Amostra ao vivo não tem os campos *Max — o pico dela é ela mesma.
+function normalizeLive(s){
+  const p = { ...s };
+  ['cpu','steal','rx','tx','ppsIn','ppsOut','memUsed','swapUsed'].forEach((k) => { p[k + 'Max'] = s[k]; });
+  return p;
+}
+
+// ---------------- desenho ----------------
+const cssColor = (v) => v.startsWith('var(') ? getComputedStyle(document.documentElement).getPropertyValue(v.slice(4, -1)).trim() : v;
+
+function buildCharts(){
+  $('charts').innerHTML = CHARTS.map((c) => `
+    <div class="chart">
+      <div class="chart-head">
+        <h2>${c.title}</h2>
+        <div class="legend">${c.series.map((s) => `<span><i style="background:${s.color}"></i>${s.label}</span>`).join('')}</div>
+        <div class="peak" id="peak-${c.id}"></div>
+      </div>
+      <canvas id="cv-${c.id}"></canvas>
+    </div>`).join('');
+  CHARTS.forEach((c) => {
+    const cv = $('cv-' + c.id);
+    cv.addEventListener('mousemove', (e) => showTip(c, cv, e));
+    cv.addEventListener('mouseleave', () => { $('tip').style.display = 'none'; });
+  });
+}
+
+function fmt(v, unit){
+  if(v == null) return '—';
+  if(unit === 'Mbps') return (v < 10 ? v.toFixed(2) : v.toFixed(1)) + ' Mbps';
+  if(unit === '%') return v.toFixed(1) + '%';
+  if(unit === 'MB') return Math.round(v) + ' MB';
+  if(unit === 'pps') return Math.round(v).toLocaleString('pt-BR') + ' pps';
+  return String(Math.round(v));
+}
+
+function timeLabel(t){
+  const d = new Date(t * 1000);
+  const hm = d.toLocaleTimeString('pt-BR', { hour:'2-digit', minute:'2-digit' });
+  return span > 86400 ? d.toLocaleDateString('pt-BR', { day:'2-digit', month:'2-digit' }) + ' ' + hm : hm;
+}
+
+function draw(c){
+  const cv = $('cv-' + c.id);
+  const dpr = window.devicePixelRatio || 1;
+  const W = cv.clientWidth, H = cv.clientHeight;
+  cv.width = W * dpr; cv.height = H * dpr;
+  const g = cv.getContext('2d');
+  g.scale(dpr, dpr);
+  g.clearRect(0, 0, W, H);
+  const L = 46, R = 8, T = 8, B = 20;
+  const now = Date.now() / 1000;
+  const t0 = now - span, t1 = now;
+  const pts = points.filter((p) => p.t >= t0);
+
+  // escala Y: fixa (CPU), pelo total (RAM) ou pelo maior valor/pico visto
+  let yMax = c.max;
+  if(!yMax && c.maxFrom){ const last = pts[pts.length - 1]; yMax = last ? c.maxFrom(last) + (last.swapUsedMax > 0 ? last.swapTotal : 0) : 1; }
+  if(!yMax){
+    yMax = 0;
+    pts.forEach((p) => c.series.forEach((s) => { yMax = Math.max(yMax, (s.peak ? s.peak(p) : s.get(p)) || 0); }));
+    yMax = c.minMax ? Math.max(c.minMax, Math.ceil(yMax / 4) * 4) : niceMax(yMax * 1.15 || 1);
+  }
+  cv._scale = { L, R, T, B, W, H, t0, t1, yMax };
+
+  const x = (t) => L + (t - t0) / (t1 - t0) * (W - L - R);
+  const y = (v) => T + (1 - Math.min(v, yMax) / yMax) * (H - T - B);
+
+  // grade
+  g.strokeStyle = cssColor('var(--line)'); g.fillStyle = cssColor('var(--fog)');
+  g.font = '10.5px ui-monospace, Consolas, monospace'; g.lineWidth = 1;
+  for(let i = 0; i <= 4; i++){
+    const v = yMax * i / 4, yy = Math.round(y(v)) + .5;
+    g.beginPath(); g.moveTo(L, yy); g.lineTo(W - R, yy); g.stroke();
+    g.textAlign = 'right'; g.textBaseline = 'middle';
+    g.fillText(shortNum(v) + (c.unit === '%' ? '%' : ''), L - 6, yy);
+  }
+  g.textAlign = 'center'; g.textBaseline = 'alphabetic';
+  for(let i = 0; i <= 4; i++){
+    const t = t0 + (t1 - t0) * i / 4;
+    g.fillText(timeLabel(t), Math.min(Math.max(x(t), L + 20), W - R - 20), H - 5);
+  }
+  if(c.maxFrom && pts.length){
+    const tot = c.maxFrom(pts[pts.length - 1]), yy = Math.round(y(tot)) + .5;
+    g.setLineDash([4, 4]); g.strokeStyle = cssColor('var(--rec)');
+    g.beginPath(); g.moveTo(L, yy); g.lineTo(W - R, yy); g.stroke(); g.setLineDash([]);
+  }
+
+  // Pontos muito distantes no tempo = buraco (VM/coletor fora do ar) — não liga a linha.
+  const gapLimit = Math.max(30, span / 150);
+  const line = (getter, width, alpha, color) => {
+    g.strokeStyle = color; g.globalAlpha = alpha; g.lineWidth = width; g.beginPath();
+    let prev = null;
+    pts.forEach((p) => {
+      const v = getter(p);
+      if(v == null){ prev = null; return; }
+      const xx = x(p.t), yy = y(v);
+      if(!prev || p.t - prev.t > gapLimit) g.moveTo(xx, yy);
+      else if(c.step){ g.lineTo(xx, y(getter(prev))); g.lineTo(xx, yy); }
+      else g.lineTo(xx, yy);
+      prev = p;
+    });
+    g.stroke(); g.globalAlpha = 1;
+  };
+  c.series.forEach((s) => {
+    const color = cssColor(s.color);
+    if(s.peak && span > 3600) line(s.peak, 1, .35, color);
+    line(s.get, 1.8, 1, color);
+  });
+
+  // pico do período no cabeçalho do gráfico
+  const peaks = c.series.map((s) => {
+    let m = null;
+    pts.forEach((p) => { const v = s.peak ? s.peak(p) : s.get(p); if(v != null && (m == null || v > m)) m = v; });
+    return m == null ? null : `${s.label} <b>${fmt(m, c.unit)}</b>`;
+  }).filter(Boolean);
+  $('peak-' + c.id).innerHTML = peaks.length ? 'pico: ' + peaks.join(' · ') : '';
+}
+
+function niceMax(v){
+  const p = Math.pow(10, Math.floor(Math.log10(v)));
+  for(const m of [1, 2, 2.5, 5, 10]) if(v <= m * p) return m * p;
+  return 10 * p;
+}
+function shortNum(v){
+  if(v >= 1000) return (v / 1000).toFixed(v >= 10000 ? 0 : 1) + 'k';
+  return v >= 10 || Number.isInteger(v) ? Math.round(v) : v.toFixed(1);
+}
+
+function showTip(c, cv, e){
+  const s = cv._scale;
+  if(!s || !points.length) return;
+  const rect = cv.getBoundingClientRect();
+  const t = s.t0 + (e.clientX - rect.left - s.L) / (s.W - s.L - s.R) * (s.t1 - s.t0);
+  let best = null;
+  points.forEach((p) => { if(p.t >= s.t0 && (!best || Math.abs(p.t - t) < Math.abs(best.t - t))) best = p; });
+  if(!best) return;
+  const tip = $('tip');
+  tip.innerHTML = `<div style="color:var(--fog);margin-bottom:3px">${new Date(best.t * 1000).toLocaleString('pt-BR')}</div>` +
+    c.series.map((sr) => {
+      const v = sr.get(best), pk = sr.peak ? sr.peak(best) : null;
+      const pkTxt = pk != null && span > 3600 && pk !== v ? ` <span style="color:var(--fog)">(pico ${fmt(pk, c.unit)})</span>` : '';
+      return `<div><i style="display:inline-block;width:8px;height:8px;border-radius:2px;background:${sr.color};margin-right:6px"></i>${sr.label}: ${fmt(v, c.unit)}${pkTxt}</div>`;
+    }).join('');
+  tip.style.display = 'block';
+  const tx = Math.min(e.clientX + 14, window.innerWidth - tip.offsetWidth - 8);
+  tip.style.left = tx + 'px'; tip.style.top = (e.clientY + 14) + 'px';
+}
+
+function drawAll(){ CHARTS.forEach(draw); }
+
+// ---------------- cartões (valor atual) ----------------
+function renderCards(){
+  const s = lastLive;
+  if(!s){ $('cards').innerHTML = ''; return; }
+  const memPct = s.memUsed / s.memTotal * 100;
+  const lk = s.lk;
+  const card = (k, v, sub, level) => `<div class="card ${level || ''}"><div class="k">${k}</div><div class="v mono">${v}</div><div class="s">${sub}</div></div>`;
+  $('cards').innerHTML = [
+    card('CPU', `${s.cpu.toFixed(1)}<small>%</small>`, `steal ${s.steal.toFixed(1)}% · load ${s.load.toFixed(2)}`, s.cpu + s.steal > 85 ? 'bad' : s.cpu + s.steal > 60 ? 'warn' : ''),
+    card('Memória', `${s.memUsed}<small> / ${s.memTotal} MB</small>`, `swap ${s.swapUsed} / ${s.swapTotal} MB`, memPct > 90 || s.swapUsed > 100 ? 'bad' : memPct > 75 ? 'warn' : ''),
+    card('Rede saindo', `${s.tx.toFixed(s.tx < 10 ? 2 : 1)}<small> Mbps</small>`, `entrando ${s.rx.toFixed(2)} Mbps · teto 480`, s.tx > 380 ? 'bad' : s.tx > 250 ? 'warn' : ''),
+    card('Pacotes/s', `${s.ppsOut.toLocaleString('pt-BR')}<small> saindo</small>`, `${s.ppsIn.toLocaleString('pt-BR')} entrando`),
+    card('Sinal agora', lk ? `${lk.people}<small> pessoa${lk.people === 1 ? '' : 's'}</small>` : '—',
+      lk ? `${lk.active} sala${lk.active === 1 ? '' : 's'} · ${lk.screens} tela${lk.screens === 1 ? '' : 's'} · ${lk.cams} câm.` : 'LiveKit não respondeu'),
+    card('LiveKit', `${s.ct.livekit ? s.ct.livekit.cpu.toFixed(1) : '—'}<small>% CPU</small>`, s.ct.livekit ? `${s.ct.livekit.mem} MB de RAM` : ''),
+  ].join('');
+}
+
+// ---------------- dados ----------------
+function setStatus(kind, text){
+  $('dot').className = 'dot ' + kind;
+  $('statusText').textContent = text;
+}
+
+async function loadHistory(){
+  $('error').style.display = 'none';
+  const pts = Math.min(1500, Math.max(300, Math.round($('charts').clientWidth / 2)));
+  try{
+    const r = await fetch(`/api/history?span=${span}&points=${pts}`);
+    const data = await r.json();
+    if(data.error) throw new Error(data.error);
+    points = data.points;
+    if(lastLive && span <= 86400) points.push(normalizeLive(lastLive));
+  }catch(e){
+    $('error').textContent = 'Não consegui buscar o histórico: ' + e.message;
+    $('error').style.display = 'block';
+    points = [];
+  }
+  drawAll();
+}
+
+function connectLive(){
+  const es = new EventSource('/api/live');
+  es.addEventListener('sample', (e) => {
+    const s = JSON.parse(e.data);
+    lastLive = s;
+    setStatus('live', 'ao vivo · ' + new Date(s.t * 1000).toLocaleTimeString('pt-BR'));
+    renderCards();
+    // No 7d/30d cada ponto já cobre minutos — amostra de 2s só vira ruído lá.
+    if(span <= 86400){
+      points.push(normalizeLive(s));
+      const cutoff = Date.now() / 1000 - span;
+      while(points.length && points[0].t < cutoff) points.shift();
+      drawAll();
+    }
+  });
+  es.addEventListener('status', (e) => { setStatus('err', JSON.parse(e.data).message); });
+  es.onerror = () => setStatus('err', 'sem conexão com o servidor local');
+}
+
+$('ranges').addEventListener('click', (e) => {
+  const b = e.target.closest('button');
+  if(!b) return;
+  document.querySelectorAll('.ranges button').forEach((x) => x.classList.toggle('on', x === b));
+  span = Number(b.dataset.span);
+  loadHistory();
+});
+window.addEventListener('resize', drawAll);
+// Mantém o eixo de tempo andando mesmo sem amostra nova (ex: 7 dias).
+setInterval(() => { if(span > 86400) drawAll(); }, 60000);
+
+buildCharts();
+loadHistory();
+connectLive();
+</script>
+</body>
+</html>
