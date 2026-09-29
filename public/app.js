@@ -376,6 +376,11 @@ function handleTrackAdded(track, publication, participant){
     const label = isCamera ? displayName + ' (câmera)' : displayName;
     addTile(tileId, label, stream);
     tileVideoTracks.set(tileId, track); // pra amostrar getRTCStatsReport() periodicamente
+    // ConnectionQualityChanged só dispara quando a qualidade MUDA — com o
+    // clique-pra-assistir o tile nasce bem depois disso, e com conexão
+    // estável o evento não vem de novo nunca (a bolinha ficava cinza em
+    // "Medindo conexão..." pra sempre). Puxa o valor atual na criação.
+    updateQualityDot(participant.identity, participant.connectionQuality);
   }
 }
 
@@ -842,7 +847,14 @@ async function toggleShare(){
       // tempo), por isso precisa pedir de propósito.
       surfaceSwitching: 'include'
     }, {
-      screenShareEncoding: preset.encoding
+      screenShareEncoding: preset.encoding,
+      // Sem simulcast pra tela: a camada baixa padrão do LiveKit pra tela é
+      // metade da resolução a ~3fps, e o servidor escolhe camada pela
+      // altura do tile com 10% de tolerância — um tile de ~577px de altura
+      // já "cabia" na de 540px e recebia essa versão (medido numa call
+      // real: 960×540 · 4fps, ver HANDOFF §28). Uma camada só = todo mundo
+      // recebe 1080p, e quem compartilha codifica uma versão em vez de duas.
+      simulcast: false
     });
   }catch(e){
     setRoomStatus('Permissão de tela negada ou cancelada.', true);
@@ -980,13 +992,17 @@ function renderQualityTooltip(tileId){
 // possíveis (tela e câmera) da mesma pessoa juntos.
 function updateQualityDot(identity, quality){
   const { ConnectionQuality } = LivekitClient;
-  let level = 'good', label = 'Boa conexão';
-  if(quality === ConnectionQuality.Poor){ level = 'bad'; label = 'Conexão ruim'; }
+  // Unknown = servidor ainda não mandou dado nenhum — não afirma "boa" à
+  // toa (antes caía no padrão verde, igual Lost, que é o oposto).
+  let level = '', label = 'Medindo conexão...';
+  if(quality === ConnectionQuality.Excellent){ level = 'good'; label = 'Boa conexão'; }
   else if(quality === ConnectionQuality.Good){ level = 'warn'; label = 'Conexão razoável'; }
+  else if(quality === ConnectionQuality.Poor){ level = 'bad'; label = 'Conexão ruim'; }
+  else if(quality === ConnectionQuality.Lost){ level = 'bad'; label = 'Conexão perdida'; }
   [identity, identity + ':cam'].forEach((tileId) => {
     const tile = tiles.get(tileId);
     const dot = tile && tile.querySelector('.quality-dot');
-    if(dot) dot.className = 'quality-dot ' + level;
+    if(dot) dot.className = 'quality-dot' + (level ? ' ' + level : '');
     qualityBaseLabel.set(tileId, label);
     renderQualityTooltip(tileId);
   });
@@ -1854,7 +1870,7 @@ window.addEventListener('beforeunload', () => {
 });
 
 // PWA: versão, registro do service worker, detecção de atualização e botão de instalação
-const APP_VERSION = '0.8.44'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
+const APP_VERSION = '0.8.45'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
 // Dentro do Electron, mostra a versão do INSTALADOR (electron/package.json),
 // não a do site — ver preload.js. Fora dele (navegador normal), continua a
 // versão do deploy de sempre.
