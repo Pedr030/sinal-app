@@ -80,8 +80,14 @@ const DEFAULT_SETTINGS = {
   // Nomes de executável em minúsculo (ex: "spotify.exe"), marcados como
   // "não incluir no áudio" no checklist do modo tela inteira — lembrado
   // entre compartilhamentos, removível pela aba de configurações.
-  excludedAudioApps: []
+  excludedAudioApps: [],
+  // Qualidade da tela ('leve' | 'nitido' | 'fluido'), escolhida no seletor
+  // (picker.html) e lembrada — o atalho de "tela inteira direto" usa ela. A
+  // existência desse campo é o que avisa o site (app.js) que é o seletor
+  // quem escolhe a qualidade, e não mais o botão do site.
+  shareQuality: 'nitido'
 };
+const SHARE_QUALITIES = ['leve', 'nitido', 'fluido'];
 
 function loadSettings(){
   try{
@@ -223,7 +229,7 @@ function showSourcePicker(sources){
   return new Promise((resolve) => {
     pickerWindow = new BrowserWindow({
       width: 720,
-      height: 480,
+      height: 510,
       parent: mainWindow,
       modal: true,
       resizable: false,
@@ -258,11 +264,18 @@ function showSourcePicker(sources){
         thumbnailDataUrl: s.thumbnail.toDataURL(),
         isScreen: s.id.startsWith('screen:')
       }));
-      pickerWindow.webContents.send('sources', serializable);
+      pickerWindow.webContents.send('sources', { sources: serializable, quality: appSettings.shareQuality });
     });
 
-    ipcMain.once('picker:choose', (event, sourceId) => {
+    ipcMain.once('picker:choose', (event, choice) => {
+      const { sourceId, quality } = choice || {};
       const chosen = sources.find((s) => s.id === sourceId) || null;
+      // Grava ANTES de devolver a fonte: o site lê getSettings() logo que a
+      // captura começa pra saber qual qualidade publicar.
+      if(chosen && SHARE_QUALITIES.includes(quality) && quality !== appSettings.shareQuality){
+        appSettings = { ...appSettings, shareQuality: quality };
+        saveSettings(appSettings);
+      }
       finish(chosen);
     });
     pickerWindow.on('closed', () => finish(null)); // fechou sem escolher = cancelou

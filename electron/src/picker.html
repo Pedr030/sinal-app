@@ -13,7 +13,22 @@
     font-family:'Segoe UI', system-ui, sans-serif; font-size:13px;
     display:flex; flex-direction:column; height:100vh; overflow:hidden;
   }
-  header{ padding:14px 16px 8px; border-bottom:1px solid var(--line); flex-shrink:0; }
+  header{
+    padding:14px 16px 10px; border-bottom:1px solid var(--line); flex-shrink:0;
+    display:flex; align-items:flex-end; justify-content:space-between; gap:12px;
+  }
+  /* Qualidade (Leve/Nítido/Fluido) — escolhida aqui junto com a fonte, em vez
+     do botão do site (pedido do usuário, ver HANDOFF §32). */
+  #quality{ display:flex; gap:4px; background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:3px; }
+  #quality button{
+    border:0; border-radius:6px; padding:5px 10px; display:flex; flex-direction:column; align-items:center; gap:1px;
+    line-height:1.15;
+  }
+  #quality button small{ font-size:9.5px; color:var(--fog); }
+  #quality button.selected{ background:var(--tune); color:#fff; }
+  #quality button.selected small{ color:#dfe2ff; }
+  #quality button:disabled{ opacity:.35; cursor:not-allowed; }
+  #quality button:disabled:hover{ color:var(--fog); }
   header h1{ margin:0; font-size:15px; font-weight:600; }
   header p{ margin:4px 0 0; color:var(--fog); font-size:12px; }
   #grid{
@@ -54,8 +69,11 @@
 </head>
 <body>
 <header>
-  <h1>Escolha o que compartilhar</h1>
-  <p>Telas e janelas abertas agora.</p>
+  <div>
+    <h1>Escolha o que compartilhar</h1>
+    <p>Telas e janelas abertas agora.</p>
+  </div>
+  <div id="quality" role="radiogroup" aria-label="Qualidade da transmissão"></div>
 </header>
 <div id="grid"><div id="empty">Carregando...</div></div>
 <footer>
@@ -69,6 +87,41 @@
   const PAGE_SIZE = 6;
   let allSources = [];
   let currentPage = 0;
+
+  // Mesmos nomes/valores do site (SHARE_QUALITY_PRESETS em public/app.js).
+  const QUALITIES = [
+    { key: 'leve', name: 'Leve', desc: '720p · 30' },
+    { key: 'nitido', name: 'Nítido', desc: '1080p · 30' },
+    { key: 'fluido', name: 'Fluido', desc: '1080p · 60', requiresH265: true }
+  ];
+  // Fluido só com codificador H.265 por hardware — o Chromium só lista H.265
+  // nos codecs de envio quando existe (mesma checagem do supportsH265() do
+  // LiveKit que o site usa).
+  const canSendH265 = (() => {
+    try{ return RTCRtpSender.getCapabilities('video').codecs.some((c) => /h265|hevc/i.test(c.mimeType)); }
+    catch(e){ return false; }
+  })();
+  let quality = 'nitido';
+
+  function renderQuality(){
+    const box = document.getElementById('quality');
+    box.innerHTML = '';
+    QUALITIES.forEach((q) => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.setAttribute('role', 'radio');
+      btn.setAttribute('aria-checked', String(q.key === quality));
+      if(q.key === quality) btn.classList.add('selected');
+      const unavailable = q.requiresH265 && !canSendH265;
+      btn.disabled = unavailable;
+      btn.title = unavailable ? 'Precisa de uma placa de vídeo com codificador H.265 — este PC não tem' : '';
+      const small = document.createElement('small');
+      small.textContent = q.desc;
+      btn.append(q.name, small);
+      btn.addEventListener('click', () => { quality = q.key; renderQuality(); });
+      box.appendChild(btn);
+    });
+  }
 
   function renderGrid(){
     const grid = document.getElementById('grid');
@@ -98,7 +151,7 @@
       tag.className = 'tag';
       tag.textContent = s.isScreen ? 'Tela inteira' : 'Janela';
       btn.append(img, label, tag);
-      btn.addEventListener('click', () => window.pickerAPI.choose(s.id));
+      btn.addEventListener('click', () => window.pickerAPI.choose(s.id, quality));
       grid.appendChild(btn);
     });
   }
@@ -119,7 +172,10 @@
     }
   }
 
-  window.pickerAPI.onSources((sources) => {
+  window.pickerAPI.onSources(({ sources, quality: saved }) => {
+    const valid = QUALITIES.find((q) => q.key === saved);
+    quality = valid && !(valid.requiresH265 && !canSendH265) ? saved : 'nitido';
+    renderQuality();
     allSources = sources;
     currentPage = 0;
     renderGrid();

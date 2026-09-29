@@ -6,7 +6,7 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('pickerAPI', {
-  onSources: (callback) => ipcRenderer.on('sources', (_event, sources) => callback(sources)),
-  choose: (sourceId) => ipcRenderer.send('picker:choose', sourceId),
+  onSources: (callback) => ipcRenderer.on('sources', (_event, data) => callback(data)),
+  choose: (sourceId, quality) => ipcRenderer.send('picker:choose', { sourceId, quality }),
   cancel: () => ipcRenderer.send('picker:choose', null)
 });
