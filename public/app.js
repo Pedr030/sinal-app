@@ -916,6 +916,7 @@ function resetShareButton(){
   document.getElementById('audioToggleBtn').disabled = false;
   document.getElementById('selfPreview').style.display = 'none';
   document.getElementById('selfStatus').textContent = 'Assistindo';
+  sendStatsPrev = null;
   if(room) removeTile(room.localParticipant.identity);
   renderAvatars();
 }
@@ -1058,8 +1059,62 @@ async function sampleTileDetailedStats(tileId, track){
   renderQualityTooltip(tileId);
 }
 
+// Lado de quem compartilha: o navegador reduz resolução/fps/qualidade
+// sozinho quando a CPU não dá conta de codificar ou o upload não aguenta,
+// sem avisar ninguém — qualityLimitationReason (outbound-rtp) diz se tá
+// fazendo isso e por quê. Com simulcast desligado na tela (ver HANDOFF §28),
+// esse passou a ser o gargalo que sobra pra imagem ruim.
+let sendStatsPrev = null; // { bytes, ts } da última amostra, pra calcular kbps
+
+const SEND_LIMIT_TEXT = {
+  cpu: { full: 'CPU do seu PC sobrecarregada', short: 'limitado pela CPU' },
+  bandwidth: { full: 'upload insuficiente', short: 'limitado pelo upload' },
+  other: { full: 'motivo não identificado', short: 'qualidade reduzida' }
+};
+
+async function sampleOwnScreenStats(){
+  if(!room) return;
+  const { Track } = LivekitClient;
+  const pub = room.localParticipant.getTrackPublication(Track.Source.ScreenShare);
+  const track = pub && pub.videoTrack;
+  if(!track || typeof track.getRTCStatsReport !== 'function'){ sendStatsPrev = null; return; }
+  let report;
+  try{ report = await track.getRTCStatsReport(); }catch(e){ return; }
+  // parou de compartilhar enquanto esperava as estatísticas — não sobrescreve
+  // o "Assistindo" que resetShareButton() acabou de colocar
+  if(!room || room.localParticipant.getTrackPublication(Track.Source.ScreenShare) !== pub || !report) return;
+
+  let outbound = null;
+  report.forEach((stat) => {
+    if(stat.type === 'outbound-rtp' && stat.kind === 'video'
+      && (!outbound || (stat.bytesSent || 0) > (outbound.bytesSent || 0))) outbound = stat;
+  });
+  if(!outbound) return;
+
+  const parts = [];
+  if(outbound.frameWidth && outbound.frameHeight) parts.push(`${outbound.frameWidth}×${outbound.frameHeight}`);
+  if(outbound.framesPerSecond != null) parts.push(`${Math.round(outbound.framesPerSecond)}fps`);
+  if(sendStatsPrev && outbound.timestamp > sendStatsPrev.ts){
+    const kbps = Math.round(((outbound.bytesSent || 0) - sendStatsPrev.bytes) * 8 / (outbound.timestamp - sendStatsPrev.ts));
+    parts.push(`${kbps} kbps`);
+  }
+  sendStatsPrev = { bytes: outbound.bytesSent || 0, ts: outbound.timestamp };
+
+  const reason = outbound.qualityLimitationReason;
+  const limit = reason && reason !== 'none' ? (SEND_LIMIT_TEXT[reason] || SEND_LIMIT_TEXT.other) : null;
+
+  const tile = tiles.get(room.localParticipant.identity);
+  const dot = tile && tile.querySelector('.send-dot');
+  if(dot){
+    dot.className = 'send-dot ' + (limit ? 'warn' : 'good');
+    dot.title = `Enviando: ${parts.join(' · ')}` + (limit ? ` · reduzindo qualidade: ${limit.full}` : ' · sem redução de qualidade');
+  }
+  document.getElementById('selfStatus').textContent = 'Transmitindo' + (limit ? ` · ${limit.short}` : '');
+}
+
 setInterval(() => {
   tileVideoTracks.forEach((track, tileId) => sampleTileDetailedStats(tileId, track));
+  sampleOwnScreenStats();
 }, 4000);
 
 // ---------------- UI: palco (destaque) + fileira (minimizados) ----------------
@@ -1172,7 +1227,7 @@ function addTile(id, name, stream){
         <button type="button" class="mod-menu-item">${id.endsWith(':cam') ? 'Desligar câmera' : 'Desligar tela'}</button>
       </div>` : ''}
     </div>`}
-    <div class="label"><span class="led"></span>${crown}${escapeHtml(name)}${isSelf ? '' : '<span class="quality-dot" title="Medindo conexão..."></span>'}</div>
+    <div class="label"><span class="led"></span>${crown}${escapeHtml(name)}${isSelf ? (isCamera ? '' : '<span class="send-dot" title="Medindo envio..."></span>') : '<span class="quality-dot" title="Medindo conexão..."></span>'}</div>
     <div class="pin-hint"></div>
   `;
   const video = tile.querySelector('video');
