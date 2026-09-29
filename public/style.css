@@ -418,12 +418,12 @@ body.electron-app #updateBar{display:none !important;}
 .pending-tile:hover .pending-watch{ color:var(--tune); background:var(--panel); }
 .pending-hint{ font-size:11px; letter-spacing:.5px; }
 .roster-row .admin-crown{ margin-right:4px; }
-.quality-dot{
+.quality-dot, .send-dot{
   width:7px; height:7px; border-radius:50%; background:#4c5157; margin-left:2px; flex-shrink:0;
   transition:background .3s;
 }
-.quality-dot.good{ background:#3ecf6e; }
-.quality-dot.warn{ background:var(--tune); }
+.quality-dot.good, .send-dot.good{ background:#3ecf6e; }
+.quality-dot.warn, .send-dot.warn{ background:var(--tune); }
 .quality-dot.bad{ background:var(--rec); }
 .tile .fs-btn{
   position:absolute; top:8px; right:8px; padding:0; width:30px; height:30px; font-size:13px;

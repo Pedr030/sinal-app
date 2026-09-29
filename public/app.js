@@ -376,6 +376,11 @@ function handleTrackAdded(track, publication, participant){
     const label = isCamera ? displayName + ' (câmera)' : displayName;
     addTile(tileId, label, stream);
     tileVideoTracks.set(tileId, track); // pra amostrar getRTCStatsReport() periodicamente
+    // ConnectionQualityChanged só dispara quando a qualidade MUDA — com o
+    // clique-pra-assistir o tile nasce bem depois disso, e com conexão
+    // estável o evento não vem de novo nunca (a bolinha ficava cinza em
+    // "Medindo conexão..." pra sempre). Puxa o valor atual na criação.
+    updateQualityDot(participant.identity, participant.connectionQuality);
   }
 }
 
@@ -842,7 +847,14 @@ async function toggleShare(){
       // tempo), por isso precisa pedir de propósito.
       surfaceSwitching: 'include'
     }, {
-      screenShareEncoding: preset.encoding
+      screenShareEncoding: preset.encoding,
+      // Sem simulcast pra tela: a camada baixa padrão do LiveKit pra tela é
+      // metade da resolução a ~3fps, e o servidor escolhe camada pela
+      // altura do tile com 10% de tolerância — um tile de ~577px de altura
+      // já "cabia" na de 540px e recebia essa versão (medido numa call
+      // real: 960×540 · 4fps, ver HANDOFF §28). Uma camada só = todo mundo
+      // recebe 1080p, e quem compartilha codifica uma versão em vez de duas.
+      simulcast: false
     });
   }catch(e){
     setRoomStatus('Permissão de tela negada ou cancelada.', true);
@@ -904,6 +916,7 @@ function resetShareButton(){
   document.getElementById('audioToggleBtn').disabled = false;
   document.getElementById('selfPreview').style.display = 'none';
   document.getElementById('selfStatus').textContent = 'Assistindo';
+  sendStatsPrev = null;
   if(room) removeTile(room.localParticipant.identity);
   renderAvatars();
 }
@@ -980,13 +993,17 @@ function renderQualityTooltip(tileId){
 // possíveis (tela e câmera) da mesma pessoa juntos.
 function updateQualityDot(identity, quality){
   const { ConnectionQuality } = LivekitClient;
-  let level = 'good', label = 'Boa conexão';
-  if(quality === ConnectionQuality.Poor){ level = 'bad'; label = 'Conexão ruim'; }
+  // Unknown = servidor ainda não mandou dado nenhum — não afirma "boa" à
+  // toa (antes caía no padrão verde, igual Lost, que é o oposto).
+  let level = '', label = 'Medindo conexão...';
+  if(quality === ConnectionQuality.Excellent){ level = 'good'; label = 'Boa conexão'; }
   else if(quality === ConnectionQuality.Good){ level = 'warn'; label = 'Conexão razoável'; }
+  else if(quality === ConnectionQuality.Poor){ level = 'bad'; label = 'Conexão ruim'; }
+  else if(quality === ConnectionQuality.Lost){ level = 'bad'; label = 'Conexão perdida'; }
   [identity, identity + ':cam'].forEach((tileId) => {
     const tile = tiles.get(tileId);
     const dot = tile && tile.querySelector('.quality-dot');
-    if(dot) dot.className = 'quality-dot ' + level;
+    if(dot) dot.className = 'quality-dot' + (level ? ' ' + level : '');
     qualityBaseLabel.set(tileId, label);
     renderQualityTooltip(tileId);
   });
@@ -1042,8 +1059,62 @@ async function sampleTileDetailedStats(tileId, track){
   renderQualityTooltip(tileId);
 }
 
+// Lado de quem compartilha: o navegador reduz resolução/fps/qualidade
+// sozinho quando a CPU não dá conta de codificar ou o upload não aguenta,
+// sem avisar ninguém — qualityLimitationReason (outbound-rtp) diz se tá
+// fazendo isso e por quê. Com simulcast desligado na tela (ver HANDOFF §28),
+// esse passou a ser o gargalo que sobra pra imagem ruim.
+let sendStatsPrev = null; // { bytes, ts } da última amostra, pra calcular kbps
+
+const SEND_LIMIT_TEXT = {
+  cpu: { full: 'CPU do seu PC sobrecarregada', short: 'limitado pela CPU' },
+  bandwidth: { full: 'upload insuficiente', short: 'limitado pelo upload' },
+  other: { full: 'motivo não identificado', short: 'qualidade reduzida' }
+};
+
+async function sampleOwnScreenStats(){
+  if(!room) return;
+  const { Track } = LivekitClient;
+  const pub = room.localParticipant.getTrackPublication(Track.Source.ScreenShare);
+  const track = pub && pub.videoTrack;
+  if(!track || typeof track.getRTCStatsReport !== 'function'){ sendStatsPrev = null; return; }
+  let report;
+  try{ report = await track.getRTCStatsReport(); }catch(e){ return; }
+  // parou de compartilhar enquanto esperava as estatísticas — não sobrescreve
+  // o "Assistindo" que resetShareButton() acabou de colocar
+  if(!room || room.localParticipant.getTrackPublication(Track.Source.ScreenShare) !== pub || !report) return;
+
+  let outbound = null;
+  report.forEach((stat) => {
+    if(stat.type === 'outbound-rtp' && stat.kind === 'video'
+      && (!outbound || (stat.bytesSent || 0) > (outbound.bytesSent || 0))) outbound = stat;
+  });
+  if(!outbound) return;
+
+  const parts = [];
+  if(outbound.frameWidth && outbound.frameHeight) parts.push(`${outbound.frameWidth}×${outbound.frameHeight}`);
+  if(outbound.framesPerSecond != null) parts.push(`${Math.round(outbound.framesPerSecond)}fps`);
+  if(sendStatsPrev && outbound.timestamp > sendStatsPrev.ts){
+    const kbps = Math.round(((outbound.bytesSent || 0) - sendStatsPrev.bytes) * 8 / (outbound.timestamp - sendStatsPrev.ts));
+    parts.push(`${kbps} kbps`);
+  }
+  sendStatsPrev = { bytes: outbound.bytesSent || 0, ts: outbound.timestamp };
+
+  const reason = outbound.qualityLimitationReason;
+  const limit = reason && reason !== 'none' ? (SEND_LIMIT_TEXT[reason] || SEND_LIMIT_TEXT.other) : null;
+
+  const tile = tiles.get(room.localParticipant.identity);
+  const dot = tile && tile.querySelector('.send-dot');
+  if(dot){
+    dot.className = 'send-dot ' + (limit ? 'warn' : 'good');
+    dot.title = `Enviando: ${parts.join(' · ')}` + (limit ? ` · reduzindo qualidade: ${limit.full}` : ' · sem redução de qualidade');
+  }
+  document.getElementById('selfStatus').textContent = 'Transmitindo' + (limit ? ` · ${limit.short}` : '');
+}
+
 setInterval(() => {
   tileVideoTracks.forEach((track, tileId) => sampleTileDetailedStats(tileId, track));
+  sampleOwnScreenStats();
 }, 4000);
 
 // ---------------- UI: palco (destaque) + fileira (minimizados) ----------------
@@ -1156,7 +1227,7 @@ function addTile(id, name, stream){
         <button type="button" class="mod-menu-item">${id.endsWith(':cam') ? 'Desligar câmera' : 'Desligar tela'}</button>
       </div>` : ''}
     </div>`}
-    <div class="label"><span class="led"></span>${crown}${escapeHtml(name)}${isSelf ? '' : '<span class="quality-dot" title="Medindo conexão..."></span>'}</div>
+    <div class="label"><span class="led"></span>${crown}${escapeHtml(name)}${isSelf ? (isCamera ? '' : '<span class="send-dot" title="Medindo envio..."></span>') : '<span class="quality-dot" title="Medindo conexão..."></span>'}</div>
     <div class="pin-hint"></div>
   `;
   const video = tile.querySelector('video');
@@ -1854,7 +1925,7 @@ window.addEventListener('beforeunload', () => {
 });
 
 // PWA: versão, registro do service worker, detecção de atualização e botão de instalação
-const APP_VERSION = '0.8.44'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
+const APP_VERSION = '0.8.45'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
 // Dentro do Electron, mostra a versão do INSTALADOR (electron/package.json),
 // não a do site — ver preload.js. Fora dele (navegador normal), continua a
 // versão do deploy de sempre.
