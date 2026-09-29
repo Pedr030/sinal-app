@@ -944,3 +944,46 @@ Apontado pelo usuário ao testar: o app desktop hoje só tem o que foi explicita
 **Testado** (navegador, só a captura substituída por canvas porque o painel bloqueia getDisplayMedia): migração do valor antigo, menu, Fluido → H.265 1080p60 saindo e chegando, aba sem H.265 com Fluido cinza e recebendo VP8 enquanto a outra seguia em H.265, reserva limitada a 30fps, parar pela barra nativa, modo app (captura 1080p60 → seletor "Leve" → ajustou pra 1280×720@30 e H.265 2 Mbps), seletor do app com dados simulados (lembra a última, devolve fonte+qualidade). **Não testado**: `main.js` rodando no Electron de verdade (só sintaxe) — validar no instalador.
 
 **Também na v0.3.10 — ícone da bandeja nítido em tela com escala**: era o `icon.png` (512px) reduzido pra uma imagem só de 16×16, que o Windows esticava em escala 125/150% (borrado). `createTray()` agora monta um `nativeImage` com 4 representações (16/20/24/32px pra escala 1/1,25/1,5/2) e o Windows escolhe a certa. Verificado com um script Electron sem janela: as 4 escalas saem com os pixels certos.
+
+## 33. Roadmap pra próxima sessão (escrito no fim da sessão de 2026-09-29)
+
+Nada aqui foi decidido — é a lista pra discutir (regra do usuário: debater antes de implementar). Ordem = recomendação.
+
+### A. Fechar o que já saiu (uso real, sem código)
+1. ✅ **`desktop-v0.3.10` publicada** (2026-09-29) — qualidades no seletor + ícone da bandeja.
+2. **Fluido numa call de verdade**: ver no seletor do Jean se o Fluido fica liberado (= placa com H.265) e se o engasgo com jogo pesado (Witcher, 2026-09-29 — o que chegava dele caiu de 6 pra 0,8 Mbps por ~20s, lado dele, não VM) some com o H.265 por hardware. Tooltip mostra o codec real dos dois lados.
+3. **Painel da VM depois dessa call** (`npm run vm`, visão 24h): steal/CPU com Fluido. Referência do teste de carga: limpo até ~40 Mbps, aperto a partir de ~76.
+4. **Pendências antigas**: atraso do áudio isolado em sessão longa (§28 — se estalar, voltar o buffer pra 4096 e subir o alvo da fila); opções da 0.3.9 (iniciar com Windows → só bandeja; app desmarcado continua desmarcado); ícone nítido num notebook com escala; PiP com jogo em janela sem borda; 👁/clique-pra-assistir com 3+ pessoas.
+5. **Paridade site × app** (§17) — passar o checklist item a item dentro do app.
+
+### B. Transmissão
+6. **Trocar a qualidade no meio da transmissão** (usuário curtiu a ideia). Achado importante pro desenho: como as três qualidades usam o **mesmo codec** (H.265 se o PC tem, senão VP8 — e Fluido só existe com H.265), trocar nunca exige republicar: é `applyConstraints` (resolução/fps da captura) + `sender.setParameters` (bitrate/fps) + `contentHint`/`degradationPreference`, sem piscar. Pontos a validar: capturar sempre no teto (1080p60) e só restringir, porque subir resolução via `applyConstraints` depois de capturar baixo pode não funcionar; ajustar também o VP8 reserva (`capBackupCodec` já lê `activeShareQuality`); no app o botão de qualidade hoje some (`body.picker-quality`) — precisa de um controle durante a transmissão (ex: reaparecer só enquanto transmite, ou chip no próprio tile).
+7. **Sugestão automática de qualidade**: se a bolinha de envio ficar "limitado pelo upload/CPU" por mais de ~20s, oferecer baixar (ex: Fluido → Nítido) com um clique — não trocar sozinho sem avisar.
+8. **Áudio da transmissão em qualidade de música**: conferir bitrate/canais do `ScreenShareAudio` (aba no site e áudio isolado no app) — padrão do LiveKit pode ser mono/voz; preset estéreo de música pra quem compartilha vídeo/jogo.
+9. **Reavaliar AV1** quando o Chromium usar o AV1 por hardware da placa no WebRTC (hoje codifica na CPU, 15ms/quadro no teste). Refazer a página de loopback (§32) a cada atualização grande do Electron/Chrome.
+10. **H.264 por hardware como meio-termo** pra PC sem H.265 mas com H.264 na placa (GPU mais antiga): tira o peso da CPU mesmo sem economizar banda. Difícil saber antes de codificar se é hardware — pesquisar.
+11. **Badge de qualidade no tile de quem assiste** ("60fps"/"720p") — hoje só no tooltip.
+
+### C. Infra (VM Oracle, sempre Always Free)
+12. **Tentativas automáticas da VM A1.Flex** (2 OCPU/12GB, ~16× a CPU da Micro): o stack `sinal-vm-stack` falha por "Out of host capacity" em São Paulo. Script de retry (OCI CLI com chave de API no PC, ou na própria VM) — mexe direto na conta Oracle, explicar tudo antes. Se pegar: migrar LiveKit + coletor + swap, trocar DNS.
+13. **Versão do LiveKit fixada** — o compose usa `livekit-server:latest` (hoje 1.13.6): se a VM reiniciar e puxar imagem nova, pode mudar comportamento sem aviso. Fixar versão e atualizar de propósito. Idem `livekit-client` no site (2.22.3) — ao subir, conferir se `capBackupCodec` ainda é necessário (§32).
+14. **Higiene da VM**: atualizações automáticas de segurança do Ubuntu ligadas? fail2ban/SSH só por chave; conferir portas abertas vs. necessárias; documentar como recriar a VM do zero (config do LiveKit sem segredos no repo).
+15. **Alerta de aperto**: coletor avisar (ex: webhook do Discord que já existe) se steal+CPU passar de ~80% por 1 min numa call — cuidado pra não virar ruído; talvez só registrar e o painel destacar.
+
+### D. App desktop
+16. **Atalho global de mutar todas as transmissões** (jogando, sem alt-tab) e **atalho de janela flutuante**.
+17. **"Compartilhar de novo a mesma janela"** — o seletor lembrar/destacar a última fonte.
+18. **Log local + botão "abrir pasta de logs"** nas configurações — facilita diagnóstico quando alguém do grupo relata problema.
+19. **⭐ Esquema de patch notes** (pedido do usuário ao publicar a v0.3.10: "na próxima vez, vamos adicionar um esquema de patch notes"). A discutir: (a) janela de atualização do app mostrar o que mudou antes de reiniciar (as notas já existem na release do GitHub — `electron-updater` entrega o texto em `releaseNotes`); (b) aviso "Novidades" uma vez depois de atualizar, tanto no app quanto no site (o site muda sem instalador — hoje ninguém fica sabendo); (c) uma fonte única das notas (ex: `CHANGELOG` no repo) pra release do GitHub, janela do app e aviso do site não divergirem.
+20. **Atualizar o Electron** (44 → mais novo) — Chromium novo pode trazer AV1 por hardware e correções de WebRTC; testar H.265 e áudio isolado depois.
+
+### E. Experiência
+21. **Layout pra 3+ telas** (hoje máx. 2 em destaque + fileira) — modo mosaico opcional.
+22. **Assistir pelo celular** — revisar layout do PWA no celular, PiP no celular, e se o celular decodifica H.265 (iOS sim; Android varia) — se não, recebe VP8 pela reserva.
+23. **Menu de qualidade por teclado** (setas/Enter) — acessibilidade.
+24. Parado por decisão do usuário (não puxar sem ele pedir): reações/ponteiro na tela, imagem no chat, notificação nativa, gravação (Egress).
+
+### F. Manutenção
+25. **Quebrar o HANDOFF** (já passa de 900 linhas) em `docs/` por tema, deixando o HANDOFF como índice + estado atual.
+26. **Testes das funções puras novas** (`effectiveShareQuality`, migração `high/low`, `codecLabel`) no padrão de `tests/pure-logic.test.mjs`.
+27. **Revisar a CSP** depois de tudo que entrou (nada novo externo, mas conferir).
