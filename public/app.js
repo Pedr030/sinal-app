@@ -430,6 +430,9 @@ function handleTrackRemoved(track, publication, participant){
 }
 
 function enterRoomUI(){
+  // App desktop (v0.3.11+): main.js espera sair da sala pra perguntar se
+  // reinicia pra atualizar — nunca interrompe a call.
+  if(window.sinalElectron && window.sinalElectron.setInRoom) window.sinalElectron.setInRoom(true);
   document.getElementById('entryScreen').style.display = 'none';
   document.getElementById('roomScreen').style.display = 'flex';
   // Marca a sala ativa pro CSS deixar o rodapé compacto (§ ver style.css) —
@@ -1832,6 +1835,7 @@ function renderRosterPanel(){
 }
 
 function leaveRoom(){
+  if(window.sinalElectron && window.sinalElectron.setInRoom) window.sinalElectron.setInRoom(false);
   // Sair da sala compartilhando não passa pelo toggleShare() (que é quem
   // normalmente desliga isso) — sem isso aqui, a captura nativa de áudio
   // isolado ficava rodando pra sempre em segundo plano no processo
@@ -2022,6 +2026,111 @@ function handleDiscordCallback(){
   }
 }
 
+// ---------------- Novidades (patch notes / log de versões) ----------------
+// Conteúdo em public/changelog.json (fonte única — a janela de atualização
+// do app e as notas da release do GitHub saem dele também, ver HANDOFF §34).
+// Abre sozinho UMA vez quando entra uma novidade que a pessoa ainda não viu
+// — só na tela inicial, nunca dentro de uma sala, e nunca pra quem está
+// abrindo o Sinal pela primeira vez (não tem "o que mudou" pra quem chegou agora).
+const CHANGELOG_SEEN_KEY = 'sinal:changelogSeen';
+let changelogEntries = null;
+
+function formatChangelogDate(iso){
+  const [y, m, d] = String(iso).split('-').map(Number);
+  if(!y || !m || !d) return String(iso);
+  return new Date(y, m - 1, d).toLocaleDateString('pt-BR', { day: 'numeric', month: 'short', year: 'numeric' });
+}
+
+function renderChangelog(){
+  const list = document.getElementById('changelogList');
+  list.innerHTML = '';
+  (changelogEntries || []).forEach((entry, i) => {
+    const art = document.createElement('article');
+    art.className = 'changelog-entry' + (i === 0 ? ' latest' : '');
+    const meta = document.createElement('div');
+    meta.className = 'changelog-meta mono';
+    if(i === 0){
+      const isNew = document.createElement('span');
+      isNew.className = 'changelog-new';
+      isNew.textContent = 'Novo';
+      meta.appendChild(isNew);
+    }
+    const date = document.createElement('span');
+    date.textContent = formatChangelogDate(entry.date);
+    meta.appendChild(date);
+    [['site', 'Site'], ['app', 'App']].forEach(([key, label]) => {
+      if(!entry[key]) return;
+      const chip = document.createElement('span');
+      chip.className = 'changelog-chip';
+      chip.textContent = `${label} v${entry[key]}`;
+      meta.appendChild(chip);
+    });
+    const title = document.createElement('h3');
+    title.textContent = entry.title || '';
+    const ul = document.createElement('ul');
+    (entry.items || []).forEach((item) => {
+      const li = document.createElement('li');
+      li.textContent = item;
+      ul.appendChild(li);
+    });
+    art.append(meta, title, ul);
+    list.appendChild(art);
+  });
+}
+
+function markChangelogSeen(){
+  if(!changelogEntries || !changelogEntries.length) return;
+  try{ localStorage.setItem(CHANGELOG_SEEN_KEY, changelogEntries[0].id); }catch(e){ /* sem localStorage: só não lembra */ }
+  document.getElementById('changelogBtn').classList.remove('has-new');
+}
+
+function openChangelog(){
+  if(!changelogEntries) return;
+  renderChangelog();
+  document.getElementById('changelogOverlay').hidden = false;
+  document.getElementById('changelogList').scrollTop = 0;
+  markChangelogSeen();
+}
+
+function closeChangelog(){ document.getElementById('changelogOverlay').hidden = true; }
+
+async function setupChangelog(){
+  const btn = document.getElementById('changelogBtn');
+  const overlay = document.getElementById('changelogOverlay');
+  btn.addEventListener('click', openChangelog);
+  document.getElementById('changelogCloseBtn').addEventListener('click', closeChangelog);
+  overlay.addEventListener('click', (e) => { if(e.target === overlay) closeChangelog(); });
+  document.addEventListener('keydown', (e) => { if(e.key === 'Escape' && !overlay.hidden) closeChangelog(); });
+
+  try{
+    const res = await fetch('changelog.json', { cache: 'no-cache' });
+    if(!res.ok) throw new Error('HTTP ' + res.status);
+    const data = await res.json();
+    if(!Array.isArray(data) || !data.length) throw new Error('vazio');
+    changelogEntries = data;
+  }catch(e){
+    btn.hidden = true; // sem o arquivo, o botão não tem o que mostrar
+    return;
+  }
+
+  const latest = changelogEntries[0].id;
+  let seen = null;
+  let returningUser = false;
+  try{
+    seen = localStorage.getItem(CHANGELOG_SEEN_KEY);
+    returningUser = ['sinal:lastName', 'sinal:lastRoomCode', 'sinal:shareQuality', 'sinal:shareElectronAudio', 'sinal:discordUser']
+      .some((k) => localStorage.getItem(k) !== null);
+  }catch(e){ /* sem localStorage: trata como primeira visita */ }
+  if(seen === latest) return;
+  if(seen === null && !returningUser){ markChangelogSeen(); return; }
+
+  btn.classList.add('has-new');
+  // Link de convite (?sala=) vai direto pra sala — não cobre a entrada com
+  // a janela; a bolinha no botão fica avisando.
+  const viaInvite = new URLSearchParams(location.search).has('sala');
+  if(!viaInvite && !document.body.classList.contains('in-room')) openChangelog();
+}
+
 // pré-preenche a preferência de qualidade de compartilhamento salva (§
 // SHARE_QUALITY_PRESETS) — mesma lógica de nome/código, lembrada entre visitas.
 function prefillShareQuality(){
@@ -2169,6 +2278,44 @@ function setupSettingsPanel(){
 
   window.sinalElectron.getSettings().then(applySettingsToUI);
 
+  // Atualizações (instalador v0.3.11+): status ao vivo + procurar na mão.
+  // Instalador antigo não tem essas funções — a seção fica escondida.
+  const updatesSection = document.getElementById('settingsUpdatesSection');
+  if(typeof window.sinalElectron.checkForUpdates === 'function'){
+    const updateStatus = document.getElementById('settingsUpdateStatus');
+    const updateBtn = document.getElementById('settingsUpdateBtn');
+    const current = 'v' + window.sinalElectron.appVersion;
+    let updateReady = false;
+    const renderUpdateState = (st) => {
+      const v = st && st.version ? 'v' + st.version : 'nova versão';
+      const texts = {
+        checking: 'Procurando atualização…',
+        latest: `Você já está na versão mais recente (${current}).`,
+        downloading: `Baixando ${v}…` + (st && st.percent != null ? ` ${st.percent}%` : ''),
+        ready: `${v} pronta — reinicie pra instalar (ou ela instala sozinha quando você fechar o app).`,
+        error: 'Não consegui procurar agora — confira a internet e tente de novo.',
+        dev: 'Modo de desenvolvimento — sem atualização automática.'
+      };
+      const status = st && st.status;
+      updateStatus.textContent = texts[status] || `Você está na ${current}.`;
+      updateReady = status === 'ready';
+      updateBtn.textContent = updateReady ? 'Reiniciar e instalar' : 'Procurar atualização';
+      updateBtn.disabled = status === 'checking' || status === 'downloading';
+    };
+    updatesSection.hidden = false;
+    window.sinalElectron.onUpdateState(renderUpdateState);
+    window.sinalElectron.getUpdateState().then(renderUpdateState);
+    updateBtn.addEventListener('click', () => {
+      if(updateReady) window.sinalElectron.installUpdate();
+      else window.sinalElectron.checkForUpdates().then(renderUpdateState);
+    });
+    // Item "Procurar atualização" da bandeja abre direto aqui.
+    window.sinalElectron.onOpenSettings(() => {
+      if(overlay.hidden) btn.click();
+      updatesSection.scrollIntoView({ block: 'nearest' });
+    });
+  }
+
   // Recarrega ao abrir: a lista de excluídos muda por fora do painel (quando
   // a pessoa desmarca um app no checklist de áudio durante o compartilhamento).
   btn.addEventListener('click', () => {
@@ -2306,6 +2453,7 @@ window.addEventListener('DOMContentLoaded', () => {
   prefillJoinCode();
   prefillLastName();
   setupQualityMenu();
+  setupChangelog();
   prefillShareQuality();
   prefillShareElectronAudio();
   renderDiscordStatus();
@@ -2321,7 +2469,7 @@ window.addEventListener('beforeunload', () => {
 });
 
 // PWA: versão, registro do service worker, detecção de atualização e botão de instalação
-const APP_VERSION = '0.8.48'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
+const APP_VERSION = '0.8.49'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
 // Dentro do Electron, mostra a versão do INSTALADOR (electron/package.json),
 // não a do site — ver preload.js. Fora dele (navegador normal), continua a
 // versão do deploy de sempre.

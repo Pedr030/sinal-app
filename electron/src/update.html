@@ -39,6 +39,17 @@
   #laterBtn:hover{ color:var(--ink); border-color:var(--fog); }
   #restartBtn{ background:var(--tune); border-color:var(--tune); color:#1a1200; }
   #restartBtn:hover{ background:#ffc247; }
+  /* "O que muda" — itens das Novidades (changelog.json do site) */
+  #notes{
+    -webkit-app-region:no-drag; width:100%; max-width:380px; text-align:left;
+    background:#17191c; border:1px solid var(--line); border-radius:8px; padding:10px 14px;
+    max-height:270px; overflow-y:auto; scrollbar-width:thin; scrollbar-color:var(--line) transparent;
+  }
+  #notes[hidden]{ display:none; }
+  #notes .notes-title{ font-size:10.5px; letter-spacing:2px; text-transform:uppercase; color:var(--fog); margin-bottom:6px; }
+  #notes ul{ margin:0; padding-left:16px; display:flex; flex-direction:column; gap:4px; }
+  #notes li{ font-size:12.5px; line-height:1.45; color:#c9cdcc; }
+  #notes li::marker{ color:var(--tune); }
 </style>
 </head>
 <body>
@@ -48,6 +59,10 @@
   </div>
   <h1>Atualização baixada</h1>
   <p>A versão <span class="version" id="versionText">nova</span> já está pronta. Reinicia agora pra instalar, ou decide na próxima vez que abrir o app.</p>
+  <div id="notes" hidden>
+    <div class="notes-title">O que muda</div>
+    <ul id="notesList"></ul>
+  </div>
   <div class="actions">
     <button type="button" id="laterBtn">Depois</button>
     <button type="button" id="restartBtn">Reiniciar agora</button>
@@ -57,6 +72,14 @@
     // o site do Sinal, só esse HTML local.
     window.updateAPI.onInfo((info) => {
       document.getElementById('versionText').textContent = info && info.version ? 'v' + info.version : 'nova';
+      const notes = (info && Array.isArray(info.notes)) ? info.notes : [];
+      const list = document.getElementById('notesList');
+      notes.forEach((text) => {
+        const li = document.createElement('li');
+        li.textContent = text; // texto do changelog.json — nunca como HTML
+        list.appendChild(li);
+      });
+      document.getElementById('notes').hidden = !notes.length;
     });
     document.getElementById('restartBtn').addEventListener('click', () => window.updateAPI.restartNow());
     document.getElementById('laterBtn').addEventListener('click', () => window.updateAPI.later());

@@ -230,6 +230,14 @@ function createTray(){
   tray.setToolTip('Sinal');
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: 'Abrir Sinal', click: () => { mainWindow.show(); mainWindow.focus(); } },
+    // Abre o app direto na seção de atualizações das configurações e já
+    // procura — pra quando a pessoa sabe que saiu versão e não quer esperar.
+    { label: 'Procurar atualização', click: () => {
+      mainWindow.show();
+      mainWindow.focus();
+      mainWindow.webContents.send('sinal:open-settings', 'updates');
+      checkForUpdates({ manual: true });
+    } },
     { type: 'separator' },
     { label: 'Sair', click: () => { isQuitting = true; app.quit(); } }
   ]));
@@ -242,13 +250,17 @@ function createTray(){
 function showSourcePicker(sources){
   return new Promise((resolve) => {
     pickerWindow = new BrowserWindow({
-      width: 720,
-      height: 510,
+      width: 760,
+      height: 590,
       parent: mainWindow,
       modal: true,
       resizable: false,
       minimizable: false,
       maximizable: false,
+      // Sem a barra de título branca do Windows — o picker.html desenha um
+      // cabeçalho próprio (arrastar + X), igual à janela de atualização.
+      frame: false,
+      backgroundColor: '#0b0c0e',
       title: 'Escolha o que compartilhar',
       webPreferences: {
         preload: path.join(__dirname, 'picker-preload.js'),
@@ -301,11 +313,29 @@ function showSourcePicker(sources){
 // não tem como ser estilizado, quebrava a identidade visual do app bem na
 // hora que mais reforça "isso é um app de verdade". Mesmo padrão do
 // showSourcePicker: janela modal própria, some sozinha depois da escolha.
-function showUpdateDialog(info){
+// Itens das Novidades daquela versão do app (public/changelog.json no site —
+// fonte única das notas, ver HANDOFF §34). Falhou/sem entrada = caixa sem lista,
+// igual era antes.
+async function fetchReleaseNotes(version){
+  try{
+    const res = await fetch(`${SINAL_URL}/changelog.json`, { cache: 'no-store', signal: AbortSignal.timeout(4000) });
+    if(!res.ok) return [];
+    const entries = await res.json();
+    const entry = Array.isArray(entries) && entries.find((e) => e && e.app === version);
+    return entry && Array.isArray(entry.items) ? entry.items.filter((i) => typeof i === 'string').slice(0, 8) : [];
+  }catch(e){
+    console.error('[sinal-update] não consegui buscar as novidades:', e.message);
+    return [];
+  }
+}
+
+async function showUpdateDialog(info){
+  const notes = await fetchReleaseNotes(info.version);
   return new Promise((resolve) => {
     let updateWindow = new BrowserWindow({
-      width: 380,
-      height: 260,
+      width: notes.length ? 440 : 380,
+      // cresce pra caber a lista "O que muda" (cada item ~1-2 linhas)
+      height: notes.length ? Math.min(600, 320 + notes.length * 42) : 260,
       parent: mainWindow,
       modal: true,
       resizable: false,
@@ -332,7 +362,7 @@ function showUpdateDialog(info){
     };
 
     updateWindow.webContents.once('did-finish-load', () => {
-      updateWindow.webContents.send('update-info', { version: info.version });
+      updateWindow.webContents.send('update-info', { version: info.version, notes });
     });
 
     ipcMain.once('update:choice', (event, restartNow) => finish(restartNow));
@@ -522,9 +552,70 @@ ipcMain.on('sinal:get-app-version', (event) => { event.returnValue = app.getVers
 // não têm o electron-updater embutido nem o latest.yml no release — quem
 // estiver nessas versões não recebe update automático, só a partir de quem
 // já instalou uma versão com isso (v0.3.0+). Ver HANDOFF.md.
+// Estado da atualização, compartilhado com a aba de configurações do site
+// (seção "Atualizações") — antes era tudo silencioso até a caixa aparecer.
+let updateState = { status: 'idle', version: null, percent: null }; // idle | checking | latest | downloading | ready | error | dev
+let lastUpdateCheckAt = 0;
+let pendingUpdateInfo = null;   // baixada, esperando a hora certa de perguntar
+let updatePromptOpen = false;
+let waitingForShow = false;     // já tem um "pergunta quando a janela aparecer" registrado
+let updateDismissed = false;    // clicou "Depois" — não pergunta sozinho de novo nesta execução (instala ao fechar)
+let manualUpdateCheck = false;  // pedida na mão (bandeja/configurações) — pergunta mesmo dentro de uma sala
+// O site avisa quando entra/sai de uma sala (setInRoom no preload). Site
+// antigo nunca avisa → fica false → comportamento de antes (pergunta direto).
+let inRoom = false;
+
+function setUpdateState(patch){
+  updateState = { ...updateState, ...patch };
+  if(mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('sinal:update-state', updateState);
+}
+
+function checkForUpdates({ manual = false } = {}){
+  if(!app.isPackaged){ setUpdateState({ status: 'dev' }); return; }
+  if(manual) manualUpdateCheck = true;
+  // Já baixou antes (e a pessoa disse "Depois"): pedido manual pergunta de novo.
+  if(updateState.status === 'ready'){ if(manual) maybePromptUpdate(); return; }
+  if(updateState.status === 'checking' || updateState.status === 'downloading') return;
+  lastUpdateCheckAt = Date.now();
+  setUpdateState({ status: 'checking' });
+  autoUpdater.checkForUpdates().catch((e) => {
+    console.error('[sinal-update] falha na checagem:', e);
+    manualUpdateCheck = false;
+    setUpdateState({ status: 'error' });
+  });
+}
+
+// Pergunta na hora certa: nunca no meio de uma call (a menos que tenha sido
+// pedido na mão), e nunca com a janela escondida na bandeja (roubaria o foco
+// de um jogo em janela/borderless — espera a janela aparecer).
+function maybePromptUpdate(){
+  if(!pendingUpdateInfo || updatePromptOpen) return;
+  if(updateDismissed && !manualUpdateCheck) return;
+  if(inRoom && !manualUpdateCheck) return; // sinal:set-in-room(false) chama de novo ao sair da sala
+  if(!mainWindow.isVisible()){
+    if(!waitingForShow){
+      waitingForShow = true;
+      mainWindow.once('show', () => { waitingForShow = false; maybePromptUpdate(); });
+    }
+    return;
+  }
+  updatePromptOpen = true;
+  manualUpdateCheck = false;
+  showUpdateDialog(pendingUpdateInfo).then((restartNow) => {
+    updatePromptOpen = false;
+    if(restartNow){
+      isQuitting = true;
+      autoUpdater.quitAndInstall();
+    } else {
+      updateDismissed = true;
+    }
+  });
+}
+
 function setupAutoUpdater(){
   if(!app.isPackaged){
     console.log('[sinal-update] pulando auto-update (rodando em dev, não empacotado)');
+    setUpdateState({ status: 'dev' });
     return;
   }
 
@@ -533,42 +624,54 @@ function setupAutoUpdater(){
 
   autoUpdater.on('error', (err) => {
     console.error('[sinal-update] erro checando/baixando atualização:', err);
+    manualUpdateCheck = false;
+    setUpdateState({ status: 'error', percent: null });
   });
   autoUpdater.on('checking-for-update', () => {
     console.log('[sinal-update] checando por atualização...');
   });
   autoUpdater.on('update-available', (info) => {
     console.log('[sinal-update] atualização disponível:', info.version);
+    setUpdateState({ status: 'downloading', version: info.version, percent: 0 });
+  });
+  autoUpdater.on('download-progress', (progress) => {
+    setUpdateState({ status: 'downloading', percent: Math.round(progress.percent || 0) });
   });
   autoUpdater.on('update-not-available', () => {
     console.log('[sinal-update] já está na versão mais recente');
+    manualUpdateCheck = false;
+    setUpdateState({ status: 'latest', version: app.getVersion(), percent: null });
   });
-  autoUpdater.on('update-downloaded', async (info) => {
+  autoUpdater.on('update-downloaded', (info) => {
     console.log('[sinal-update] atualização baixada:', info.version);
-    const askToRestart = async () => {
-      const restartNow = await showUpdateDialog(info);
-      if(restartNow){
-        isQuitting = true;
-        autoUpdater.quitAndInstall();
-      }
-    };
-    // a checagem roda sozinha a cada 4h mesmo com a janela minimizada na
-    // bandeja (ex: jogando com o Sinal só rodando em segundo plano) — sem
-    // isso a caixa apareceria do nada nessa hora, podendo roubar foco de
-    // um jogo em modo janela/borderless. Espera reabrir pra interromper.
-    if(mainWindow.isVisible()){
-      askToRestart();
-    } else {
-      mainWindow.once('show', askToRestart);
-    }
+    pendingUpdateInfo = info;
+    setUpdateState({ status: 'ready', version: info.version, percent: null });
+    maybePromptUpdate();
   });
 
-  // Primeira checagem logo após abrir (com um respiro pra não competir com o
-  // carregamento da janela principal), depois repete a cada 4h — o app fica
-  // rodando em segundo plano por muito tempo (é o ponto da bandeja).
-  setTimeout(() => autoUpdater.checkForUpdates().catch((e) => console.error('[sinal-update] falha na checagem inicial:', e)), 10_000);
-  setInterval(() => autoUpdater.checkForUpdates().catch((e) => console.error('[sinal-update] falha na checagem periódica:', e)), 4 * 60 * 60 * 1000);
+  // Antes era 10s depois de abrir + a cada 4h: com o app aberto na bandeja
+  // por dias, uma versão nova levava até 4h pra ser notada (pedido do
+  // usuário, 2026-10-02). Agora a cada 30 min (o GitHub aceita 60
+  // consultas/h por IP sem login — sobra muito) e também ao trazer a janela
+  // da bandeja, no máximo 1x a cada 10 min.
+  setTimeout(() => checkForUpdates(), 10_000);
+  setInterval(() => checkForUpdates(), 30 * 60 * 1000);
+  mainWindow.on('show', () => {
+    if(Date.now() - lastUpdateCheckAt > 10 * 60 * 1000) checkForUpdates();
+  });
 }
+
+ipcMain.on('sinal:set-in-room', (event, value) => {
+  inRoom = !!value;
+  if(!inRoom) maybePromptUpdate();
+});
+ipcMain.handle('sinal:get-update-state', () => updateState);
+ipcMain.handle('sinal:check-for-updates', () => { checkForUpdates({ manual: true }); return updateState; });
+ipcMain.on('sinal:install-update', () => {
+  if(updateState.status !== 'ready') return;
+  isQuitting = true;
+  autoUpdater.quitAndInstall();
+});
 
 app.whenReady().then(() => {
   // Tira a barra de menu padrão do Electron (File/Edit/View/Window) — sem

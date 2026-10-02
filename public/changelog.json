@@ -1,0 +1,99 @@
+[
+  {
+    "id": "2026-10-02",
+    "date": "2026-10-02",
+    "title": "Novidades e atualizações mais rápidas",
+    "site": "0.8.49",
+    "app": "0.3.11",
+    "items": [
+      "Nova janela de Novidades: mostra o que cada versão trouxe — é ela que você está vendo agora",
+      "App: procura atualização a cada 30 minutos e quando você abre a janela (antes podia levar até 4 horas)",
+      "App: se a atualização ficar pronta no meio de uma call, ele espera você sair da sala pra perguntar",
+      "App: \"Procurar atualização\" na bandeja e nas configurações, com o andamento do download",
+      "App: a tela de escolher o que compartilhar ganhou a cara do Sinal e explica cada qualidade"
+    ]
+  },
+  {
+    "id": "2026-09-29-qualidades",
+    "date": "2026-09-29",
+    "title": "Leve, Nítido e Fluido",
+    "site": "0.8.48",
+    "app": "0.3.10",
+    "items": [
+      "Três qualidades pra compartilhar: Leve (720p), Nítido (1080p) e Fluido (1080p a 60fps, pra jogos)",
+      "Transmissão em H.265 pela placa de vídeo quando o PC suporta: imagem melhor, menos internet e sem pesar no jogo",
+      "Quem assiste sem suporte a H.265 recebe numa versão compatível, sem piorar pra ninguém",
+      "No app, a qualidade é escolhida na própria tela de escolher o que compartilhar",
+      "Ícone da bandeja nítido em telas com escala (comum em notebook)"
+    ]
+  },
+  {
+    "id": "2026-09-29-janela-flutuante",
+    "date": "2026-09-29",
+    "title": "Janela flutuante e quem está assistindo",
+    "site": "0.8.47",
+    "items": [
+      "Janela flutuante: solte a transmissão de alguém numa janelinha que fica por cima de tudo, até do jogo",
+      "👁 mostra quantas pessoas estão assistindo cada transmissão — passe o mouse pra ver quem"
+    ]
+  },
+  {
+    "id": "2026-09-29-inicializacao",
+    "date": "2026-09-29",
+    "title": "Iniciar com o Windows",
+    "site": "0.8.46",
+    "app": "0.3.9",
+    "items": [
+      "App: opção de iniciar com o Windows e abrir minimizado na bandeja",
+      "App: apps que você tira do áudio da transmissão ficam lembrados pras próximas vezes",
+      "App: configurações organizadas em seções"
+    ]
+  },
+  {
+    "id": "2026-09-28-imagem",
+    "date": "2026-09-28",
+    "title": "Imagem nítida de verdade",
+    "site": "0.8.45",
+    "items": [
+      "Corrigido: quem assistia às vezes recebia a tela em 960×540 a 4fps — agora chega em 1080p",
+      "App: o áudio da transmissão não vai mais atrasando com o tempo",
+      "Bolinha de qualidade da conexão funcionando, com detalhes ao passar o mouse",
+      "Quem compartilha vê quando o PC ou a internet estão limitando a transmissão"
+    ]
+  },
+  {
+    "id": "2026-09-23-atalho",
+    "date": "2026-09-23",
+    "title": "Atalho global e configurações",
+    "app": "0.3.8",
+    "items": [
+      "App: atalho global (Ctrl+Alt+S) pra compartilhar e parar sem sair do jogo",
+      "App: aba de configurações",
+      "App: tela de escolher o que compartilhar com páginas, 6 por vez"
+    ]
+  },
+  {
+    "id": "2026-09-22-cara-de-app",
+    "date": "2026-09-22",
+    "title": "App desktop com cara de app",
+    "app": "0.3.5",
+    "items": [
+      "App: instalador e janela de atualização com a identidade do Sinal",
+      "Links de convite abrem direto no app instalado",
+      "Botão de baixar o app no site",
+      "App: tela de abertura no lugar da janela em branco"
+    ]
+  },
+  {
+    "id": "2026-09-22-clique-pra-assistir",
+    "date": "2026-09-22",
+    "title": "Clique pra assistir e áudio sem vazar",
+    "site": "0.8.38",
+    "app": "0.3.2",
+    "items": [
+      "Ninguém recebe uma transmissão até clicar pra assistir, igual ao Discord",
+      "App: o áudio da transmissão não vaza mais a call do Discord nem o áudio de quem você está ouvindo",
+      "App: se atualiza sozinho"
+    ]
+  }
+]

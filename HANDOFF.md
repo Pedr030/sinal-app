@@ -944,3 +944,73 @@ Apontado pelo usuário ao testar: o app desktop hoje só tem o que foi explicita
 **Testado** (navegador, só a captura substituída por canvas porque o painel bloqueia getDisplayMedia): migração do valor antigo, menu, Fluido → H.265 1080p60 saindo e chegando, aba sem H.265 com Fluido cinza e recebendo VP8 enquanto a outra seguia em H.265, reserva limitada a 30fps, parar pela barra nativa, modo app (captura 1080p60 → seletor "Leve" → ajustou pra 1280×720@30 e H.265 2 Mbps), seletor do app com dados simulados (lembra a última, devolve fonte+qualidade). **Não testado**: `main.js` rodando no Electron de verdade (só sintaxe) — validar no instalador.
 
 **Também na v0.3.10 — ícone da bandeja nítido em tela com escala**: era o `icon.png` (512px) reduzido pra uma imagem só de 16×16, que o Windows esticava em escala 125/150% (borrado). `createTray()` agora monta um `nativeImage` com 4 representações (16/20/24/32px pra escala 1/1,25/1,5/2) e o Windows escolhe a certa. Verificado com um script Electron sem janela: as 4 escalas saem com os pixels certos.
+
+## 33. Roadmap pra próxima sessão (escrito no fim da sessão de 2026-09-29)
+
+Nada aqui foi decidido — é a lista pra discutir (regra do usuário: debater antes de implementar). Ordem = recomendação.
+
+### 0. Primeiro pacote de código (desktop v0.3.11) — pedidos do usuário no fim da sessão
+- **Atualização demora pra aparecer** (principalmente já em call): hoje só checa 10s após abrir + a cada 4h, e só pergunta depois de baixar ~110MB — app aberto na bandeja por dias descobre versão nova até 4h depois. Proposta (não aprovada ainda, só apresentada): checar a cada 30 min; checar ao trazer a janela da bandeja (no máx. 1x/10 min); botão "Procurar atualização" na bandeja e nas configurações; se estiver numa sala quando terminar de baixar, perguntar ao sair da sala em vez de interromper a call (fechar o app continua instalando sozinho).
+- **Seletor de tela com a cara do site** ("tá legal, mas a do site tá muito mais bonita"): trocar o azul Discord (`#5865f2`) pelo âmbar do Sinal (qualidade escolhida igual ao menu do site), rótulos em mono maiúsculo, sem a barra de título branca do Windows (cabeçalho próprio `frame:false` com X/arrastar, igual à janela de atualização), cards com o acabamento dos tiles. Só visual. **E dizer pra que serve cada qualidade, como o menu do site** (hoje o seletor mostra só "720p · 30" — o número solto não deixa claro que é fps): **"720p · 30fps — upload fraco"**, **"1080p · 30fps — texto e vídeo"**, **"1080p · 60fps — jogos"**, igual ao site. Ideal: um texto só pros dois lugares (o `desc` de `SHARE_QUALITY_PRESETS` no site e o `QUALITIES` do `picker.html` estão duplicados hoje — manter em sincronia ou gerar um do outro).
+- Junto: **patch notes** (item 19 abaixo) mexe na mesma janela de atualização.
+- Validado em 2026-09-29 no app instalado (0.3.10): o seletor mostrou o Fluido liberado no PC do usuário (H.265 detectado) e lembrou a última qualidade.
+
+### A. Fechar o que já saiu (uso real, sem código)
+1. ✅ **`desktop-v0.3.10` publicada** (2026-09-29) — qualidades no seletor + ícone da bandeja.
+2. **Fluido numa call de verdade**: ver no seletor do Jean se o Fluido fica liberado (= placa com H.265) e se o engasgo com jogo pesado (Witcher, 2026-09-29 — o que chegava dele caiu de 6 pra 0,8 Mbps por ~20s, lado dele, não VM) some com o H.265 por hardware. Tooltip mostra o codec real dos dois lados.
+3. **Painel da VM depois dessa call** (`npm run vm`, visão 24h): steal/CPU com Fluido. Referência do teste de carga: limpo até ~40 Mbps, aperto a partir de ~76.
+4. **Pendências antigas**: atraso do áudio isolado em sessão longa (§28 — se estalar, voltar o buffer pra 4096 e subir o alvo da fila); opções da 0.3.9 (iniciar com Windows → só bandeja; app desmarcado continua desmarcado); ícone nítido num notebook com escala; PiP com jogo em janela sem borda; 👁/clique-pra-assistir com 3+ pessoas.
+5. **Paridade site × app** (§17) — passar o checklist item a item dentro do app.
+
+### B. Transmissão
+6. **Trocar a qualidade no meio da transmissão** (usuário curtiu a ideia). Achado importante pro desenho: como as três qualidades usam o **mesmo codec** (H.265 se o PC tem, senão VP8 — e Fluido só existe com H.265), trocar nunca exige republicar: é `applyConstraints` (resolução/fps da captura) + `sender.setParameters` (bitrate/fps) + `contentHint`/`degradationPreference`, sem piscar. Pontos a validar: capturar sempre no teto (1080p60) e só restringir, porque subir resolução via `applyConstraints` depois de capturar baixo pode não funcionar; ajustar também o VP8 reserva (`capBackupCodec` já lê `activeShareQuality`); no app o botão de qualidade hoje some (`body.picker-quality`) — precisa de um controle durante a transmissão (ex: reaparecer só enquanto transmite, ou chip no próprio tile).
+7. **Sugestão automática de qualidade**: se a bolinha de envio ficar "limitado pelo upload/CPU" por mais de ~20s, oferecer baixar (ex: Fluido → Nítido) com um clique — não trocar sozinho sem avisar.
+8. **Áudio da transmissão em qualidade de música**: conferir bitrate/canais do `ScreenShareAudio` (aba no site e áudio isolado no app) — padrão do LiveKit pode ser mono/voz; preset estéreo de música pra quem compartilha vídeo/jogo.
+9. **Reavaliar AV1** quando o Chromium usar o AV1 por hardware da placa no WebRTC (hoje codifica na CPU, 15ms/quadro no teste). Refazer a página de loopback (§32) a cada atualização grande do Electron/Chrome.
+10. **H.264 por hardware como meio-termo** pra PC sem H.265 mas com H.264 na placa (GPU mais antiga): tira o peso da CPU mesmo sem economizar banda. Difícil saber antes de codificar se é hardware — pesquisar.
+11. **Badge de qualidade no tile de quem assiste** ("60fps"/"720p") — hoje só no tooltip.
+
+### C. Infra (VM Oracle, sempre Always Free)
+12. **Tentativas automáticas da VM A1.Flex** (2 OCPU/12GB, ~16× a CPU da Micro): o stack `sinal-vm-stack` falha por "Out of host capacity" em São Paulo. Script de retry (OCI CLI com chave de API no PC, ou na própria VM) — mexe direto na conta Oracle, explicar tudo antes. Se pegar: migrar LiveKit + coletor + swap, trocar DNS.
+13. **Versão do LiveKit fixada** — o compose usa `livekit-server:latest` (hoje 1.13.6): se a VM reiniciar e puxar imagem nova, pode mudar comportamento sem aviso. Fixar versão e atualizar de propósito. Idem `livekit-client` no site (2.22.3) — ao subir, conferir se `capBackupCodec` ainda é necessário (§32).
+14. **Higiene da VM**: atualizações automáticas de segurança do Ubuntu ligadas? fail2ban/SSH só por chave; conferir portas abertas vs. necessárias; documentar como recriar a VM do zero (config do LiveKit sem segredos no repo).
+15. **Alerta de aperto**: coletor avisar (ex: webhook do Discord que já existe) se steal+CPU passar de ~80% por 1 min numa call — cuidado pra não virar ruído; talvez só registrar e o painel destacar.
+
+### D. App desktop
+16. **Atalho global de mutar todas as transmissões** (jogando, sem alt-tab) e **atalho de janela flutuante**.
+17. **"Compartilhar de novo a mesma janela"** — o seletor lembrar/destacar a última fonte.
+18. **Log local + botão "abrir pasta de logs"** nas configurações — facilita diagnóstico quando alguém do grupo relata problema.
+19. **⭐ Esquema de patch notes** (pedido do usuário ao publicar a v0.3.10: "na próxima vez, vamos adicionar um esquema de patch notes"). A discutir: (a) janela de atualização do app mostrar o que mudou antes de reiniciar (as notas já existem na release do GitHub — `electron-updater` entrega o texto em `releaseNotes`); (b) aviso "Novidades" uma vez depois de atualizar, tanto no app quanto no site (o site muda sem instalador — hoje ninguém fica sabendo); (c) uma fonte única das notas (ex: `CHANGELOG` no repo) pra release do GitHub, janela do app e aviso do site não divergirem.
+20. **Atualizar o Electron** (44 → mais novo) — Chromium novo pode trazer AV1 por hardware e correções de WebRTC; testar H.265 e áudio isolado depois.
+
+### E. Experiência
+21. **Layout pra 3+ telas** (hoje máx. 2 em destaque + fileira) — modo mosaico opcional.
+22. **Assistir pelo celular** — revisar layout do PWA no celular, PiP no celular, e se o celular decodifica H.265 (iOS sim; Android varia) — se não, recebe VP8 pela reserva.
+23. **Menu de qualidade por teclado** (setas/Enter) — acessibilidade.
+24. Parado por decisão do usuário (não puxar sem ele pedir): reações/ponteiro na tela, imagem no chat, notificação nativa, gravação (Egress).
+
+### F. Manutenção
+25. **Quebrar o HANDOFF** (já passa de 900 linhas) em `docs/` por tema, deixando o HANDOFF como índice + estado atual.
+26. **Testes das funções puras novas** (`effectiveShareQuality`, migração `high/low`, `codecLabel`) no padrão de `tests/pure-logic.test.mjs`.
+27. **Revisar a CSP** depois de tudo que entrou (nada novo externo, mas conferir).
+
+## 34. Desktop v0.3.11 + site v0.8.49 — atualização mais rápida, seletor com a cara do site, Novidades (2026-10-02)
+
+Primeiro pacote de código do roadmap (§33 item 0), tudo aprovado pelo usuário antes.
+
+**Atualização aparece mais rápido** (`electron/src/main.js`): antes checava 10s depois de abrir + a cada 4h (app aberto na bandeja por dias descobria versão nova até 4h depois). Agora:
+- checa a cada **30 min** (GitHub aceita 60 consultas/h por IP sem login) e ao **trazer a janela** (`mainWindow` `show`, no máx. 1x/10 min);
+- **"Procurar atualização"** no menu da bandeja (abre o app nas configurações e já procura) e na nova seção **Atualizações** das configurações do site (status ao vivo: procurando / baixando N% / pronta / já está na mais recente / erro; botão vira "Reiniciar e instalar" quando pronta);
+- **não interrompe call**: o site avisa entrar/sair de sala (`setInRoom` no preload, chamado em `enterRoomUI`/`leaveRoom`); se a atualização termina de baixar dentro de uma sala, `maybePromptUpdate()` espera sair. Pedido manual pergunta mesmo dentro da sala (a pessoa pediu). "Depois" não pergunta de novo sozinho nesta execução — instala ao fechar (`autoInstallOnAppQuit`, como antes).
+- Estado em `updateState` (main) → `sinal:update-state` pro site. Site antigo/instalador antigo: tudo opcional nos dois sentidos (seção só aparece se `checkForUpdates` existe; main trata `inRoom` como false se o site nunca avisar = comportamento de antes).
+- **Não testado no Electron de verdade** (só sintaxe + a seção do site com estados simulados) — validar instalando a 0.3.11 e depois publicando uma 0.3.12 de teste ou esperando a próxima.
+
+**Seletor de tela com a cara do site** (`picker.html`, pedido: "a do site tá muito mais bonita"): paleta do Sinal (âmbar no lugar do azul Discord), janela sem a barra branca do Windows (`frame:false`, cabeçalho próprio com LED/wordmark + X, arrasta pelo cabeçalho), qualidades em cards com os **mesmos textos do menu do site** ("1080p · 60fps — jogos", deixando claro que é fps), cards de fonte com hover âmbar, paginação âmbar. 760×590. Textos duplicados em `QUALITIES` (picker) e `SHARE_QUALITY_PRESETS` (site) — mudar nos dois.
+
+**Novidades / log de versões** (pedido: "tipo como fazem nos jogos do Roblox"):
+- **Fonte única: `public/changelog.json`** — array, mais novo primeiro: `{ id, date, title, site?, app?, items[] }`. Linguagem de quem usa, não de dev. Já nasce com 8 entradas (desde o clique-pra-assistir/áudio isolado de 22/09).
+- **Site** (`setupChangelog()` em `app.js`): botão **"Novidades"** no rodapé, ao lado da versão, com bolinha quando há entrada não vista; janela com a mais recente em destaque (selo NOVO, título âmbar) e o histórico embaixo. **Abre sozinha uma vez** por novidade (`localStorage` `sinal:changelogSeen` = id da mais recente) — só pra quem já usava o Sinal (tem alguma chave `sinal:*` salva; primeira visita marca como visto calado), só na tela inicial e **não** quando entra por link de convite (`?sala=`) — aí fica só a bolinha. Tudo por DOM/`textContent` (sem `innerHTML` com conteúdo do JSON). Como o app carrega o site, aparece no app também.
+- **App**: a caixa de atualização (`update.html`) mostra **"O que muda"** com os itens da entrada cujo `app` = versão baixada — `main.js` busca `${SINAL_URL}/changelog.json` (timeout 4s; falhou = caixa sem lista, como antes) e a janela cresce pra caber.
+- **Processo a cada release**: escrever a entrada no `changelog.json` no mesmo PR (com `site`/`app` certos), e usar os mesmos itens na seção "Mudanças" da release do GitHub. A entrada do app tem que estar no site **antes** de publicar o instalador (o site sobe no merge, a release vem depois — ordem natural).
+
+**Testado no navegador** (servidor estático, Electron simulado onde precisa): Novidades — primeira visita não abre e marca visto; quem já usava → abre sozinha com as 8 entradas; via convite → só bolinha; clicar abre e limpa a bolinha; Esc/fundo fecham. Seção Atualizações: todos os estados, clique procura/instala, item da bandeja abre o painel. Seletor e caixa de atualização renderizados com dados simulados nos tamanhos reais.
