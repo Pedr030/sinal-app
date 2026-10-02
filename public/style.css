@@ -298,6 +298,8 @@ body.electron-app #updateBar{display:none !important;}
    ver applySettingsToUI em app.js). */
 .quality-wrap{ position:relative; display:inline-flex; }
 body.picker-quality .quality-wrap{ display:none; }
+/* ...mas aparece enquanto transmite, pra trocar a qualidade no meio */
+body.picker-quality.sharing .quality-wrap{ display:inline-flex; }
 #qualityBtn{ width:auto; min-width:46px; padding:0 10px; gap:5px; }
 #qualityBtn .quality-caret{ width:11px; height:11px; opacity:.7; }
 #qualityBtn[aria-expanded="true"]{ color:var(--tune); border-color:var(--tune); }
@@ -312,7 +314,7 @@ body.picker-quality .quality-wrap{ display:none; }
   text-align:left; background:transparent; border:1px solid transparent; border-radius:6px;
   padding:8px 10px; color:var(--ink); cursor:pointer;
 }
-.quality-option:hover:not(:disabled){ background:rgba(255,255,255,.06); }
+.quality-option:hover:not(:disabled):not(.selected){ background:rgba(255,255,255,.06); }
 .quality-option.selected{ border-color:var(--tune); background:var(--tune-dim); }
 .quality-option.selected .quality-option-name{ color:var(--tune); }
 .quality-option:disabled{ opacity:.4; cursor:not-allowed; }

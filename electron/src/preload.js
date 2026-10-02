@@ -86,6 +86,12 @@ contextBridge.exposeInMainWorld('sinalElectron', {
   onUpdateState: (callback) => {
     ipcRenderer.on('sinal:update-state', (_event, state) => callback(state));
   },
+  // Tela de "sem conexão" (offline.html): botão "Tentar agora" e volta da rede.
+  retryConnection: () => ipcRenderer.send('sinal:retry-connection'),
+  onOfflineNextRetry: (callback) => {
+    ipcRenderer.on('sinal:offline-next-retry', (_event, seconds) => callback(seconds));
+  },
+
   // Item "Procurar atualização" da bandeja abre as configurações nessa seção.
   onOpenSettings: (callback) => {
     ipcRenderer.on('sinal:open-settings', (_event, section) => callback(section));

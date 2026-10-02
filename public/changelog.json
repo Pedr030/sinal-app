@@ -1,12 +1,26 @@
 [
   {
+    "id": "2026-10-02-troca-qualidade",
+    "date": "2026-10-02",
+    "title": "Trocar a qualidade sem parar a transmissão",
+    "site": "0.8.50",
+    "app": "0.3.12",
+    "items": [
+      "Dá pra trocar entre Leve, Nítido e Fluido no meio da transmissão, sem parar e sem piscar pra quem assiste",
+      "App: o botão de qualidade aparece enquanto você transmite (a escolha inicial continua na tela de escolher o que compartilhar)",
+      "A qualidade que você troca no meio fica lembrada pra próxima transmissão",
+      "App: aberto sem internet, mostra uma tela de \"sem conexão\" e abre sozinho quando a internet volta (antes ficava numa tela preta até fechar o app)",
+      "Corrigido: a qualidade escolhida perdia o destaque ao passar o mouse em cima"
+    ]
+  },
+  {
     "id": "2026-10-02",
     "date": "2026-10-02",
     "title": "Novidades e atualizações mais rápidas",
     "site": "0.8.49",
     "app": "0.3.11",
     "items": [
-      "Nova janela de Novidades: mostra o que cada versão trouxe — é ela que você está vendo agora",
+      "Nova janela de Novidades, no site e no app: mostra o que cada versão trouxe",
       "App: procura atualização a cada 30 minutos e quando você abre a janela (antes podia levar até 4 horas)",
       "App: se a atualização ficar pronta no meio de uma call, ele espera você sair da sala pra perguntar",
       "App: \"Procurar atualização\" na bandeja e nas configurações, com o andamento do download",
