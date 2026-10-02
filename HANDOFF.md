@@ -949,6 +949,12 @@ Apontado pelo usuário ao testar: o app desktop hoje só tem o que foi explicita
 
 Nada aqui foi decidido — é a lista pra discutir (regra do usuário: debater antes de implementar). Ordem = recomendação.
 
+### 0. Primeiro pacote de código (desktop v0.3.11) — pedidos do usuário no fim da sessão
+- **Atualização demora pra aparecer** (principalmente já em call): hoje só checa 10s após abrir + a cada 4h, e só pergunta depois de baixar ~110MB — app aberto na bandeja por dias descobre versão nova até 4h depois. Proposta (não aprovada ainda, só apresentada): checar a cada 30 min; checar ao trazer a janela da bandeja (no máx. 1x/10 min); botão "Procurar atualização" na bandeja e nas configurações; se estiver numa sala quando terminar de baixar, perguntar ao sair da sala em vez de interromper a call (fechar o app continua instalando sozinho).
+- **Seletor de tela com a cara do site** ("tá legal, mas a do site tá muito mais bonita"): trocar o azul Discord (`#5865f2`) pelo âmbar do Sinal (qualidade escolhida igual ao menu do site), rótulos em mono maiúsculo, sem a barra de título branca do Windows (cabeçalho próprio `frame:false` com X/arrastar, igual à janela de atualização), cards com o acabamento dos tiles. Só visual. **E dizer pra que serve cada qualidade, como o menu do site** (hoje o seletor mostra só "720p · 30" — o número solto não deixa claro que é fps): **"720p · 30fps — upload fraco"**, **"1080p · 30fps — texto e vídeo"**, **"1080p · 60fps — jogos"**, igual ao site. Ideal: um texto só pros dois lugares (o `desc` de `SHARE_QUALITY_PRESETS` no site e o `QUALITIES` do `picker.html` estão duplicados hoje — manter em sincronia ou gerar um do outro).
+- Junto: **patch notes** (item 19 abaixo) mexe na mesma janela de atualização.
+- Validado em 2026-09-29 no app instalado (0.3.10): o seletor mostrou o Fluido liberado no PC do usuário (H.265 detectado) e lembrou a última qualidade.
+
 ### A. Fechar o que já saiu (uso real, sem código)
 1. ✅ **`desktop-v0.3.10` publicada** (2026-09-29) — qualidades no seletor + ícone da bandeja.
 2. **Fluido numa call de verdade**: ver no seletor do Jean se o Fluido fica liberado (= placa com H.265) e se o engasgo com jogo pesado (Witcher, 2026-09-29 — o que chegava dele caiu de 6 pra 0,8 Mbps por ~20s, lado dele, não VM) some com o H.265 por hardware. Tooltip mostra o codec real dos dois lados.
