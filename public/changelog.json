@@ -10,6 +10,8 @@
       "App: o botão de qualidade aparece enquanto você transmite (a escolha inicial continua na tela de escolher o que compartilhar)",
       "A qualidade que você troca no meio fica lembrada pra próxima transmissão",
       "App: aberto sem internet, mostra uma tela de \"sem conexão\" e abre sozinho quando a internet volta (antes ficava numa tela preta até fechar o app)",
+      "Áudio da transmissão em estéreo e com qualidade de música (antes saía mono, em qualidade de voz)",
+      "Selo de qualidade no nome de cada transmissão (1080p60, 1080p, 720p) — mostra o que está chegando de verdade",
       "Corrigido: a qualidade escolhida perdia o destaque ao passar o mouse em cima"
     ]
   },

@@ -737,6 +737,22 @@ async function changeActiveShareQuality(q){
   updateQualityBtn();
 }
 
+// Áudio da transmissão (aba no site / áudio isolado no app) como MÚSICA, não
+// voz: o padrão do LiveKit era 48 kbps mono (ele só detecta estéreo sozinho
+// no Safari) com DTX ligado — o DTX corta "silêncio", o que pode picotar
+// trilha/música em volume baixo. Estéreo a 128 kbps é irrelevante pra VM
+// (vídeo é na casa dos Mbps).
+function screenAudioPublishOptions(extra){
+  return {
+    source: LivekitClient.Track.Source.ScreenShareAudio,
+    audioPreset: LivekitClient.AudioPresets.musicHighQualityStereo,
+    forceStereo: true,
+    dtx: false,
+    red: false,
+    ...extra
+  };
+}
+
 // Opções de publicação da tela pra uma qualidade: H.265 + reserva VP8 em
 // simulcast de codec quando dá, VP8 puro quando não.
 function screenPublishOptions(q){
@@ -1078,7 +1094,7 @@ async function toggleShare(){
   try{
     await room.localParticipant.publishTrack(videoTrack, publishOpts);
     if(tabAudioTrack){
-      await room.localParticipant.publishTrack(tabAudioTrack, { source: LivekitClient.Track.Source.ScreenShareAudio });
+      await room.localParticipant.publishTrack(tabAudioTrack, screenAudioPublishOptions());
     }
   }catch(e){
     console.error('[sinal] publicar a tela falhou:', e);
@@ -1123,10 +1139,7 @@ async function toggleShare(){
   if(window.sinalElectron && window.sinalElectron.isElectron && shareElectronAudio){
     try{
       const audioTrack = createElectronIsolatedAudioTrack();
-      await room.localParticipant.publishTrack(audioTrack, {
-        source: Track.Source.ScreenShareAudio,
-        name: 'sinal-isolated-audio'
-      });
+      await room.localParticipant.publishTrack(audioTrack, screenAudioPublishOptions({ name: 'sinal-isolated-audio' }));
     }catch(e){
       console.error('[sinal] publicar áudio isolado falhou (segue só com vídeo):', e);
     }
@@ -1250,6 +1263,31 @@ function updateQualityDot(identity, quality){
 // representativo do estado ATUAL) e jitter do inbound-rtp de vídeo.
 const qualityStatsPrev = new Map(); // tileId -> { lost, received } acumulados na última amostra
 
+// Selo "1080p60" / "720p" no rótulo do tile — do que está chegando (ou
+// saindo, no próprio tile) DE VERDADE, pelas estatísticas: se a rede ou o PC
+// de quem compartilha baixar a qualidade, o selo mostra isso.
+function qualityBadgeText(height, fps){
+  if(!height) return '';
+  const res = height >= 1000 ? '1080p' : height >= 700 ? '720p' : `${height}p`;
+  return fps >= 45 ? `${res}60` : res;
+}
+function renderQualityBadge(tileId, text){
+  const tile = tiles.get(tileId);
+  const label = tile && tile.querySelector('.label');
+  if(!label) return;
+  let badge = label.querySelector('.res-badge');
+  if(!text){ if(badge) badge.remove(); return; }
+  if(!badge){
+    badge = document.createElement('span');
+    badge.className = 'res-badge mono';
+    // antes da bolinha de qualidade/envio, depois do nome
+    const anchor = label.querySelector('.quality-dot, .send-dot, .viewers');
+    label.insertBefore(badge, anchor);
+  }
+  badge.textContent = text;
+  badge.classList.toggle('fps60', text.endsWith('60'));
+}
+
 // "video/H265" -> "H.265" (pros tooltips de quem envia e de quem assiste)
 function codecLabel(report, codecId){
   let mime = '';
@@ -1300,6 +1338,7 @@ async function sampleTileDetailedStats(tileId, track){
     parts.push(`${kbps} kbps`);
   }
   parts.push(`perda: ${lossPct.toFixed(1)}%`);
+  renderQualityBadge(tileId, qualityBadgeText(inbound.frameHeight, inbound.framesPerSecond));
   if(jitterMs != null) parts.push(`jitter: ${jitterMs}ms`);
   qualityDetails.set(tileId, parts.join(' · '));
   renderQualityTooltip(tileId);
@@ -1376,6 +1415,7 @@ async function sampleOwnScreenStats(){
   const reason = outbound.qualityLimitationReason;
   const limit = reason && reason !== 'none' ? (SEND_LIMIT_TEXT[reason] || SEND_LIMIT_TEXT.other) : null;
 
+  renderQualityBadge(room.localParticipant.identity, qualityBadgeText(outbound.frameHeight, outbound.framesPerSecond));
   const tile = tiles.get(room.localParticipant.identity);
   const dot = tile && tile.querySelector('.send-dot');
   if(dot){

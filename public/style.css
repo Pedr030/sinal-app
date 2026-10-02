@@ -667,3 +667,11 @@ footer .version{margin-top:12px; font-size:10.5px; letter-spacing:1.5px; color:#
 .changelog-entry li{ color:#c9cdcc; font-size:13.5px; line-height:1.5; }
 .changelog-entry li::marker{ color:var(--tune); }
 .changelog-entry:not(.latest) li{ color:var(--fog); }
+
+/* Selo de qualidade no rótulo do tile (1080p60 / 720p…), vindo das estatísticas reais */
+.tile .label .res-badge{
+  font-size:9.5px; letter-spacing:.8px; padding:1px 5px; border-radius:3px;
+  border:1px solid rgba(255,255,255,.18); color:var(--fog); text-transform:none; line-height:1.4;
+}
+.tile .label .res-badge.fps60{ color:var(--tune); border-color:rgba(255,176,32,.5); }
+.filmstrip .tile .label .res-badge{ font-size:8.5px; padding:0 4px; }
