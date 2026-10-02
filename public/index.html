@@ -208,7 +208,9 @@
 
   <footer>
     <span class="footer-desc">Sala hospedada num SFU próprio (LiveKit) — o vídeo passa por lá pra chegar em todo mundo sem pesar na sua CPU. Funciona melhor no Chrome/Edge.</span>
-    <div class="version mono">SINAL <span id="versionLabel">—</span></div>
+    <div class="version mono">SINAL <span id="versionLabel">—</span>
+      <button type="button" id="changelogBtn" class="changelog-btn mono" title="O que mudou em cada versão">Novidades</button>
+    </div>
   </footer>
 </main>
 
@@ -266,6 +268,28 @@
       <div class="settings-note">Apps que você desmarca no checklist de áudio (compartilhando a tela inteira) continuam fora nas próximas vezes.</div>
       <div id="settingsExcludedList" class="settings-excluded-list"></div>
     </div>
+
+    <div class="settings-section" id="settingsUpdatesSection" hidden>
+      <div class="settings-section-title">Atualizações</div>
+      <div class="settings-row settings-shortcut-row">
+        <span class="settings-note" id="settingsUpdateStatus">…</span>
+        <button type="button" id="settingsUpdateBtn">Procurar atualização</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Novidades (patch notes) — conteúdo vem de changelog.json, ver setupChangelog() em app.js -->
+<div id="changelogOverlay" class="settings-overlay changelog-overlay" hidden>
+  <div class="changelog-panel" role="dialog" aria-modal="true" aria-labelledby="changelogTitle">
+    <div class="changelog-header">
+      <div>
+        <div class="changelog-kicker mono"><span class="changelog-led"></span>Sinal</div>
+        <h2 id="changelogTitle">Novidades</h2>
+      </div>
+      <button type="button" id="changelogCloseBtn" class="settings-close" aria-label="Fechar">&times;</button>
+    </div>
+    <div class="changelog-list" id="changelogList"></div>
   </div>
 </div>
 

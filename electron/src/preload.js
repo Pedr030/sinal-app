@@ -74,5 +74,20 @@ contextBridge.exposeInMainWorld('sinalElectron', {
   // Chamado logo antes de toggleShare() quando o atalho disparou começando
   // um compartilhamento com "tela inteira direto" ligado — main.js pula o
   // seletor nessa próxima chamada de getDisplayMedia.
-  requestQuickShare: () => ipcRenderer.send('sinal:request-quick-share')
+  requestQuickShare: () => ipcRenderer.send('sinal:request-quick-share'),
+
+  // Atualizações (v0.3.11+) — o site avisa se está numa sala (main.js espera
+  // sair dela pra perguntar se reinicia) e mostra o status na seção
+  // "Atualizações" das configurações. Site antigo não chama nada disso.
+  setInRoom: (inRoom) => ipcRenderer.send('sinal:set-in-room', !!inRoom),
+  getUpdateState: () => ipcRenderer.invoke('sinal:get-update-state'),
+  checkForUpdates: () => ipcRenderer.invoke('sinal:check-for-updates'),
+  installUpdate: () => ipcRenderer.send('sinal:install-update'),
+  onUpdateState: (callback) => {
+    ipcRenderer.on('sinal:update-state', (_event, state) => callback(state));
+  },
+  // Item "Procurar atualização" da bandeja abre as configurações nessa seção.
+  onOpenSettings: (callback) => {
+    ipcRenderer.on('sinal:open-settings', (_event, section) => callback(section));
+  }
 });

@@ -173,6 +173,8 @@ body.electron-app #updateBar{display:none !important;}
   padding:6px 12px; font-weight:700; color:var(--tune);
 }
 .settings-shortcut-row button{font-size:12.5px; padding:8px 14px; height:auto;}
+/* Atualizações: o texto de status encolhe, o botão não quebra em várias linhas */
+#settingsUpdateBtn{ white-space:nowrap; flex-shrink:0; }
 .settings-hint{font-size:12px; color:var(--fog); margin-top:-8px;}
 .settings-error{font-size:12.5px; color:var(--rec);}
 .settings-row-disabled{opacity:.4; pointer-events:none;}
@@ -615,3 +617,51 @@ footer .version{margin-top:12px; font-size:10.5px; letter-spacing:1.5px; color:#
   .room-bar .end{justify-self:center;}
   .avatars{order:3;}
 }
+
+/* ---------- Novidades (patch notes, log de versões) ---------- */
+.changelog-btn{
+  margin-left:8px; height:auto; padding:3px 9px; border-radius:20px; position:relative;
+  background:transparent; border:1px solid var(--line); color:var(--fog);
+  font-size:10.5px; letter-spacing:1.5px; text-transform:uppercase; cursor:pointer;
+}
+.changelog-btn:hover{ color:var(--tune); border-color:var(--tune); }
+/* bolinha = tem novidade que você ainda não abriu */
+.changelog-btn.has-new{ color:var(--tune); border-color:var(--tune); }
+.changelog-btn.has-new::after{
+  content:''; position:absolute; top:-3px; right:-3px; width:8px; height:8px; border-radius:50%;
+  background:var(--rec); box-shadow:0 0 0 2px var(--void);
+}
+.changelog-panel{
+  width:520px; max-width:92vw; max-height:84vh; display:flex; flex-direction:column;
+  background:var(--panel); border:1px solid var(--line); border-radius:12px; overflow:hidden;
+  box-shadow:0 20px 60px rgba(0,0,0,.5);
+}
+.changelog-header{
+  display:flex; align-items:flex-start; justify-content:space-between; gap:12px;
+  padding:20px 22px 16px; border-bottom:1px solid var(--line);
+  background:radial-gradient(ellipse 420px 160px at 0% 0%, #1a1512 0%, transparent 70%);
+}
+.changelog-kicker{
+  display:flex; align-items:center; gap:7px; font-size:10.5px; letter-spacing:2.5px;
+  text-transform:uppercase; color:var(--fog);
+}
+.changelog-led{ width:7px; height:7px; border-radius:50%; background:var(--rec); box-shadow:0 0 0 3px var(--rec-dim); }
+.changelog-header h2{
+  margin:6px 0 0; font-family:'Bebas Neue', sans-serif; font-weight:400; font-size:34px;
+  letter-spacing:2px; line-height:1;
+}
+.changelog-list{ overflow-y:auto; padding:6px 22px 22px; scrollbar-width:thin; scrollbar-color:var(--line) transparent; }
+.changelog-entry{ padding:16px 0; border-bottom:1px solid var(--line); }
+.changelog-entry:last-child{ border-bottom:none; }
+.changelog-meta{
+  display:flex; align-items:center; flex-wrap:wrap; gap:6px; font-size:10.5px;
+  letter-spacing:1.2px; text-transform:uppercase; color:var(--fog);
+}
+.changelog-chip{ border:1px solid var(--line); border-radius:4px; padding:2px 6px; }
+.changelog-new{ background:var(--tune); color:#1a1200; border-radius:4px; padding:2px 7px; font-weight:700; }
+.changelog-entry h3{ margin:8px 0 8px; font-size:15.5px; font-weight:600; }
+.changelog-entry.latest h3{ color:var(--tune); font-size:17px; }
+.changelog-entry ul{ margin:0; padding-left:18px; display:flex; flex-direction:column; gap:5px; }
+.changelog-entry li{ color:#c9cdcc; font-size:13.5px; line-height:1.5; }
+.changelog-entry li::marker{ color:var(--tune); }
+.changelog-entry:not(.latest) li{ color:var(--fog); }

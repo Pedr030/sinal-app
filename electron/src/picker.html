@@ -4,81 +4,120 @@
 <meta charset="UTF-8">
 <title>Escolha o que compartilhar</title>
 <style>
-  /* Visual simples, combinando com a paleta escura do Sinal — não precisa
-     ser bonito, é uma janela utilitária que aparece por segundos. */
-  :root{ --bg:#0b0c0e; --panel:#16181c; --line:#2a2d33; --ink:#eef0f2; --fog:#9aa0a8; --tune:#5865f2; }
+  /* Mesma paleta/linguagem do site (public/style.css) — pedido do usuário:
+     "a do site tá muito mais bonita" (ver HANDOFF §34). Sem fontes externas
+     de propósito, igual ao update.html: janela utilitária que tem que
+     desenhar na hora, sem esperar rede. Janela sem moldura do Windows
+     (frame:false em main.js) — o cabeçalho abaixo é a barra de arrastar. */
+  :root{
+    --void:#0b0c0e; --panel:#17191c; --panel-2:#1f2225; --line:#2b2e33;
+    --ink:#eef1f0; --fog:#888d90; --rec:#ff4438; --tune:#ffb020; --tune-dim:#ffb02022;
+  }
   *{ box-sizing:border-box; }
   body{
-    margin:0; background:var(--bg); color:var(--ink);
+    margin:0; height:100vh; overflow:hidden; color:var(--ink);
+    background:
+      radial-gradient(ellipse 600px 260px at 10% -10%, #1a1512 0%, transparent 62%),
+      var(--void);
     font-family:'Segoe UI', system-ui, sans-serif; font-size:13px;
-    display:flex; flex-direction:column; height:100vh; overflow:hidden;
+    display:flex; flex-direction:column; border:1px solid var(--line);
   }
+  .mono{ font-family:'JetBrains Mono', Consolas, monospace; }
+  .section-label{
+    font-family:'JetBrains Mono', Consolas, monospace; font-size:10.5px; letter-spacing:2px;
+    text-transform:uppercase; color:var(--fog); margin:0 0 8px;
+  }
+
+  /* Cabeçalho = barra de arrastar */
   header{
-    padding:14px 16px 10px; border-bottom:1px solid var(--line); flex-shrink:0;
-    display:flex; align-items:flex-end; justify-content:space-between; gap:12px;
+    -webkit-app-region:drag; flex-shrink:0;
+    display:flex; align-items:center; gap:10px; padding:14px 14px 12px 18px;
+    border-bottom:1px solid var(--line);
   }
-  /* Qualidade (Leve/Nítido/Fluido) — escolhida aqui junto com a fonte, em vez
-     do botão do site (pedido do usuário, ver HANDOFF §32). */
-  #quality{ display:flex; gap:4px; background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:3px; }
-  #quality button{
-    border:0; border-radius:6px; padding:5px 10px; display:flex; flex-direction:column; align-items:center; gap:1px;
-    line-height:1.15;
+  .rec-led{ width:8px; height:8px; border-radius:50%; background:var(--rec); box-shadow:0 0 0 3px #ff443822; }
+  .wordmark{ font-size:17px; font-weight:800; letter-spacing:3px; text-transform:uppercase; }
+  .header-title{ color:var(--fog); font-size:11px; letter-spacing:2px; text-transform:uppercase; margin-left:4px; }
+  #closeBtn{
+    -webkit-app-region:no-drag; margin-left:auto; width:30px; height:30px; padding:0;
+    display:flex; align-items:center; justify-content:center; border-radius:6px;
+    background:transparent; border:1px solid transparent; color:var(--fog); cursor:pointer;
   }
-  #quality button small{ font-size:9.5px; color:var(--fog); }
-  #quality button.selected{ background:var(--tune); color:#fff; }
-  #quality button.selected small{ color:#dfe2ff; }
-  #quality button:disabled{ opacity:.35; cursor:not-allowed; }
-  #quality button:disabled:hover{ color:var(--fog); }
-  header h1{ margin:0; font-size:15px; font-weight:600; }
-  header p{ margin:4px 0 0; color:var(--fog); font-size:12px; }
+  #closeBtn:hover{ color:var(--ink); background:var(--panel-2); border-color:var(--line); }
+
+  main{ flex:1; display:flex; flex-direction:column; padding:16px 18px 0; min-height:0; }
+
+  /* Qualidade — mesmos nomes e textos do menu do site */
+  #quality{ display:grid; grid-template-columns:repeat(3, 1fr); gap:8px; margin-bottom:18px; }
+  .quality-option{
+    display:flex; flex-direction:column; align-items:flex-start; gap:3px; text-align:left;
+    background:var(--panel); border:1px solid var(--line); border-radius:8px;
+    padding:10px 12px; color:var(--ink); cursor:pointer; font-family:inherit; transition:.12s;
+  }
+  .quality-option:hover:not(:disabled){ border-color:#4a4e55; background:var(--panel-2); }
+  .quality-option .name{ font-size:14px; font-weight:600; }
+  .quality-option .desc{ font-size:11px; color:var(--fog); letter-spacing:.3px; white-space:nowrap; }
+  .quality-option.selected{ border-color:var(--tune); background:var(--tune-dim); }
+  .quality-option.selected .name{ color:var(--tune); }
+  .quality-option:disabled{ opacity:.4; cursor:not-allowed; }
+
+  /* Fontes */
   #grid{
-    flex:1; padding:14px 16px;
-    display:grid; grid-template-columns:repeat(3, 1fr); gap:10px;
-    align-content:start;
+    flex:1; display:grid; grid-template-columns:repeat(3, 1fr); gap:10px; align-content:start;
   }
   .source{
-    background:var(--panel); border:2px solid var(--line); border-radius:8px;
-    cursor:pointer; overflow:hidden; text-align:left; padding:0;
-    display:flex; flex-direction:column; transition:border-color .1s;
+    background:var(--panel); border:1px solid var(--line); border-radius:8px;
+    cursor:pointer; overflow:hidden; text-align:left; padding:0; color:var(--ink);
+    display:flex; flex-direction:column; transition:.12s; font-family:inherit;
   }
   .source:hover, .source:focus-visible{ border-color:var(--tune); outline:none; }
-  .source img{ width:100%; height:90px; object-fit:contain; background:#000; display:block; }
-  .source .label{ padding:6px 8px; font-size:11px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-  .source .tag{ font-size:9px; color:var(--fog); text-transform:uppercase; letter-spacing:.04em; padding:0 8px 6px; }
+  .source:hover .label{ color:var(--tune); }
+  .source img{ width:100%; height:96px; object-fit:contain; background:#000; display:block; }
+  .source .label{ padding:8px 10px 2px; font-size:12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .source .tag{
+    font-family:'JetBrains Mono', Consolas, monospace; font-size:9.5px; letter-spacing:1.5px;
+    color:var(--fog); text-transform:uppercase; padding:0 10px 9px;
+  }
+  #empty{ color:var(--fog); padding:30px; text-align:center; grid-column:1/-1; }
+
   footer{
-    padding:10px 16px; border-top:1px solid var(--line); flex-shrink:0;
+    padding:12px 18px; flex-shrink:0;
     display:flex; align-items:center; justify-content:space-between; gap:10px;
   }
-  button{
-    background:transparent; color:var(--fog); border:1px solid var(--line); border-radius:6px;
-    padding:7px 14px; font-size:12px; cursor:pointer;
+  .btn{
+    background:transparent; color:var(--fog); border:1px solid var(--line); border-radius:7px;
+    padding:8px 16px; font-size:12.5px; font-weight:600; cursor:pointer; font-family:inherit;
   }
-  button:hover{ color:var(--ink); border-color:var(--fog); }
-  #empty{ color:var(--fog); padding:20px; text-align:center; grid-column:1/-1; }
-  /* Paginação — 6 fontes por página (o tanto que já cabia bem, 2 linhas de
-     3, sem apertar nada) em vez de espremer miniatura+texto pra caber tudo
-     de uma vez quando tem muita coisa aberta (pedido do usuário: difícil
-     de identificar a fonte certa com 7+ apertadas na mesma tela). */
+  .btn:hover{ color:var(--ink); border-color:var(--fog); }
+  /* Paginação — 6 fontes por página (pedido do usuário: com 7+ apertadas
+     na mesma tela ficava difícil achar a certa). */
   #pagination{ display:flex; gap:6px; }
   #pagination button{
-    width:26px; height:26px; padding:0; font-size:12px;
-    display:flex; align-items:center; justify-content:center;
+    width:28px; height:28px; padding:0; font-size:12px; border-radius:6px; cursor:pointer;
+    background:transparent; color:var(--fog); border:1px solid var(--line);
+    font-family:'JetBrains Mono', Consolas, monospace;
   }
-  #pagination button.current{ background:var(--tune); border-color:var(--tune); color:#0b0c0e; font-weight:700; }
+  #pagination button:hover{ color:var(--ink); border-color:var(--fog); }
+  #pagination button.current{ background:var(--tune); border-color:var(--tune); color:#1a1200; font-weight:700; }
 </style>
 </head>
 <body>
 <header>
-  <div>
-    <h1>Escolha o que compartilhar</h1>
-    <p>Telas e janelas abertas agora.</p>
-  </div>
-  <div id="quality" role="radiogroup" aria-label="Qualidade da transmissão"></div>
+  <span class="rec-led"></span>
+  <span class="wordmark">Sinal</span>
+  <span class="header-title">Escolha o que compartilhar</span>
+  <button type="button" id="closeBtn" title="Cancelar" aria-label="Cancelar">
+    <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="6" y1="6" x2="18" y2="18"/><line x1="18" y1="6" x2="6" y2="18"/></svg>
+  </button>
 </header>
-<div id="grid"><div id="empty">Carregando...</div></div>
+<main>
+  <div class="section-label">Qualidade</div>
+  <div id="quality" role="radiogroup" aria-label="Qualidade da transmissão"></div>
+  <div class="section-label">Telas e janelas abertas</div>
+  <div id="grid"><div id="empty">Carregando...</div></div>
+</main>
 <footer>
   <div id="pagination" hidden></div>
-  <button type="button" id="cancelBtn">Cancelar</button>
+  <button type="button" class="btn" id="cancelBtn">Cancelar</button>
 </footer>
 <script>
   // window.pickerAPI vem do picker-preload.js (contextBridge) — essa janela
@@ -88,11 +127,12 @@
   let allSources = [];
   let currentPage = 0;
 
-  // Mesmos nomes/valores do site (SHARE_QUALITY_PRESETS em public/app.js).
+  // Mesmos nomes e textos do menu do site (SHARE_QUALITY_PRESETS em
+  // public/app.js) — se mudar lá, mudar aqui também.
   const QUALITIES = [
-    { key: 'leve', name: 'Leve', desc: '720p · 30' },
-    { key: 'nitido', name: 'Nítido', desc: '1080p · 30' },
-    { key: 'fluido', name: 'Fluido', desc: '1080p · 60', requiresH265: true }
+    { key: 'leve', name: 'Leve', desc: '720p · 30fps — upload fraco' },
+    { key: 'nitido', name: 'Nítido', desc: '1080p · 30fps — texto e vídeo' },
+    { key: 'fluido', name: 'Fluido', desc: '1080p · 60fps — jogos', requiresH265: true }
   ];
   // Fluido só com codificador H.265 por hardware — o Chromium só lista H.265
   // nos codecs de envio quando existe (mesma checagem do supportsH265() do
@@ -109,15 +149,20 @@
     QUALITIES.forEach((q) => {
       const btn = document.createElement('button');
       btn.type = 'button';
+      btn.className = 'quality-option';
       btn.setAttribute('role', 'radio');
       btn.setAttribute('aria-checked', String(q.key === quality));
       if(q.key === quality) btn.classList.add('selected');
       const unavailable = q.requiresH265 && !canSendH265;
       btn.disabled = unavailable;
       btn.title = unavailable ? 'Precisa de uma placa de vídeo com codificador H.265 — este PC não tem' : '';
-      const small = document.createElement('small');
-      small.textContent = q.desc;
-      btn.append(q.name, small);
+      const name = document.createElement('span');
+      name.className = 'name';
+      name.textContent = q.name;
+      const desc = document.createElement('span');
+      desc.className = 'desc mono';
+      desc.textContent = q.desc;
+      btn.append(name, desc);
       btn.addEventListener('click', () => { quality = q.key; renderQuality(); });
       box.appendChild(btn);
     });
@@ -136,16 +181,14 @@
       btn.type = 'button';
       btn.className = 'source';
       // s.name vem do próprio Windows/Electron (título de janela/monitor),
-      // não de outro participante da sala — mas monta via DOM mesmo assim,
-      // é hábito bom e mais barato que puxar escapeHtml aqui.
+      // não de outro participante da sala — mas monta via DOM mesmo assim.
       const img = document.createElement('img');
       img.src = s.thumbnailDataUrl;
       img.alt = '';
       const label = document.createElement('div');
       label.className = 'label';
       label.textContent = s.name || (s.isScreen ? 'Tela' : 'Janela');
-      // title = tooltip nativo com o nome completo, pra quando o texto
-      // trunca (elipse) por ser mais longo que a largura do card.
+      // title = tooltip nativo com o nome completo, pra quando trunca.
       label.title = label.textContent;
       const tag = document.createElement('div');
       tag.className = 'tag';
@@ -183,6 +226,7 @@
   });
 
   document.getElementById('cancelBtn').addEventListener('click', () => window.pickerAPI.cancel());
+  document.getElementById('closeBtn').addEventListener('click', () => window.pickerAPI.cancel());
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape') window.pickerAPI.cancel(); });
 </script>
 </body>

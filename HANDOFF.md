@@ -993,3 +993,24 @@ Nada aqui foi decidido — é a lista pra discutir (regra do usuário: debater a
 25. **Quebrar o HANDOFF** (já passa de 900 linhas) em `docs/` por tema, deixando o HANDOFF como índice + estado atual.
 26. **Testes das funções puras novas** (`effectiveShareQuality`, migração `high/low`, `codecLabel`) no padrão de `tests/pure-logic.test.mjs`.
 27. **Revisar a CSP** depois de tudo que entrou (nada novo externo, mas conferir).
+
+## 34. Desktop v0.3.11 + site v0.8.49 — atualização mais rápida, seletor com a cara do site, Novidades (2026-10-02)
+
+Primeiro pacote de código do roadmap (§33 item 0), tudo aprovado pelo usuário antes.
+
+**Atualização aparece mais rápido** (`electron/src/main.js`): antes checava 10s depois de abrir + a cada 4h (app aberto na bandeja por dias descobria versão nova até 4h depois). Agora:
+- checa a cada **30 min** (GitHub aceita 60 consultas/h por IP sem login) e ao **trazer a janela** (`mainWindow` `show`, no máx. 1x/10 min);
+- **"Procurar atualização"** no menu da bandeja (abre o app nas configurações e já procura) e na nova seção **Atualizações** das configurações do site (status ao vivo: procurando / baixando N% / pronta / já está na mais recente / erro; botão vira "Reiniciar e instalar" quando pronta);
+- **não interrompe call**: o site avisa entrar/sair de sala (`setInRoom` no preload, chamado em `enterRoomUI`/`leaveRoom`); se a atualização termina de baixar dentro de uma sala, `maybePromptUpdate()` espera sair. Pedido manual pergunta mesmo dentro da sala (a pessoa pediu). "Depois" não pergunta de novo sozinho nesta execução — instala ao fechar (`autoInstallOnAppQuit`, como antes).
+- Estado em `updateState` (main) → `sinal:update-state` pro site. Site antigo/instalador antigo: tudo opcional nos dois sentidos (seção só aparece se `checkForUpdates` existe; main trata `inRoom` como false se o site nunca avisar = comportamento de antes).
+- **Não testado no Electron de verdade** (só sintaxe + a seção do site com estados simulados) — validar instalando a 0.3.11 e depois publicando uma 0.3.12 de teste ou esperando a próxima.
+
+**Seletor de tela com a cara do site** (`picker.html`, pedido: "a do site tá muito mais bonita"): paleta do Sinal (âmbar no lugar do azul Discord), janela sem a barra branca do Windows (`frame:false`, cabeçalho próprio com LED/wordmark + X, arrasta pelo cabeçalho), qualidades em cards com os **mesmos textos do menu do site** ("1080p · 60fps — jogos", deixando claro que é fps), cards de fonte com hover âmbar, paginação âmbar. 760×590. Textos duplicados em `QUALITIES` (picker) e `SHARE_QUALITY_PRESETS` (site) — mudar nos dois.
+
+**Novidades / log de versões** (pedido: "tipo como fazem nos jogos do Roblox"):
+- **Fonte única: `public/changelog.json`** — array, mais novo primeiro: `{ id, date, title, site?, app?, items[] }`. Linguagem de quem usa, não de dev. Já nasce com 8 entradas (desde o clique-pra-assistir/áudio isolado de 22/09).
+- **Site** (`setupChangelog()` em `app.js`): botão **"Novidades"** no rodapé, ao lado da versão, com bolinha quando há entrada não vista; janela com a mais recente em destaque (selo NOVO, título âmbar) e o histórico embaixo. **Abre sozinha uma vez** por novidade (`localStorage` `sinal:changelogSeen` = id da mais recente) — só pra quem já usava o Sinal (tem alguma chave `sinal:*` salva; primeira visita marca como visto calado), só na tela inicial e **não** quando entra por link de convite (`?sala=`) — aí fica só a bolinha. Tudo por DOM/`textContent` (sem `innerHTML` com conteúdo do JSON). Como o app carrega o site, aparece no app também.
+- **App**: a caixa de atualização (`update.html`) mostra **"O que muda"** com os itens da entrada cujo `app` = versão baixada — `main.js` busca `${SINAL_URL}/changelog.json` (timeout 4s; falhou = caixa sem lista, como antes) e a janela cresce pra caber.
+- **Processo a cada release**: escrever a entrada no `changelog.json` no mesmo PR (com `site`/`app` certos), e usar os mesmos itens na seção "Mudanças" da release do GitHub. A entrada do app tem que estar no site **antes** de publicar o instalador (o site sobe no merge, a release vem depois — ordem natural).
+
+**Testado no navegador** (servidor estático, Electron simulado onde precisa): Novidades — primeira visita não abre e marca visto; quem já usava → abre sozinha com as 8 entradas; via convite → só bolinha; clicar abre e limpa a bolinha; Esc/fundo fecham. Seção Atualizações: todos os estados, clique procura/instala, item da bandeja abre o painel. Seletor e caixa de atualização renderizados com dados simulados nos tamanhos reais.
