@@ -19,7 +19,10 @@ const { autoUpdater } = require('electron-updater');
 
 // URL de produção real — mesma que https://sinal-app-stream.vercel.app serve
 // pro navegador. Ver README/HANDOFF pra histórico de migração de domínio.
-const SINAL_URL = 'https://sinal-app-stream.vercel.app';
+// SINAL_DEV_URL só vale rodando em desenvolvimento (`npm start`, não
+// empacotado) — serve pra testar a tela de sem conexão apontando pra um
+// endereço local desligado/ligado. O app instalado ignora.
+const SINAL_URL = (!app.isPackaged && process.env.SINAL_DEV_URL) || 'https://sinal-app-stream.vercel.app';
 
 // Protocolo customizado (sinal://) pra links de convite abrirem o app
 // instalado em vez de só o navegador — ver "Abrir no app" em public/app.js
@@ -178,6 +181,17 @@ let offlineRetryDelay = OFFLINE_RETRY_FIRST_MS;
 let offlineTargetUrl = SINAL_URL;   // a página que falhou — volta pra ela (ex: link de convite)
 let offlineAttemptRunning = false;
 let offlineActive = false;
+let offlineNextRetryAt = 0;
+
+function isOfflinePageShown(){
+  return !!mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents.getURL().endsWith('offline.html');
+}
+
+function sendOfflineCountdown(){
+  if(!isOfflinePageShown()) return;
+  const seconds = Math.max(0, Math.ceil((offlineNextRetryAt - Date.now()) / 1000));
+  mainWindow.webContents.send('sinal:offline-next-retry', seconds);
+}
 
 function stopOfflineRetry(){
   clearTimeout(offlineRetryTimer);
@@ -190,15 +204,19 @@ function scheduleOfflineRetry({ grow = true } = {}){
   clearTimeout(offlineRetryTimer);
   const delay = offlineRetryDelay;
   offlineRetryTimer = setTimeout(() => tryReconnect(), delay);
+  offlineNextRetryAt = Date.now() + delay;
   if(grow) offlineRetryDelay = Math.min(offlineRetryDelay * 2, OFFLINE_RETRY_MAX_MS);
-  // A tela de sem conexão mostra "próxima tentativa em Ns".
-  if(mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('sinal:offline-next-retry', Math.round(delay / 1000));
+  // A tela de sem conexão mostra "Tentando novamente em Ns".
+  sendOfflineCountdown();
 }
 
 // Só navega de volta pro site quando ele RESPONDE — navegar às cegas e
 // falhar de novo faria a tela piscar a cada tentativa.
 async function tryReconnect({ manual = false } = {}){
   if(!offlineActive || offlineAttemptRunning || !mainWindow || mainWindow.isDestroyed()) return;
+  // Saiu da tela de sem conexão por outro caminho (ex: link de convite que
+  // carregou): para de tentar, sem puxar a janela de volta pra outra página.
+  if(!isOfflinePageShown() && !mainWindow.webContents.isLoading()){ stopOfflineRetry(); return; }
   offlineAttemptRunning = true;
   let online = false;
   try{
@@ -223,8 +241,9 @@ function showOfflinePage(failedUrl){
     offlineRetryDelay = OFFLINE_RETRY_FIRST_MS;
   }
   mainWindow.loadFile(path.join(__dirname, 'offline.html'));
-  // Agenda depois que a página carregar, pra ela receber a contagem.
-  mainWindow.webContents.once('did-finish-load', () => scheduleOfflineRetry());
+  // O temporizador começa já; a contagem chega na tela quando ela terminar
+  // de carregar (listener de did-finish-load em createMainWindow).
+  if(!offlineRetryTimer) scheduleOfflineRetry();
 }
 
 ipcMain.on('sinal:retry-connection', () => { tryReconnect({ manual: true }); });
@@ -272,8 +291,14 @@ function createMainWindow(initialRoomCode, startHidden){
     console.error(`[sinal] site não carregou (${errorCode} ${errorDesc}) — mostrando a tela de sem conexão`);
     showOfflinePage(validatedURL);
   });
+  // A tela de sem conexão terminou de carregar: manda quanto falta pra
+  // próxima tentativa (o temporizador já está correndo desde showOfflinePage).
+  // OBS: NÃO usar did-finish-load pra concluir "voltou a internet" — quando o
+  // site falha, o Chromium carrega uma página de erro interna que ainda tem a
+  // URL do Sinal e também dispara did-finish-load. Era isso que desligava as
+  // tentativas e deixava a tela presa (bug real da v0.3.12, 2026-10-02).
   mainWindow.webContents.on('did-finish-load', () => {
-    if(mainWindow.webContents.getURL().startsWith(SINAL_URL)) stopOfflineRetry();
+    if(offlineActive && isOfflinePageShown()) sendOfflineCountdown();
   });
 
   // Fechar a janela só minimiza pra bandeja — é o motivo nº1 de existir essa

@@ -1,5 +1,15 @@
 [
   {
+    "id": "2026-10-02-sem-conexao-fix",
+    "date": "2026-10-02",
+    "title": "Correção da tela de sem conexão",
+    "app": "0.3.13",
+    "items": [
+      "Corrigido: a tela de \"sem conexão\" ficava presa mesmo depois da internet voltar — agora o app abre sozinho assim que a conexão volta",
+      "O cronômetro \"Tentando novamente em Ns\" aparece desde o começo, e o botão \"Tentar agora\" funciona"
+    ]
+  },
+  {
     "id": "2026-10-02-troca-qualidade",
     "date": "2026-10-02",
     "title": "Trocar a qualidade sem parar a transmissão",
