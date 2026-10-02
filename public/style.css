@@ -298,6 +298,8 @@ body.electron-app #updateBar{display:none !important;}
    ver applySettingsToUI em app.js). */
 .quality-wrap{ position:relative; display:inline-flex; }
 body.picker-quality .quality-wrap{ display:none; }
+/* ...mas aparece enquanto transmite, pra trocar a qualidade no meio */
+body.picker-quality.sharing .quality-wrap{ display:inline-flex; }
 #qualityBtn{ width:auto; min-width:46px; padding:0 10px; gap:5px; }
 #qualityBtn .quality-caret{ width:11px; height:11px; opacity:.7; }
 #qualityBtn[aria-expanded="true"]{ color:var(--tune); border-color:var(--tune); }
@@ -312,7 +314,7 @@ body.picker-quality .quality-wrap{ display:none; }
   text-align:left; background:transparent; border:1px solid transparent; border-radius:6px;
   padding:8px 10px; color:var(--ink); cursor:pointer;
 }
-.quality-option:hover:not(:disabled){ background:rgba(255,255,255,.06); }
+.quality-option:hover:not(:disabled):not(.selected){ background:rgba(255,255,255,.06); }
 .quality-option.selected{ border-color:var(--tune); background:var(--tune-dim); }
 .quality-option.selected .quality-option-name{ color:var(--tune); }
 .quality-option:disabled{ opacity:.4; cursor:not-allowed; }
@@ -665,3 +667,11 @@ footer .version{margin-top:12px; font-size:10.5px; letter-spacing:1.5px; color:#
 .changelog-entry li{ color:#c9cdcc; font-size:13.5px; line-height:1.5; }
 .changelog-entry li::marker{ color:var(--tune); }
 .changelog-entry:not(.latest) li{ color:var(--fog); }
+
+/* Selo de qualidade no rótulo do tile (1080p60 / 720p…), vindo das estatísticas reais */
+.tile .label .res-badge{
+  font-size:9.5px; letter-spacing:.8px; padding:1px 5px; border-radius:3px;
+  border:1px solid rgba(255,255,255,.18); color:var(--fog); text-transform:none; line-height:1.4;
+}
+.tile .label .res-badge.fps60{ color:var(--tune); border-color:rgba(255,176,32,.5); }
+.filmstrip .tile .label .res-badge{ font-size:8.5px; padding:0 4px; }

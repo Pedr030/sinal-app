@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<title>Sinal — sem conexão</title>
+<style>
+  /* Mostrada pelo main.js quando o site não carrega (sem internet, DNS,
+     servidor fora) — antes a janela ficava preta e só voltava matando o
+     processo (relato do usuário, 2026-10-02). Mesma linguagem do
+     splash/update: sem fontes externas, tem que desenhar SEM rede. */
+  :root{ --void:#0b0c0e; --panel:#17191c; --line:#2b2e33; --ink:#eef1f0; --fog:#888d90; --tune:#ffb020; --rec:#ff4438; }
+  *{ box-sizing:border-box; }
+  body{
+    margin:0; height:100vh; overflow:hidden; color:var(--ink);
+    background:
+      radial-gradient(ellipse 700px 320px at 20% -10%, #1a1512 0%, transparent 62%),
+      var(--void);
+    font-family:'Segoe UI', system-ui, sans-serif;
+    display:flex; flex-direction:column; align-items:center; justify-content:center; gap:18px;
+    text-align:center; padding:24px;
+  }
+  .brand{ display:flex; align-items:center; gap:10px; }
+  .led{ width:10px; height:10px; border-radius:50%; background:var(--fog); box-shadow:0 0 0 4px #888d9022; }
+  .wordmark{ font-size:26px; font-weight:800; letter-spacing:4px; text-transform:uppercase; }
+  h1{ margin:6px 0 0; font-size:18px; font-weight:600; }
+  p{ margin:0; color:var(--fog); font-size:14px; line-height:1.55; max-width:420px; }
+  .status{
+    font-family:'JetBrains Mono', Consolas, monospace; font-size:11px; letter-spacing:2px;
+    text-transform:uppercase; color:var(--fog); display:flex; align-items:center; gap:8px;
+  }
+  .status .dot{ width:6px; height:6px; border-radius:50%; background:var(--tune); animation:blink 1.4s ease-in-out infinite; }
+  @keyframes blink{ 0%,100%{opacity:1} 50%{opacity:.25} }
+  button{
+    font-family:inherit; font-size:13.5px; font-weight:600; cursor:pointer;
+    padding:10px 20px; border-radius:7px; border:1px solid var(--tune);
+    background:var(--tune); color:#1a1200;
+  }
+  button:hover{ background:#ffc247; }
+  button:disabled{ opacity:.6; cursor:default; }
+</style>
+</head>
+<body>
+  <div class="brand"><span class="led"></span><span class="wordmark">Sinal</span></div>
+  <h1>Sem conexão com a internet</h1>
+  <p>O Sinal precisa de internet pra funcionar. Assim que a conexão voltar, ele abre sozinho — não precisa fechar o app.</p>
+  <div class="status"><span class="dot"></span><span id="statusText">Tentando reconectar…</span></div>
+  <button type="button" id="retryBtn">Tentar agora</button>
+  <script>
+    // window.sinalElectron vem do preload.js principal (essa página é
+    // carregada na mesma janela do site).
+    const btn = document.getElementById('retryBtn');
+    const statusText = document.getElementById('statusText');
+    // Contagem até a próxima tentativa automática (main.js dobra a espera a
+    // cada falha: 5s, 10s, 20s, 40s, depois 60s).
+    let countdown = null;
+    const api = window.sinalElectron || {};
+    if(api.onOfflineNextRetry){
+      api.onOfflineNextRetry((seconds) => {
+        clearInterval(countdown);
+        let left = seconds;
+        btn.disabled = false;
+        const tick = () => {
+          statusText.textContent = left > 0 ? `Tentando novamente em ${left}s` : 'Tentando reconectar…';
+          left--;
+        };
+        tick();
+        countdown = setInterval(tick, 1000);
+      });
+    }
+    btn.addEventListener('click', () => {
+      clearInterval(countdown);
+      btn.disabled = true;
+      statusText.textContent = 'Tentando agora…';
+      if(api.retryConnection) api.retryConnection();
+      // Se ainda não tiver internet, a página continua aqui — libera o botão de novo.
+      setTimeout(() => { btn.disabled = false; }, 4000);
+    });
+    // O Windows avisa quando a rede volta — tenta na hora, sem esperar a contagem.
+    window.addEventListener('online', () => {
+      if(api.retryConnection) api.retryConnection();
+    });
+  </script>
+</body>
+</html>

@@ -597,6 +597,7 @@ const SHARE_QUALITY_PRESETS = {
 const FLUIDO_UNAVAILABLE_TEXT = 'Precisa de uma placa de vídeo com codificador H.265 — este PC/navegador não tem';
 let shareQuality = 'nitido';
 let activeShareQuality = null; // qualidade da transmissão em andamento (pro status/tooltip)
+let activeShareCodec = null;   // 'h265' | 'vp8' — codec principal escolhido ao publicar
 
 function canSendH265(){
   try{ return LivekitClient.supportsH265(); }catch(e){ return false; }
@@ -613,7 +614,9 @@ function effectiveShareQuality(q){
 function updateQualityBtn(){
   const btn = document.getElementById('qualityBtn');
   if(!btn) return;
-  const preset = SHARE_QUALITY_PRESETS[effectiveShareQuality(shareQuality)];
+  // Transmitindo: mostra a qualidade da transmissão em andamento.
+  const current = activeShareQuality || effectiveShareQuality(shareQuality);
+  const preset = SHARE_QUALITY_PRESETS[current];
   btn.querySelector('.quality-label').textContent = preset.short;
   setBtnLabel(btn, `Qualidade: ${preset.name} (${preset.desc}) — clique pra mudar`);
   document.querySelectorAll('#qualityMenu .quality-option').forEach((opt) => {
@@ -621,7 +624,7 @@ function updateQualityBtn(){
     const unavailable = SHARE_QUALITY_PRESETS[key].requiresH265 && !canSendH265();
     opt.disabled = unavailable;
     opt.title = unavailable ? FLUIDO_UNAVAILABLE_TEXT : '';
-    opt.classList.toggle('selected', key === effectiveShareQuality(shareQuality));
+    opt.classList.toggle('selected', key === current);
   });
 }
 
@@ -653,7 +656,18 @@ function setupQualityMenu(){
     desc.className = 'quality-option-desc mono';
     desc.textContent = preset.desc;
     opt.append(name, desc);
-    opt.addEventListener('click', () => { setShareQuality(key); toggleQualityMenu(false); });
+    opt.addEventListener('click', () => {
+      setShareQuality(key);
+      toggleQualityMenu(false);
+      // Transmitindo: troca na hora. App com seletor: lembra no settings.json
+      // também, pra próxima transmissão já abrir com essa qualidade.
+      if(activeShareQuality) changeActiveShareQuality(key);
+      if(electronPickerChoosesQuality() && window.sinalElectron.setSettings){
+        window.sinalElectron.setSettings({ shareQuality: effectiveShareQuality(key) }).then((res) => {
+          if(res && res.settings) electronSettings = res.settings;
+        }).catch(() => {});
+      }
+    });
     menu.appendChild(opt);
   });
   document.addEventListener('click', (e) => {
@@ -661,6 +675,82 @@ function setupQualityMenu(){
     if(!menu.contains(e.target) && !document.getElementById('qualityBtn').contains(e.target)) toggleQualityMenu(false);
   });
   document.addEventListener('keydown', (e) => { if(e.key === 'Escape') toggleQualityMenu(false); });
+}
+
+// Resolução/fps da captura + dica de conteúdo pra uma qualidade. Só limites
+// máximos: a captura é sempre pedida no teto (ver toggleShare), então trocar
+// pra uma qualidade maior só afrouxa o limite.
+async function applyCaptureQuality(videoTrack, q){
+  const preset = SHARE_QUALITY_PRESETS[q];
+  const res = preset.resolution;
+  await videoTrack.mediaStreamTrack.applyConstraints({
+    width: { max: res.width }, height: { max: res.height }, frameRate: { max: res.frameRate }
+  }).catch((e) => console.warn('[sinal] não consegui ajustar a captura pra qualidade escolhida:', e));
+  videoTrack.mediaStreamTrack.contentHint = preset.contentHint;
+}
+
+// Troca a qualidade NO MEIO da transmissão, sem republicar (sem piscar pra
+// quem assiste): todas as qualidades usam o mesmo codec (H.265 se o PC tem,
+// senão VP8 — e Fluido só existe com H.265), então basta ajustar captura e
+// limites de envio. Atualiza também as cópias que o LiveKit guarda
+// (track.encodings, que ele reaplica quando alguém começa/para de assistir,
+// e track.publishOptions, de onde ele recalcula se a fonte for trocada) —
+// senão a troca podia ser desfeita sozinha (ver HANDOFF §35).
+async function changeActiveShareQuality(q){
+  if(!room) return;
+  const pub = room.localParticipant.getTrackPublication(LivekitClient.Track.Source.ScreenShare);
+  const track = pub && pub.videoTrack;
+  q = effectiveShareQuality(q);
+  if(!track || !activeShareQuality || q === activeShareQuality) return;
+  const preset = SHARE_QUALITY_PRESETS[q];
+  const enc = activeShareCodec === 'h265' ? preset.h265 : preset.vp8;
+
+  await applyCaptureQuality(track, q);
+  activeShareQuality = q;
+  try{
+    // Um passo de cada vez: o setDegradationPreference do LiveKit também faz
+    // getParameters/setParameters nesse sender — rodando junto, invalidava a
+    // leitura daqui ("getParameters() has never been called", achado no teste).
+    if(track.sender){
+      const applyEnc = async () => {
+        const params = track.sender.getParameters();
+        (params.encodings || []).forEach((e) => { e.maxBitrate = enc.maxBitrate; e.maxFramerate = enc.maxFramerate; });
+        await track.sender.setParameters(params);
+      };
+      try{ await applyEnc(); }catch(e){ await applyEnc(); } // 1 nova tentativa com leitura fresca
+    }
+    if(typeof track.setDegradationPreference === 'function'){
+      await track.setDegradationPreference(preset.contentHint === 'motion' ? 'maintain-framerate' : 'maintain-resolution');
+    }
+    (track.encodings || []).forEach((e) => { e.maxBitrate = enc.maxBitrate; e.maxFramerate = enc.maxFramerate; });
+    if(track.publishOptions){
+      track.publishOptions.screenShareEncoding = { ...enc };
+      if(track.publishOptions.backupCodec && typeof track.publishOptions.backupCodec === 'object'){
+        track.publishOptions.backupCodec.encoding = { ...preset.vp8 };
+      }
+    }
+  }catch(e){
+    console.warn('[sinal] troca de qualidade no meio da transmissão incompleta:', e);
+  }
+  capBackupCodec(track); // VP8 reserva segue o activeShareQuality novo
+  sendStatsPrev = null;
+  updateQualityBtn();
+}
+
+// Áudio da transmissão (aba no site / áudio isolado no app) como MÚSICA, não
+// voz: o padrão do LiveKit era 48 kbps mono (ele só detecta estéreo sozinho
+// no Safari) com DTX ligado — o DTX corta "silêncio", o que pode picotar
+// trilha/música em volume baixo. Estéreo a 128 kbps é irrelevante pra VM
+// (vídeo é na casa dos Mbps).
+function screenAudioPublishOptions(extra){
+  return {
+    source: LivekitClient.Track.Source.ScreenShareAudio,
+    audioPreset: LivekitClient.AudioPresets.musicHighQualityStereo,
+    forceStereo: true,
+    dtx: false,
+    red: false,
+    ...extra
+  };
 }
 
 // Opções de publicação da tela pra uma qualidade: H.265 + reserva VP8 em
@@ -967,7 +1057,12 @@ async function toggleShare(){
   // publica. No site a escolha já veio do menu, antes do clique.
   const pickerChooses = electronPickerChoosesQuality();
   let quality = effectiveShareQuality(shareQuality);
-  const capturePreset = SHARE_QUALITY_PRESETS[pickerChooses ? effectiveShareQuality('fluido') : quality];
+  // Captura SEMPRE no teto possível (1080p60 com H.265, 1080p30 sem) e
+  // reduz logo abaixo pra qualidade escolhida: só assim dá pra SUBIR de
+  // qualidade no meio da transmissão depois (pedir mais do que foi
+  // capturado no começo pode não funcionar). A redução é imediata, não
+  // custa nada a mais.
+  const capturePreset = SHARE_QUALITY_PRESETS[effectiveShareQuality('fluido')];
   let localTracks;
   try{
     localTracks = await room.localParticipant.createScreenTracks({
@@ -991,17 +1086,15 @@ async function toggleShare(){
       electronSettings = settings;
       quality = effectiveShareQuality(settings.shareQuality);
     }catch(e){ /* fica com o padrão */ }
-    const res = SHARE_QUALITY_PRESETS[quality].resolution;
-    await videoTrack.mediaStreamTrack.applyConstraints({
-      width: { max: res.width }, height: { max: res.height }, frameRate: { max: res.frameRate }
-    }).catch((e) => console.warn('[sinal] não consegui ajustar a captura pra qualidade escolhida:', e));
   }
-  videoTrack.mediaStreamTrack.contentHint = SHARE_QUALITY_PRESETS[quality].contentHint;
+  await applyCaptureQuality(videoTrack, quality);
   activeShareQuality = quality;
+  const publishOpts = screenPublishOptions(quality);
+  activeShareCodec = publishOpts.videoCodec;
   try{
-    await room.localParticipant.publishTrack(videoTrack, screenPublishOptions(quality));
+    await room.localParticipant.publishTrack(videoTrack, publishOpts);
     if(tabAudioTrack){
-      await room.localParticipant.publishTrack(tabAudioTrack, { source: LivekitClient.Track.Source.ScreenShareAudio });
+      await room.localParticipant.publishTrack(tabAudioTrack, screenAudioPublishOptions());
     }
   }catch(e){
     console.error('[sinal] publicar a tela falhou:', e);
@@ -1013,8 +1106,12 @@ async function toggleShare(){
   const btn = document.getElementById('shareBtn');
   setBtnLabel(btn, 'Parar compartilhamento');
   btn.classList.add('active-share');
-  document.getElementById('qualityBtn').disabled = true; // só faz sentido trocar antes de começar
+  // Botão de qualidade fica ativo: dá pra trocar no meio (changeActiveShareQuality).
+  // body.sharing: no app, o botão (escondido fora da transmissão, já que lá
+  // a escolha é no seletor) aparece enquanto transmite.
+  document.body.classList.add('sharing');
   toggleQualityMenu(false);
+  updateQualityBtn();
   document.getElementById('audioToggleBtn').disabled = true; // idem — decide no começo, não muda no meio
 
   // A captura já começou de verdade neste ponto. Se a publicação ainda não
@@ -1042,10 +1139,7 @@ async function toggleShare(){
   if(window.sinalElectron && window.sinalElectron.isElectron && shareElectronAudio){
     try{
       const audioTrack = createElectronIsolatedAudioTrack();
-      await room.localParticipant.publishTrack(audioTrack, {
-        source: Track.Source.ScreenShareAudio,
-        name: 'sinal-isolated-audio'
-      });
+      await room.localParticipant.publishTrack(audioTrack, screenAudioPublishOptions({ name: 'sinal-isolated-audio' }));
     }catch(e){
       console.error('[sinal] publicar áudio isolado falhou (segue só com vídeo):', e);
     }
@@ -1068,6 +1162,10 @@ function resetShareButton(){
   document.getElementById('selfStatus').textContent = 'Assistindo';
   sendStatsPrev = null;
   activeShareQuality = null;
+  activeShareCodec = null;
+  document.body.classList.remove('sharing');
+  toggleQualityMenu(false);
+  updateQualityBtn();
   if(room) removeTile(room.localParticipant.identity);
   renderAvatars();
 }
@@ -1165,6 +1263,31 @@ function updateQualityDot(identity, quality){
 // representativo do estado ATUAL) e jitter do inbound-rtp de vídeo.
 const qualityStatsPrev = new Map(); // tileId -> { lost, received } acumulados na última amostra
 
+// Selo "1080p60" / "720p" no rótulo do tile — do que está chegando (ou
+// saindo, no próprio tile) DE VERDADE, pelas estatísticas: se a rede ou o PC
+// de quem compartilha baixar a qualidade, o selo mostra isso.
+function qualityBadgeText(height, fps){
+  if(!height) return '';
+  const res = height >= 1000 ? '1080p' : height >= 700 ? '720p' : `${height}p`;
+  return fps >= 45 ? `${res}60` : res;
+}
+function renderQualityBadge(tileId, text){
+  const tile = tiles.get(tileId);
+  const label = tile && tile.querySelector('.label');
+  if(!label) return;
+  let badge = label.querySelector('.res-badge');
+  if(!text){ if(badge) badge.remove(); return; }
+  if(!badge){
+    badge = document.createElement('span');
+    badge.className = 'res-badge mono';
+    // antes da bolinha de qualidade/envio, depois do nome
+    const anchor = label.querySelector('.quality-dot, .send-dot, .viewers');
+    label.insertBefore(badge, anchor);
+  }
+  badge.textContent = text;
+  badge.classList.toggle('fps60', text.endsWith('60'));
+}
+
 // "video/H265" -> "H.265" (pros tooltips de quem envia e de quem assiste)
 function codecLabel(report, codecId){
   let mime = '';
@@ -1215,6 +1338,7 @@ async function sampleTileDetailedStats(tileId, track){
     parts.push(`${kbps} kbps`);
   }
   parts.push(`perda: ${lossPct.toFixed(1)}%`);
+  renderQualityBadge(tileId, qualityBadgeText(inbound.frameHeight, inbound.framesPerSecond));
   if(jitterMs != null) parts.push(`jitter: ${jitterMs}ms`);
   qualityDetails.set(tileId, parts.join(' · '));
   renderQualityTooltip(tileId);
@@ -1291,6 +1415,7 @@ async function sampleOwnScreenStats(){
   const reason = outbound.qualityLimitationReason;
   const limit = reason && reason !== 'none' ? (SEND_LIMIT_TEXT[reason] || SEND_LIMIT_TEXT.other) : null;
 
+  renderQualityBadge(room.localParticipant.identity, qualityBadgeText(outbound.frameHeight, outbound.framesPerSecond));
   const tile = tiles.get(room.localParticipant.identity);
   const dot = tile && tile.querySelector('.send-dot');
   if(dot){
@@ -2469,7 +2594,7 @@ window.addEventListener('beforeunload', () => {
 });
 
 // PWA: versão, registro do service worker, detecção de atualização e botão de instalação
-const APP_VERSION = '0.8.49'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
+const APP_VERSION = '0.8.50'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
 // Dentro do Electron, mostra a versão do INSTALADOR (electron/package.json),
 // não a do site — ver preload.js. Fora dele (navegador normal), continua a
 // versão do deploy de sempre.

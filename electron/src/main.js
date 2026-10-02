@@ -166,6 +166,69 @@ function closeSplashAndShowMain(){
   }
 }
 
+// ---- Sem conexão: tela própria + nova tentativa automática ----
+// Espera entre tentativas dobra a cada falha (5s, 10s, 20s, 40s, depois de
+// 60 em 60s) — pedido do usuário: não ficar martelando a rede quando a
+// internet cai por mais tempo. "Tentar agora" e o evento `online` do Windows
+// tentam na hora, sem esperar a contagem.
+const OFFLINE_RETRY_FIRST_MS = 5000;
+const OFFLINE_RETRY_MAX_MS = 60000;
+let offlineRetryTimer = null;
+let offlineRetryDelay = OFFLINE_RETRY_FIRST_MS;
+let offlineTargetUrl = SINAL_URL;   // a página que falhou — volta pra ela (ex: link de convite)
+let offlineAttemptRunning = false;
+let offlineActive = false;
+
+function stopOfflineRetry(){
+  clearTimeout(offlineRetryTimer);
+  offlineRetryTimer = null;
+  offlineActive = false;
+  offlineRetryDelay = OFFLINE_RETRY_FIRST_MS;
+}
+
+function scheduleOfflineRetry({ grow = true } = {}){
+  clearTimeout(offlineRetryTimer);
+  const delay = offlineRetryDelay;
+  offlineRetryTimer = setTimeout(() => tryReconnect(), delay);
+  if(grow) offlineRetryDelay = Math.min(offlineRetryDelay * 2, OFFLINE_RETRY_MAX_MS);
+  // A tela de sem conexão mostra "próxima tentativa em Ns".
+  if(mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('sinal:offline-next-retry', Math.round(delay / 1000));
+}
+
+// Só navega de volta pro site quando ele RESPONDE — navegar às cegas e
+// falhar de novo faria a tela piscar a cada tentativa.
+async function tryReconnect({ manual = false } = {}){
+  if(!offlineActive || offlineAttemptRunning || !mainWindow || mainWindow.isDestroyed()) return;
+  offlineAttemptRunning = true;
+  let online = false;
+  try{
+    const res = await fetch(SINAL_URL, { method: 'HEAD', cache: 'no-store', signal: AbortSignal.timeout(4000) });
+    online = res.status < 500;
+  }catch(e){ /* ainda sem conexão */ }
+  offlineAttemptRunning = false;
+  if(online){
+    stopOfflineRetry();
+    mainWindow.loadURL(offlineTargetUrl);
+  } else {
+    // Tentativa pedida na mão (botão / rede voltou) que falhou não aumenta
+    // a espera da contagem automática — só reinicia a contagem atual.
+    scheduleOfflineRetry({ grow: !manual });
+  }
+}
+
+function showOfflinePage(failedUrl){
+  offlineTargetUrl = failedUrl || SINAL_URL;
+  if(!offlineActive){
+    offlineActive = true;
+    offlineRetryDelay = OFFLINE_RETRY_FIRST_MS;
+  }
+  mainWindow.loadFile(path.join(__dirname, 'offline.html'));
+  // Agenda depois que a página carregar, pra ela receber a contagem.
+  mainWindow.webContents.once('did-finish-load', () => scheduleOfflineRetry());
+}
+
+ipcMain.on('sinal:retry-connection', () => { tryReconnect({ manual: true }); });
+
 function createMainWindow(initialRoomCode, startHidden){
   mainWindow = new BrowserWindow({
     width: 1280,
@@ -199,6 +262,19 @@ function createMainWindow(initialRoomCode, startHidden){
     mainWindow.webContents.once('did-finish-load', closeSplashAndShowMain);
     mainWindow.webContents.once('did-fail-load', closeSplashAndShowMain);
   }
+
+  // Sem internet (ou site fora): antes a janela ficava preta pra sempre e só
+  // voltava matando o processo (relato do usuário, 2026-10-02). Agora mostra
+  // offline.html e tenta de novo sozinho até o site responder.
+  mainWindow.webContents.on('did-fail-load', (event, errorCode, errorDesc, validatedURL, isMainFrame) => {
+    // -3 = navegação cancelada (ex: trocou de página no meio) — não é falta de rede.
+    if(!isMainFrame || errorCode === -3 || !String(validatedURL).startsWith(SINAL_URL)) return;
+    console.error(`[sinal] site não carregou (${errorCode} ${errorDesc}) — mostrando a tela de sem conexão`);
+    showOfflinePage(validatedURL);
+  });
+  mainWindow.webContents.on('did-finish-load', () => {
+    if(mainWindow.webContents.getURL().startsWith(SINAL_URL)) stopOfflineRetry();
+  });
 
   // Fechar a janela só minimiza pra bandeja — é o motivo nº1 de existir essa
   // versão desktop (background de verdade, ver auditoria Parte 5). Só fecha
