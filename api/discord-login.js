@@ -34,6 +34,9 @@ export async function GET(request){
   authorizeUrl.searchParams.set('response_type', 'code');
   authorizeUrl.searchParams.set('scope', 'identify guilds');
   if(sala) authorizeUrl.searchParams.set('state', sala);
+  // "Atualizar meus servidores": renova o login sem tela de consentimento
+  // (se a pessoa já autorizou, o Discord devolve o code direto).
+  if(url.searchParams.get('refresh') === '1') authorizeUrl.searchParams.set('prompt', 'none');
 
   return Response.redirect(authorizeUrl.toString(), 302);
 }

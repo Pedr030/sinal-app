@@ -46,3 +46,42 @@ test('escapeHtml trata null/undefined como string vazia', () => {
 test('escapeHtml não mexe em texto normal', () => {
   assert.equal(escapeHtml('Pedro Henrique'), 'Pedro Henrique');
 });
+
+// ---------- servers no Sinal (HANDOFF §39): helpers puros do app.js ----------
+const serverHelpers = new Function(
+  "const SERVER_ROOM_RE = /^s[0-9]{15,21}-[a-z0-9]{6}$/;" +
+  extractFunction(appJs, 'isServerRoomName') + extractFunction(appJs, 'guildIconUrl') +
+  extractFunction(appJs, 'guildInitials') + extractFunction(appJs, 'isDiscordAvatarUrl') +
+  '; return { isServerRoomName, guildIconUrl, guildInitials, isDiscordAvatarUrl };'
+)();
+
+test('isServerRoomName: só o formato s<id>-xxxxxx em minúsculas', () => {
+  assert.equal(serverHelpers.isServerRoomName('s800000000000000001-abc123'), true);
+  for(const bad of ['ABC123', 'S800000000000000001-ABC123', 's1-abc123', 's800000000000000001-abc12', '', null, undefined]){
+    assert.equal(serverHelpers.isServerRoomName(bad), false, String(bad));
+  }
+});
+
+test('guildIconUrl: monta a URL do CDN só com id e hash válidos', () => {
+  assert.equal(serverHelpers.guildIconUrl({ id: '800000000000000001', icon: 'a_1b2c3' }), 'https://cdn.discordapp.com/icons/800000000000000001/a_1b2c3.png?size=64');
+  assert.equal(serverHelpers.guildIconUrl({ id: '800000000000000001', icon: '' }), '');
+  assert.equal(serverHelpers.guildIconUrl({ id: '800000000000000001', icon: 'x"onerror="1' }), '');
+  assert.equal(serverHelpers.guildIconUrl({ id: 'abc', icon: 'ok' }), '');
+  assert.equal(serverHelpers.guildIconUrl(null), '');
+});
+
+test('guildInitials: iniciais de duas palavras, ou as duas primeiras letras', () => {
+  assert.equal(serverHelpers.guildInitials('Galera do Valorant'), 'GV');
+  assert.equal(serverHelpers.guildInitials('Sinal'), 'SI');
+  assert.equal(serverHelpers.guildInitials('Estudos e Café'), 'EC');
+  assert.equal(serverHelpers.guildInitials('de'), '?');
+  assert.equal(serverHelpers.guildInitials(''), '?');
+  assert.equal(serverHelpers.guildInitials(undefined), '?');
+});
+
+test('isDiscordAvatarUrl: só imagens do CDN do Discord', () => {
+  assert.equal(serverHelpers.isDiscordAvatarUrl('https://cdn.discordapp.com/avatars/1/a.png?size=64'), true);
+  assert.equal(serverHelpers.isDiscordAvatarUrl('https://evil.com/a.png'), false);
+  assert.equal(serverHelpers.isDiscordAvatarUrl('https://cdn.discordapp.com/a" onerror="x'), false);
+  assert.equal(serverHelpers.isDiscordAvatarUrl(undefined), false);
+});

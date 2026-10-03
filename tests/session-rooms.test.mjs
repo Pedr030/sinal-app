@@ -23,7 +23,7 @@ test('assina e verifica; mudar qualquer byte do conteúdo invalida', () => {
   const [payload, sig] = t.split('.');
   const evil = Buffer.from(JSON.stringify({ v: 1, id: '1', admin: true, exp: Date.now() + 60000 })).toString('base64url');
   assert.equal(verifySession(`${evil}.${sig}`, SECRET), null);
-  assert.equal(verifySession(`${payload}.${sig.slice(0, -1)}A`, SECRET), null);
+  assert.equal(verifySession(`${payload}.${sig.slice(0, -1)}${sig.endsWith("A") ? "B" : "A"}`, SECRET), null); // troca o último caractere por outro (antes: "A" fixo, que 1 em 16 vezes era igual e o teste falhava à toa)
 });
 
 test('segredo errado, vencida, malformada e sem segredo não valem', () => {

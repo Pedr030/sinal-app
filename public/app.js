@@ -60,7 +60,10 @@ let selfInitiatedUnpublish = false; // true durante o unpublishTrack() do própr
 const tileStreams = new Map(); // tileId -> MediaStream (junta vídeo+áudio da mesma fonte, ex: tela+áudio da guia)
 const tileVideoTracks = new Map(); // tileId -> Track de vídeo do LiveKit (pra amostrar getRTCStatsReport())
 
-function setEntryStatus(msg){ document.getElementById('entryStatus').textContent = msg || ''; }
+function setEntryStatus(msg){
+  document.getElementById('entryStatus').textContent = msg || '';
+  document.getElementById('srvStatus').textContent = msg || ''; // painel do servidor (HANDOFF §39)
+}
 function setRoomStatus(msg, isError){
   const el = document.getElementById('roomStatus');
   el.textContent = msg || '';
@@ -73,6 +76,7 @@ function getName(){
     try{ localStorage.setItem('sinal:lastName', v); }catch(e){ /* modo privado etc — sem problema, só não vai lembrar da próxima vez */ }
     return v;
   }
+  if(discordUser && discordUser.name) return discordUser.name;
   return 'Convidado' + Math.floor(Math.random()*90+10);
 }
 
@@ -147,9 +151,12 @@ function createRoom(){
 }
 function joinRoom(){
   getAudioCtx();
-  const code = document.getElementById('joinCodeInput').value.trim().toUpperCase();
-  if(!code){ setEntryStatus('Digite o código da sala.'); return; }
-  connectToRoom(code, getName(), 'join');
+  const raw = document.getElementById('joinCodeInput').value.trim();
+  if(!raw){ setEntryStatus('Digite o código da sala.'); return; }
+  // Link de convite de sala de SERVER (s<id>-xxxxxx, minúsculo) entra pelo modo
+  // próprio; o resto é código de sala normal, sempre em maiúsculas.
+  const server = isServerRoomName(raw);
+  connectToRoom(server ? raw : raw.toUpperCase(), getName(), server ? 'server-join' : 'join');
 }
 
 // Pede um token de acesso pra função serverless (que fala com a API do
@@ -159,9 +166,12 @@ function joinRoom(){
 // uma sala vazia silenciosa — sem isso, digitar o código errado deixava a
 // pessoa sozinha numa sala fantasma sem nenhum aviso (relato real, ver
 // HANDOFF §5).
-async function connectToRoom(code, name, mode){
+// mode: 'join' | 'create' (salas por código) | 'server-join' | 'server-create'
+// (salas de um server do Discord). `extra` leva { guild, title } no server-create.
+async function connectToRoom(code, name, mode, extra){
   myName = name;
-  roomCode = code;
+  roomCode = code || '';
+  const hadSession = !!(discordUser && discordUser.session);
   setEntryStatus('Conectando...');
 
   let token, url;
@@ -183,6 +193,8 @@ async function connectToRoom(code, name, mode){
         room: code,
         name,
         mode,
+        guild: extra && extra.guild,
+        title: extra && extra.title,
         session: (discordUser && discordUser.session) || undefined
       })
     });
@@ -191,14 +203,29 @@ async function connectToRoom(code, name, mode){
       return;
     }
     if(res.status === 401){
+      if(!hadSession){
+        setEntryStatus('Essa sala é de um servidor do Discord — entre com o Discord pra abrir.');
+        return;
+      }
       // Sessão do Discord vencida (dura 7 dias) ou inválida — limpa e pede login de novo.
       clearDiscordUser();
+      renderServersUI();
       setEntryStatus('Sua sessão do Discord expirou. Entre com o Discord de novo (ou use só o nome).');
+      return;
+    }
+    if(res.status === 403){
+      const why = (await res.json().catch(() => ({}))).error;
+      setEntryStatus(why === 'sala-privada' ? 'Essa sala é privada.' : 'Você não faz parte desse servidor do Discord.');
+      return;
+    }
+    if(res.status === 429){
+      setEntryStatus('Esse servidor já tem 10 salas ao vivo. Entre numa delas ou espere alguma fechar.');
       return;
     }
     if(!res.ok) throw new Error('token-fetch-failed');
     const data = await res.json();
     token = data.token; url = data.url;
+    if(data.room) roomCode = data.room; // sala de server: o nome sai do servidor
     if(!token || !url) throw new Error('token-fetch-empty');
   }catch(e){
     setEntryStatus('Não foi possível falar com o servidor. Confira sua internet e tente de novo.');
@@ -443,7 +470,13 @@ function enterRoomUI(){
   // Marca a sala ativa pro CSS deixar o rodapé compacto (§ ver style.css) —
   // o texto descritivo do rodapé só faz sentido na tela de entrada.
   document.body.classList.add('in-room');
-  document.getElementById('roomCodeChip').textContent = roomCode;
+  stopLivesPolling();
+  // Sala de server: o chip mostra o NOME da sala (do metadata no LiveKit), não o id interno.
+  let chipText = roomCode;
+  if(isServerRoomName(roomCode)){
+    try{ chipText = JSON.parse(room.metadata || '{}').title || 'Sala'; }catch(e){ chipText = 'Sala'; }
+  }
+  document.getElementById('roomCodeChip').textContent = chipText;
   document.getElementById('selfName').firstChild.textContent = myName + ' ';
   document.getElementById('chatMessages').innerHTML = '<div class="chat-empty mono">Sem mensagens ainda</div>';
   renderAvatars();
@@ -452,7 +485,7 @@ function enterRoomUI(){
   // tô na sala) — sem isso, transmissão de quem chegou primeiro nunca
   // ganhava o card "clique pra assistir".
   syncExistingPublications();
-  try{ localStorage.setItem('sinal:lastRoomCode', roomCode); }catch(e){ /* modo privado etc — sem problema, só não vai lembrar da próxima vez */ }
+  try{ if(!isServerRoomName(roomCode)) localStorage.setItem('sinal:lastRoomCode', roomCode); }catch(e){ /* modo privado etc — sem problema, só não vai lembrar da próxima vez */ }
 }
 
 function syncExistingPublications(){
@@ -2104,6 +2137,8 @@ function leaveRoom(){
   document.body.classList.remove('in-room');
   setEntryStatus('');
   prefillJoinCode();
+  renderServersUI();
+  startLivesPolling();
 }
 
 // auto-preencher código: prioridade pro link de convite (?sala=CODE); sem
@@ -2133,7 +2168,7 @@ function prefillJoinCode(){
   const params = new URLSearchParams(window.location.search);
   const sala = params.get('sala');
   if(sala){
-    document.getElementById('joinCodeInput').value = sala.toUpperCase();
+    document.getElementById('joinCodeInput').value = isServerRoomName(sala) ? sala : sala.toUpperCase();
     return;
   }
   try{
@@ -2292,6 +2327,360 @@ function handleDiscordCallback(){
     clean.searchParams.delete('discord_error');
     history.replaceState(null, '', clean.pathname + clean.search);
   }
+}
+
+// ---------------- SERVERS NO SINAL (HANDOFF §38/§39) ----------------
+// Os servers do Discord da pessoa (vindos da sessão assinada do login) viram
+// um trilho à esquerda, igual ao Discord: "Início" (sala rápida por código) +
+// os servers que ela escolheu. Cada server tem uma coluna com as salas ao
+// vivo — quem está dentro, quem está transmitindo — e dá pra criar sala nova.
+// Quem é membro de qual server quem diz é o Discord (no login); o servidor
+// confere de novo a cada pedido (api/get-token.js, api/lives.js).
+const SERVER_ROOM_RE = /^s\d{15,21}-[a-z0-9]{6}$/;
+const SERVERS_KEY = 'sinal:servers';       // ids dos servers escolhidos (por dispositivo)
+const SERVER_VIEW_KEY = 'sinal:serverView'; // último lugar aberto: 'home' ou o id de um server
+const MAX_CHOSEN_SERVERS = 15;
+const LIVES_POLL_MS = 15000;               // rede de segurança — a lista muda na hora por push (§39)
+const TIER_LABEL = { o: 'dono do servidor', a: 'administrador', m: 'gerencia o servidor' };
+
+let chosenServers = [];
+let serverView = 'home';
+let livesData = {};      // { idDoServer: [sala, ...] } — última foto vinda de api/lives
+let livesError = false;
+let livesTimer = null;
+let livesBusy = false;
+
+function isServerRoomName(name){ return SERVER_ROOM_RE.test(name || ''); }
+
+// Ícone do server no CDN do Discord (o CSP já libera cdn.discordapp.com). Só
+// monta a URL se id e hash tiverem o formato certo — vem da sessão, mas é
+// barato não confiar.
+function guildIconUrl(g){
+  if(!g || !/^\d{15,21}$/.test(g.id || '') || !/^[a-z0-9_]{1,40}$/i.test(g.icon || '')) return '';
+  return 'https://cdn.discordapp.com/icons/' + g.id + '/' + g.icon + '.png?size=64';
+}
+
+function guildInitials(name){
+  // ignora ligações ("de", "e"…) pra "Estudos e Café" virar EC e não EE
+  const words = String(name || '?').trim().split(/\s+/).filter((w) => w && !/^(de|do|da|dos|das|e|the|of|&)$/i.test(w));
+  const letters = words.length > 1 ? words[0][0] + words[1][0] : (words[0] || '?').slice(0, 2);
+  return letters.toUpperCase();
+}
+
+function isDiscordAvatarUrl(url){
+  return typeof url === 'string' && /^https:\/\/cdn\.discordapp\.com\/[A-Za-z0-9/_.-]+(\?[A-Za-z0-9=&_-]*)?$/.test(url);
+}
+
+function myGuilds(){ return (discordUser && discordUser.guilds) || []; }
+function guildById(id){ return myGuilds().find((g) => g.id === id) || null; }
+
+function mk(tag, className, text){
+  const node = document.createElement(tag);
+  if(className) node.className = className;
+  if(text !== undefined) node.textContent = text;
+  return node;
+}
+
+// Bolinha redonda com o ícone do server (ou as iniciais, quando não tem).
+function fillGuildIcon(container, g){
+  container.innerHTML = '';
+  const url = guildIconUrl(g);
+  if(url){
+    const img = document.createElement('img');
+    img.src = url;
+    img.alt = '';
+    img.addEventListener('error', () => { container.innerHTML = ''; container.textContent = guildInitials(g.name); });
+    container.appendChild(img);
+  } else {
+    container.textContent = guildInitials(g && g.name);
+  }
+}
+
+function loadServerPrefs(){
+  let ids = [];
+  let view = 'home';
+  try{
+    const raw = localStorage.getItem(SERVERS_KEY);
+    if(raw) ids = JSON.parse(raw);
+    view = localStorage.getItem(SERVER_VIEW_KEY) || 'home';
+  }catch(e){ /* sem localStorage ou dado corrompido: começa vazio */ }
+  chosenServers = Array.isArray(ids) ? ids.filter((id) => typeof id === 'string' && guildById(id)) : [];
+  serverView = chosenServers.includes(view) ? view : 'home';
+}
+
+function saveChosenServers(){
+  try{ localStorage.setItem(SERVERS_KEY, JSON.stringify(chosenServers)); }catch(e){}
+}
+function saveServerView(){
+  try{ localStorage.setItem(SERVER_VIEW_KEY, serverView); }catch(e){}
+}
+
+function guildHasLive(id){
+  return (livesData[id] || []).some((r) => r.participants.length > 0);
+}
+
+function setServerView(view){
+  serverView = view === 'home' || chosenServers.includes(view) ? view : 'home';
+  saveServerView();
+  renderServersUI();
+  startLivesPolling();
+}
+
+function railButton(view, title, content, extraClass){
+  const btn = mk('button', 'srv-rail-btn' + (extraClass ? ' ' + extraClass : '') + (serverView === view ? ' active' : ''));
+  btn.type = 'button';
+  btn.title = title;
+  btn.setAttribute('aria-label', title);
+  btn.dataset.view = view;
+  btn.appendChild(content);
+  if(view !== 'home' && view !== '+' && guildHasLive(view)) btn.appendChild(mk('span', 'srv-live-dot'));
+  return btn;
+}
+
+function renderServersUI(){
+  const layout = document.getElementById('srvLayout');
+  const loggedIn = !!discordUser;
+  const inServer = loggedIn && serverView !== 'home' && !!guildById(serverView);
+  layout.classList.toggle('has-rail', loggedIn);
+  layout.classList.toggle('view-server', inServer);
+  const rail = document.getElementById('srvRail');
+  rail.hidden = !loggedIn;
+  document.getElementById('srvCol').hidden = !inServer;
+  document.getElementById('serverPanel').hidden = !inServer;
+  document.getElementById('homePanel').hidden = inServer;
+  if(!loggedIn) return;
+
+  rail.innerHTML = '';
+  const home = mk('span', 'srv-icon srv-home-icon');
+  home.appendChild(mk('span', 'srv-home-led'));
+  rail.appendChild(railButton('home', 'Início', home));
+  chosenServers.forEach((id) => {
+    const g = guildById(id);
+    if(!g) return;
+    const icon = mk('span', 'srv-icon');
+    fillGuildIcon(icon, g);
+    rail.appendChild(railButton(id, g.name, icon));
+  });
+  rail.appendChild(railButton('+', 'Escolher servidores', mk('span', 'srv-icon srv-add-icon', '+'), 'srv-add'));
+
+  if(inServer) renderServerView(guildById(serverView));
+}
+
+function renderServerView(g){
+  fillGuildIcon(document.getElementById('srvColIcon'), g);
+  fillGuildIcon(document.getElementById('srvHeroIcon'), g);
+  document.getElementById('srvColName').textContent = g.name;
+  document.getElementById('srvHeroName').textContent = g.name;
+  document.getElementById('srvHeroRole').textContent = TIER_LABEL[g.tier] ? 'Você é ' + TIER_LABEL[g.tier] : 'Membro do servidor';
+
+  const rooms = livesData[g.id] || [];
+  document.getElementById('srvLiveCount').textContent = rooms.length ? '· ' + rooms.length + ' ao vivo' : '';
+  const list = document.getElementById('srvRooms');
+  list.innerHTML = '';
+  if(!rooms.length){
+    list.appendChild(mk('div', 'srv-empty', 'Nenhuma sala ao vivo agora. Que tal abrir a primeira?'));
+  }
+  rooms.forEach((r) => list.appendChild(renderRoomRow(r)));
+  document.getElementById('srvFoot').textContent = livesError ? 'Sem conexão com o servidor — tentando de novo…' : '';
+}
+
+function renderRoomRow(r){
+  const row = mk('button', 'srv-room');
+  row.type = 'button';
+  row.dataset.room = r.room;
+  const head = mk('span', 'srv-room-head');
+  head.appendChild(mk('span', 'srv-room-icon', r.access === 'open' ? '🔊' : '🔒'));
+  head.appendChild(mk('span', 'srv-room-title', r.title));
+  head.appendChild(mk('span', 'srv-room-count mono', String(r.participants.length)));
+  row.appendChild(head);
+  if(r.participants.length){
+    const people = mk('span', 'srv-people');
+    r.participants.forEach((p) => {
+      const line = mk('span', 'srv-person');
+      const av = mk('span', 'srv-person-avatar');
+      if(isDiscordAvatarUrl(p.avatar)){
+        const img = document.createElement('img');
+        img.src = p.avatar;
+        img.alt = '';
+        av.appendChild(img);
+      } else {
+        av.textContent = guildInitials(p.name);
+      }
+      line.appendChild(av);
+      line.appendChild(mk('span', 'srv-person-name', p.name + (p.admin ? ' 👑' : '')));
+      if(p.screen) line.appendChild(mk('span', 'srv-badge srv-badge-live', 'AO VIVO'));
+      else if(p.camera) line.appendChild(mk('span', 'srv-badge', 'CÂMERA'));
+      people.appendChild(line);
+    });
+    row.appendChild(people);
+  }
+  return row;
+}
+
+// ---- lista de salas ao vivo ----
+// Ponto único de entrada dos dados: applyLives(). A consulta (api/lives) e,
+// depois, o push em tempo real (§39) usam o mesmo caminho.
+function applyLives(guilds){
+  livesData = Object.assign({}, livesData, guilds || {});
+  livesError = false;
+  renderServersUI();
+}
+
+async function fetchLives(){
+  if(livesBusy || !discordUser || !chosenServers.length) return;
+  livesBusy = true;
+  try{
+    const res = await fetch('/api/lives', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ session: discordUser.session, guilds: chosenServers })
+    });
+    if(res.status === 401){
+      clearDiscordUser();
+      renderServersUI();
+      setEntryStatus('Sua sessão do Discord expirou. Entre com o Discord de novo.');
+      return;
+    }
+    if(!res.ok) throw new Error('lives-' + res.status);
+    const data = await res.json();
+    // Servers pedidos que não vieram = sem sala; troca a foto inteira dos pedidos.
+    const fresh = {};
+    chosenServers.forEach((id) => { fresh[id] = (data.guilds && data.guilds[id]) || []; });
+    applyLives(fresh);
+  }catch(e){
+    livesError = true;
+    renderServersUI();
+  }finally{
+    livesBusy = false;
+  }
+}
+
+function livesPollingAllowed(){
+  return !!discordUser && chosenServers.length > 0 && !room && document.visibilityState === 'visible';
+}
+
+async function pollLives(){
+  clearTimeout(livesTimer);
+  if(!livesPollingAllowed()) return;
+  await fetchLives();
+  clearTimeout(livesTimer);
+  if(livesPollingAllowed()) livesTimer = setTimeout(pollLives, LIVES_POLL_MS);
+}
+
+function startLivesPolling(){
+  clearTimeout(livesTimer);
+  if(livesPollingAllowed()) pollLives();
+}
+
+function stopLivesPolling(){ clearTimeout(livesTimer); }
+
+// ---- entrar / criar ----
+function joinServerRoom(roomName){
+  getAudioCtx();
+  connectToRoom(roomName, getName(), 'server-join');
+}
+
+function createServerRoom(){
+  if(serverView === 'home' || !guildById(serverView)) return;
+  getAudioCtx();
+  const title = document.getElementById('srvRoomTitle').value;
+  connectToRoom(null, getName(), 'server-create', { guild: serverView, title });
+}
+
+// ---- escolher servers ----
+function renderServersPicker(){
+  const list = document.getElementById('srvPickerList');
+  const q = document.getElementById('srvPickerSearch').value.trim().toLowerCase();
+  list.innerHTML = '';
+  const guilds = myGuilds();
+  if(!guilds.length){
+    list.appendChild(mk('div', 'srv-empty', 'O Discord não devolveu nenhum servidor. Se você entrou em algum agora, use "Atualizar meus servidores".'));
+    return;
+  }
+  const shown = guilds.filter((g) => !q || g.name.toLowerCase().includes(q));
+  if(!shown.length) list.appendChild(mk('div', 'srv-empty', 'Nenhum servidor com esse nome.'));
+  shown.forEach((g) => {
+    const row = mk('label', 'srv-pick-row');
+    const box = document.createElement('input');
+    box.type = 'checkbox';
+    box.checked = chosenServers.includes(g.id);
+    box.addEventListener('change', () => {
+      if(box.checked){
+        if(chosenServers.length >= MAX_CHOSEN_SERVERS){
+          box.checked = false;
+          document.getElementById('srvPickerMsg').textContent = 'Dá pra escolher até ' + MAX_CHOSEN_SERVERS + ' servidores.';
+          return;
+        }
+        chosenServers.push(g.id);
+      } else {
+        chosenServers = chosenServers.filter((id) => id !== g.id);
+        if(serverView === g.id){ serverView = 'home'; saveServerView(); }
+      }
+      document.getElementById('srvPickerMsg').textContent = '';
+      saveChosenServers();
+      renderServersUI();
+      fetchLives();
+    });
+    const icon = mk('span', 'srv-icon srv-icon-sm');
+    fillGuildIcon(icon, g);
+    row.appendChild(box);
+    row.appendChild(icon);
+    row.appendChild(mk('span', 'srv-pick-name', g.name));
+    if(TIER_LABEL[g.tier]) row.appendChild(mk('span', 'srv-pick-tier mono', g.tier === 'o' ? 'dono' : g.tier === 'a' ? 'admin' : 'gerencia'));
+    list.appendChild(row);
+  });
+}
+
+function openServersPicker(){
+  document.getElementById('srvPickerSearch').value = '';
+  renderServersPicker();
+  document.getElementById('srvPickerOverlay').hidden = false;
+  document.getElementById('srvPickerSearch').focus();
+}
+
+function closeServersPicker(){
+  document.getElementById('srvPickerOverlay').hidden = true;
+  saveChosenServers(); // fecha sem escolher nada = guarda "nenhum" e não pergunta de novo sozinho
+  startLivesPolling();
+}
+
+function setupServersUI(){
+  loadServerPrefs();
+  renderServersUI();
+
+  document.getElementById('srvRail').addEventListener('click', (e) => {
+    const btn = e.target.closest('.srv-rail-btn');
+    if(!btn) return;
+    if(btn.dataset.view === '+') openServersPicker();
+    else setServerView(btn.dataset.view);
+  });
+  document.getElementById('srvRooms').addEventListener('click', (e) => {
+    const row = e.target.closest('.srv-room');
+    if(row) joinServerRoom(row.dataset.room);
+  });
+  document.getElementById('srvCreateBtn').addEventListener('click', createServerRoom);
+  document.getElementById('srvRoomTitle').addEventListener('keydown', (e) => { if(e.key === 'Enter') createServerRoom(); });
+
+  const overlay = document.getElementById('srvPickerOverlay');
+  document.getElementById('srvPickerClose').addEventListener('click', closeServersPicker);
+  document.getElementById('srvPickerDone').addEventListener('click', closeServersPicker);
+  overlay.addEventListener('click', (e) => { if(e.target === overlay) closeServersPicker(); });
+  document.addEventListener('keydown', (e) => { if(e.key === 'Escape' && !overlay.hidden) closeServersPicker(); });
+  document.getElementById('srvPickerSearch').addEventListener('input', renderServersPicker);
+  // Renova o login em silêncio (prompt=none no Discord) pra puxar a lista de servers de novo.
+  document.getElementById('srvPickerRefresh').addEventListener('click', () => { window.location.href = '/api/discord-login?refresh=1'; });
+
+  document.addEventListener('visibilitychange', () => {
+    if(document.visibilityState === 'visible') startLivesPolling(); else stopLivesPolling();
+  });
+
+  // Primeira vez logado (nunca escolheu servers): já abre o seletor. Não
+  // atrapalha quem chegou por convite ou voltou de uma recuperação.
+  let asked = true;
+  try{ asked = localStorage.getItem(SERVERS_KEY) !== null; }catch(e){}
+  const params = new URLSearchParams(window.location.search);
+  if(discordUser && myGuilds().length && !asked && !params.has('sala')) openServersPicker();
+  else startLivesPolling();
 }
 
 // ---------------- Novidades (patch notes / log de versões) ----------------
@@ -2735,6 +3124,7 @@ window.addEventListener('DOMContentLoaded', () => {
   setupGlobalShareShortcut();
   setupSettingsPanel();
   setupReportDialog();
+  setupServersUI();
   resumeAfterAppRecovery();
 });
 

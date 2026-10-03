@@ -42,6 +42,13 @@ test('login pede identify + guilds e leva a sala em "state"', async () => {
   assert.equal(url.searchParams.get('state'), 'ABC123');
 });
 
+test('login com refresh=1 usa prompt=none (renovar servers sem tela de consentimento); sem refresh, não', async () => {
+  const withRefresh = new URL((await login(new Request('https://sinal.test/api/discord-login?refresh=1'))).headers.get('location'));
+  assert.equal(withRefresh.searchParams.get('prompt'), 'none');
+  const normal = new URL((await login(new Request('https://sinal.test/api/discord-login'))).headers.get('location'));
+  assert.equal(normal.searchParams.get('prompt'), null);
+});
+
 test('callback: sessão assinada no FRAGMENTO (não na query) com nome, avatar e servers', async () => {
   fakeDiscord({
     profile: { id: '100000000000000001', username: 'u', global_name: 'Fulano', avatar: 'h' },
