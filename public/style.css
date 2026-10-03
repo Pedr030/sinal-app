@@ -817,6 +817,9 @@ footer .version{margin-top:12px; font-size:10.5px; letter-spacing:1.5px; color:#
 .call-side .srv-rooms{ padding-bottom:10px; }
 .srv-room.current{ background:var(--tune-dim); border-color:var(--tune); cursor:default; }
 #sideToggleBtn.active{ border-color:var(--tune); color:var(--tune); }
+/* Sala de servidor: sem código nem link de convite (a entrada é pela lista do servidor). */
+#roomScreen.server-room #copyCodeBtn,
+#roomScreen.server-room #copyLinkBtn{ display:none; }
 @media (max-width:900px){
   .call-side{
     position:fixed; left:12px; top:70px; bottom:12px; z-index:150; width:280px; max-height:none; align-self:auto;
@@ -829,3 +832,7 @@ footer .version{margin-top:12px; font-size:10.5px; letter-spacing:1.5px; color:#
 .login-app-title{ font-family:'Bebas Neue', sans-serif; font-size:34px; letter-spacing:1.5px; font-weight:400; margin:10px 0 6px; }
 .login-app-open{ display:inline-block; margin-top:20px; background:var(--tune); color:#1a1200; font-weight:700; padding:12px 22px; border-radius:var(--radius); text-decoration:none; }
 .login-app-open[hidden]{ display:none; }
+
+.srv-room-icon{ display:inline-flex; align-items:center; justify-content:center; width:16px; color:var(--fog); flex-shrink:0; }
+.srv-room-icon svg{ width:15px; height:15px; display:block; }
+.srv-room-icon.live{ color:var(--rec); }
