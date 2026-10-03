@@ -12,10 +12,59 @@
 //  4. No Windows não existe seletor nativo pro Electron (useSystemPicker só
 //     funciona no macOS 15+), então a gente mostra nosso próprio seletor
 //     (picker.html) com os thumbnails do desktopCapturer.
-const { app, BrowserWindow, Tray, Menu, session, desktopCapturer, ipcMain, nativeImage, globalShortcut, screen } = require('electron');
+const { app, BrowserWindow, Tray, Menu, session, desktopCapturer, ipcMain, nativeImage, globalShortcut, screen, crashReporter } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
+const os = require('node:os');
 const { autoUpdater } = require('electron-updater');
+
+// ---- Registro (log) do app — HANDOFF §37 ----
+// Antes, tudo que o app anotava ia pro console interno e sumia ao fechar —
+// numa queda real (Valorant em Fluido, 2026-10-02) não sobrou nada pra
+// investigar. Agora: arquivo em %AppData%/sinal-desktop/logs/sinal.log
+// (gira em 1MB, guarda o anterior como sinal.old.log), com tudo que o
+// processo principal escreve no console + avisos "[sinal…]" do site +
+// quedas de processo do Chromium. Só sai do PC se a pessoa clicar em
+// "Enviar relatório" (configurações) — e aí sem caminhos/usuário do Windows.
+// Relatório de falha nativo do Electron (minidump) fica só no PC.
+crashReporter.start({ uploadToServer: false });
+const LOG_MAX_BYTES = 1024 * 1024;
+const LOG_PATH = path.join(app.getPath('userData'), 'logs', 'sinal.log');
+const LOG_OLD_PATH = LOG_PATH.replace(/\.log$/, '.old.log');
+function formatLogPart(x){
+  if(x instanceof Error) return x.stack || `${x.name}: ${x.message}`;
+  if(typeof x === 'string') return x;
+  try{ return JSON.stringify(x); }catch(e){ return String(x); }
+}
+function writeLog(level, parts){
+  try{
+    fs.mkdirSync(path.dirname(LOG_PATH), { recursive: true });
+    try{ if(fs.statSync(LOG_PATH).size > LOG_MAX_BYTES) fs.renameSync(LOG_PATH, LOG_OLD_PATH); }catch(e){ /* ainda não existe */ }
+    fs.appendFileSync(LOG_PATH, `${new Date().toISOString()} [${level}] ${parts.map(formatLogPart).join(' ')}\n`);
+  }catch(e){ /* registro nunca pode derrubar o app */ }
+}
+for(const [method, level] of [['log', 'info'], ['warn', 'warn'], ['error', 'error']]){
+  const original = console[method].bind(console);
+  console[method] = (...args) => { original(...args); writeLog(level, args); };
+}
+// Últimos ~60KB do registro pro "Enviar relatório" — sem o caminho da pasta
+// do usuário nem o nome dele no Windows (aparecem em caminhos de arquivo).
+function escapeRegExp(v){ return v.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+function readLogTail(maxBytes = 60 * 1024){
+  let text = '';
+  for(const file of [LOG_OLD_PATH, LOG_PATH]){
+    try{ text += fs.readFileSync(file, 'utf8'); }catch(e){ /* pode não existir */ }
+  }
+  if(text.length > maxBytes) text = text.slice(text.length - maxBytes);
+  const home = os.homedir();
+  const user = os.userInfo().username;
+  if(home){
+    text = text.replace(new RegExp(escapeRegExp(home), 'gi'), '~');
+    text = text.replace(new RegExp(escapeRegExp(home.replace(/\\/g, '/')), 'gi'), '~');
+  }
+  if(user && user.length > 2) text = text.replace(new RegExp(escapeRegExp(user), 'gi'), '<usuario>');
+  return text;
+}
 
 // URL de produção real — mesma que https://sinal-app-stream.vercel.app serve
 // pro navegador. Ver README/HANDOFF pra histórico de migração de domínio.
@@ -304,6 +353,18 @@ function createMainWindow(initialRoomCode, startHidden){
   // Fechar a janela só minimiza pra bandeja — é o motivo nº1 de existir essa
   // versão desktop (background de verdade, ver auditoria Parte 5). Só fecha
   // de fato quando alguém escolhe "Sair" no menu da bandeja.
+  mainWindow.on('unresponsive', () => console.warn('[sinal] janela parou de responder'));
+  mainWindow.on('responsive', () => console.log('[sinal] janela voltou a responder'));
+  // Avisos e erros do próprio site ("[sinal] …") também vão pro registro.
+  // Electron novo passa um objeto (level 'warning'/'error'); o antigo, argumentos.
+  // Só o objeto do evento (Electron 40+): declarar os argumentos antigos
+  // (level, message…) faz o Electron avisar que estão obsoletos.
+  mainWindow.webContents.on('console-message', (event) => {
+    const { level, message } = event;
+    const isProblem = level === 'warning' || level === 'error' || level === 2 || level === 3;
+    if(isProblem && typeof message === 'string' && message.startsWith('[sinal')) writeLog('site', [message.slice(0, 600)]);
+  });
+
   mainWindow.on('close', (event) => {
     if(isQuitting) return;
     event.preventDefault();
@@ -762,9 +823,52 @@ function setupAutoUpdater(){
   });
 }
 
-ipcMain.on('sinal:set-in-room', (event, value) => {
+ipcMain.on('sinal:set-in-room', (event, value, roomCode) => {
   inRoom = !!value;
+  lastRoomCode = inRoom && typeof roomCode === 'string' ? roomCode.slice(0, 64) : null;
   if(!inRoom) maybePromptUpdate();
+});
+
+// Avisos do site pro registro (início/fim/troca de transmissão etc).
+ipcMain.on('sinal:log', (event, message) => {
+  if(typeof message === 'string') writeLog('site', [message.slice(0, 600)]);
+});
+ipcMain.handle('sinal:get-log-tail', () => {
+  const header = [
+    `Sinal ${app.getVersion()} · Electron ${process.versions.electron} · Chrome ${process.versions.chrome}`,
+    `Windows ${os.release()} · ${os.arch()} · ${Math.round(os.totalmem() / 1073741824)} GB RAM`,
+    `Gerado em ${new Date().toISOString()}`,
+    ''
+  ].join('\n');
+  return header + readLogTail();
+});
+
+// ---- Recuperação: a página (Chromium) morreu → recarrega e volta pra sala ----
+// Antes: tela preta e a transmissão caía pra todo mundo até matar o processo
+// (relato real, Valorant em Fluido). Agora o app recarrega sozinho; se estava
+// numa sala, volta pra ela (o site entra sozinho com ?retomar=1). Duas
+// quedas em 5 min → recarrega só a tela inicial, pra não entrar em ciclo.
+let lastRoomCode = null;
+let crashTimes = [];
+function recoverMainWindow(details){
+  if(!mainWindow || mainWindow.isDestroyed() || (details && details.reason === 'clean-exit')) return;
+  const now = Date.now();
+  crashTimes = crashTimes.filter((t) => now - t < 5 * 60 * 1000);
+  crashTimes.push(now);
+  const rejoin = !!lastRoomCode && crashTimes.length <= 1;
+  const url = rejoin ? `${SINAL_URL}/?sala=${encodeURIComponent(lastRoomCode)}&retomar=1` : SINAL_URL;
+  console.warn('[sinal] recuperando a janela depois da queda', { rejoin, quedasEm5min: crashTimes.length });
+  inRoom = false;
+  setTimeout(() => { if(mainWindow && !mainWindow.isDestroyed()) mainWindow.loadURL(url); }, 800);
+}
+app.on('render-process-gone', (event, webContents, details) => {
+  console.error('[sinal] a página caiu:', details);
+  if(mainWindow && !mainWindow.isDestroyed() && webContents === mainWindow.webContents) recoverMainWindow(details);
+});
+// GPU/áudio/rede do Chromium: ele mesmo reinicia, mas anotar é o que conta
+// pra achar padrão (ex: codificador da placa de vídeo quebrando com jogo).
+app.on('child-process-gone', (event, details) => {
+  console.error('[sinal] processo do Chromium caiu:', details);
 });
 ipcMain.handle('sinal:get-update-state', () => updateState);
 ipcMain.handle('sinal:check-for-updates', () => { checkForUpdates({ manual: true }); return updateState; });
@@ -775,6 +879,11 @@ ipcMain.on('sinal:install-update', () => {
 });
 
 app.whenReady().then(() => {
+  console.log(`[sinal] app iniciado — v${app.getVersion()}, Electron ${process.versions.electron}, Windows ${os.release()}`);
+  app.getGPUInfo('basic').then((info) => {
+    const gpus = (info && info.gpuDevice || []).map((g) => ({ vendorId: g.vendorId, deviceId: g.deviceId, active: g.active, driver: g.driverVersion }));
+    console.log('[sinal] placa de vídeo:', gpus);
+  }).catch(() => {});
   // Tira a barra de menu padrão do Electron (File/Edit/View/Window) — sem
   // função nenhuma nesse app (não tem "abrir arquivo", desfazer, etc.) e
   // deixa parecendo ferramenta de desenvolvedor em vez de um app de verdade.

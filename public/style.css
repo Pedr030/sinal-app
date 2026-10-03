@@ -675,3 +675,23 @@ footer .version{margin-top:12px; font-size:10.5px; letter-spacing:1.5px; color:#
 }
 .tile .label .res-badge.fps60{ color:var(--tune); border-color:rgba(255,176,32,.5); }
 .filmstrip .tile .label .res-badge{ font-size:8.5px; padding:0 4px; }
+
+/* ---------- Enviar relatório de problema (app desktop) ---------- */
+.report-panel{ width:440px; }
+.report-text{
+  width:100%; resize:vertical; min-height:80px; background:var(--panel-2); color:var(--ink);
+  border:1px solid var(--line); border-radius:6px; padding:9px 11px; font:inherit; font-size:13px;
+}
+.report-text:focus{ outline:none; border-color:var(--tune); }
+.report-link{
+  display:inline; height:auto; padding:0; margin-left:4px; background:none; border:none;
+  color:var(--tune); font-size:12px; cursor:pointer; text-decoration:underline;
+}
+.report-preview{
+  max-height:200px; overflow:auto; margin:0; padding:9px 11px; background:#0b0c0e; border:1px solid var(--line);
+  border-radius:6px; font-size:10.5px; line-height:1.45; white-space:pre-wrap; word-break:break-all; color:var(--fog);
+  scrollbar-width:thin; scrollbar-color:var(--line) transparent;
+}
+.report-actions{ display:flex; align-items:center; justify-content:space-between; gap:12px; }
+.report-send{ background:var(--tune); border-color:var(--tune); color:#1a1200; font-weight:600; padding:8px 18px; height:auto; }
+.report-send:disabled{ opacity:.6; }

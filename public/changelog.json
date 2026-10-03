@@ -1,10 +1,14 @@
 [
   {
-    "id": "2026-10-02-sem-conexao-fix",
-    "date": "2026-10-02",
-    "title": "Correção da tela de sem conexão",
+    "id": "2026-10-03-recuperacao-e-relatorio",
+    "date": "2026-10-03",
+    "title": "Recuperação automática e relatório de problema",
+    "site": "0.8.51",
     "app": "0.3.13",
     "items": [
+      "App: se a janela do Sinal travar ou fechar sozinha (crash), ele se recupera sozinho e volta pra mesma sala, sem você precisar fazer nada",
+      "App: novo botão \"Enviar relatório de problema\" nas configurações — manda uma descrição e o registro do app direto pro dono do Sinal (dá pra ver tudo que vai junto antes de enviar)",
+      "App: agora guarda um registro (log) das atualizações, conexão, transmissões e falhas, pra ajudar a achar a causa de problemas",
       "Corrigido: a tela de \"sem conexão\" ficava presa mesmo depois da internet voltar — agora o app abre sozinho assim que a conexão volta",
       "O cronômetro \"Tentando novamente em Ns\" aparece desde o começo, e o botão \"Tentar agora\" funciona"
     ]

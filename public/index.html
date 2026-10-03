@@ -269,12 +269,41 @@
       <div id="settingsExcludedList" class="settings-excluded-list"></div>
     </div>
 
+    <div class="settings-section" id="settingsReportSection" hidden>
+      <div class="settings-section-title">Problemas</div>
+      <div class="settings-note">Algo deu errado (tela preta, transmissão caiu…)? Manda um relatório direto pro dono do Sinal, com o registro do app.</div>
+      <div class="settings-row">
+        <button type="button" id="settingsReportBtn">Enviar relatório de problema</button>
+      </div>
+    </div>
+
     <div class="settings-section" id="settingsUpdatesSection" hidden>
       <div class="settings-section-title">Atualizações</div>
       <div class="settings-row settings-shortcut-row">
         <span class="settings-note" id="settingsUpdateStatus">…</span>
         <button type="button" id="settingsUpdateBtn">Procurar atualização</button>
       </div>
+    </div>
+  </div>
+</div>
+
+<!-- Enviar relatório de problema (app desktop) — ver setupReportDialog() em app.js -->
+<div id="reportOverlay" class="settings-overlay" hidden>
+  <div class="settings-panel report-panel" role="dialog" aria-modal="true" aria-labelledby="reportTitle">
+    <div class="settings-panel-header">
+      <span id="reportTitle">Enviar relatório de problema</span>
+      <button type="button" id="reportCloseBtn" class="settings-close" aria-label="Fechar">&times;</button>
+    </div>
+    <label class="settings-note" for="reportText">O que aconteceu? (opcional, mas ajuda muito)</label>
+    <textarea id="reportText" class="report-text" maxlength="1500" rows="4" placeholder="Ex: compartilhei a janela do jogo em Fluido e a tela do Sinal ficou preta"></textarea>
+    <div class="settings-note">
+      Vai junto: seu nome no Sinal, as versões e o registro do app — o que o próprio app anotou (atualizações, conexão, transmissões, falhas). Nada de conversa, sala ou o que aparece na sua tela.
+      <button type="button" id="reportPreviewBtn" class="report-link">Ver o que vai junto</button>
+    </div>
+    <pre id="reportPreview" class="report-preview mono" hidden></pre>
+    <div class="report-actions">
+      <span id="reportStatus" class="settings-note"></span>
+      <button type="button" id="reportSendBtn" class="report-send">Enviar</button>
     </div>
   </div>
 </div>
