@@ -2169,20 +2169,38 @@ function resumeAfterAppRecovery(){
   if(!code || !document.getElementById('nameInput').value.trim()) return;
   setEntryStatus('O app se recuperou de uma falha — voltando pra sala…');
   appLog('[sinal] voltando pra sala depois da recuperação');
-  joinRoom();
+  // Direto, sem passar pelo campo de código: sala de servidor não aparece mais ali (pickPrefillCode).
+  getAudioCtx();
+  const server = isServerRoomName(code);
+  connectToRoom(server ? code : code.toUpperCase(), getName(), server ? 'server-join' : 'join');
+}
+
+// Qual código mostrar no campo "entrar em sala existente": SÓ código de sala por
+// código (o "Início"). Sala de servidor tem um nome interno (s<id>-xxxxxx) que não é
+// pra ninguém digitar nem lembrar — a entrada é pela lista do servidor — e o campo
+// mostra tudo em maiúsculas, então ele parecia um "código" gigante e sem sentido.
+// Vem de ?sala= (convite) ou do último código salvo (sinal:lastRoomCode, que antes
+// podia guardar o nome de sala de servidor).
+function pickPrefillCode(sala, lastCode){
+  const looksLikeServerRoom = (v) => /^s\d{15,21}-/i.test(v || '');
+  if(sala && !looksLikeServerRoom(sala)) return { code: sala.toUpperCase(), dropLast: false, dropSala: false };
+  const dropSala = !!sala; // ?sala= de sala de servidor: sai da URL
+  if(lastCode && !looksLikeServerRoom(lastCode)) return { code: lastCode, dropLast: false, dropSala };
+  return { code: '', dropLast: !!lastCode, dropSala }; // último código era de servidor: esquece
 }
 
 function prefillJoinCode(){
   const params = new URLSearchParams(window.location.search);
-  const sala = params.get('sala');
-  if(sala){
-    document.getElementById('joinCodeInput').value = isServerRoomName(sala) ? sala : sala.toUpperCase();
-    return;
+  let lastCode = null;
+  try{ lastCode = localStorage.getItem('sinal:lastRoomCode'); }catch(e){ /* localStorage indisponível — só não lembra */ }
+  const pick = pickPrefillCode(params.get('sala'), lastCode);
+  if(pick.dropLast){ try{ localStorage.removeItem('sinal:lastRoomCode'); }catch(e){} }
+  // Na recuperação do app (?retomar=1) o resumeAfterAppRecovery() ainda precisa ler o ?sala= — não mexe.
+  if(pick.dropSala && !params.has('retomar')){
+    params.delete('sala');
+    history.replaceState(null, '', window.location.pathname + (params.toString() ? '?' + params.toString() : ''));
   }
-  try{
-    const lastCode = localStorage.getItem('sinal:lastRoomCode');
-    if(lastCode) document.getElementById('joinCodeInput').value = lastCode;
-  }catch(e){ /* localStorage indisponível — sem problema, só não pré-preenche */ }
+  document.getElementById('joinCodeInput').value = pick.code;
 }
 
 // Quem chegou via link de convite (?sala=) e ainda tá no navegador normal
@@ -3415,7 +3433,7 @@ window.addEventListener('beforeunload', () => {
 });
 
 // PWA: versão, registro do service worker, detecção de atualização e botão de instalação
-const APP_VERSION = '0.8.53'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
+const APP_VERSION = '0.8.54'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
 // Dentro do Electron, mostra a versão do INSTALADOR (electron/package.json),
 // não a do site — ver preload.js. Fora dele (navegador normal), continua a
 // versão do deploy de sempre.
