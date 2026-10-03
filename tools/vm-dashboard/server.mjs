@@ -105,6 +105,14 @@ function stopLiveSoon(){
 }
 
 const server = createServer(async (req, res) => {
+  // Anti DNS rebinding: uma página qualquer da internet pode apontar um nome dela pra 127.0.0.1 e
+  // fazer o navegador falar com este painel como se fosse da mesma origem. Só atende quando o
+  // Host é o endereço local de verdade.
+  const host = String(req.headers.host || '').toLowerCase();
+  if(host !== `localhost:${PORT}` && host !== `127.0.0.1:${PORT}`){
+    res.writeHead(403).end();
+    return;
+  }
   const url = new URL(req.url, `http://localhost:${PORT}`);
   try{
     if(url.pathname === '/'){

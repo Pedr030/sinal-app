@@ -219,7 +219,10 @@ async function connectToRoom(code, name, mode, extra){
       return;
     }
     if(res.status === 429){
-      setEntryStatus('Esse servidor já tem 10 salas ao vivo. Entre numa delas ou espere alguma fechar.');
+      const why = (await res.json().catch(() => ({}))).error;
+      setEntryStatus(why === 'muitos-pedidos'
+        ? 'Muitos pedidos seguidos. Espere um instante e tente de novo.'
+        : 'Esse servidor já tem 10 salas ao vivo. Entre numa delas ou espere alguma fechar.');
       return;
     }
     if(!res.ok) throw new Error('token-fetch-failed');
@@ -2013,7 +2016,9 @@ function participantMeta(p){
 }
 function participantAvatarUrl(p){
   const meta = participantMeta(p);
-  return (meta && meta.avatarUrl) || null;
+  // Defesa em camadas: o servidor já só grava URL do CDN do Discord no token e o CSP bloqueia
+  // qualquer outra, mas valida aqui também antes de virar <img src>.
+  return meta && isDiscordAvatarUrl(meta.avatarUrl) ? meta.avatarUrl : null;
 }
 function participantIsAdmin(p){
   const meta = participantMeta(p);
@@ -3475,7 +3480,7 @@ window.addEventListener('beforeunload', () => {
 });
 
 // PWA: versão, registro do service worker, detecção de atualização e botão de instalação
-const APP_VERSION = '0.8.55'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
+const APP_VERSION = '0.8.56'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
 // Dentro do Electron, mostra a versão do INSTALADOR (electron/package.json),
 // não a do site — ver preload.js. Fora dele (navegador normal), continua a
 // versão do deploy de sempre.

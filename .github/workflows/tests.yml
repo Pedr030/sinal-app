@@ -9,6 +9,11 @@ on:
   push:
     branches: [main, development]
 
+# Só leitura do repositório — o job não precisa escrever em nada, então mesmo que um passo seja
+# comprometido o token dele não consegue alterar o repositório.
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest

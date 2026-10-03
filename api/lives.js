@@ -14,6 +14,11 @@
 import { RoomServiceClient } from 'livekit-server-sdk';
 import { verifySession } from '../lib/session.js';
 import { buildGuildSnapshots } from '../lib/lives.js';
+import { createLimiter } from '../lib/ratelimit.js';
+
+// Por pessoa (id do Discord da sessão). O site consulta no máximo ~4x/min; 120 deixa folga
+// pra várias abas e reconexões sem deixar ninguém martelar a API do LiveKit.
+const livesLimiter = createLimiter({ max: 120, windowMs: 60 * 1000 });
 
 function json(status, data){
   return new Response(JSON.stringify(data), { status, headers: { 'content-type': 'application/json' } });
@@ -27,9 +32,11 @@ export async function POST(request){
 
   let body;
   try{ body = await request.json(); }catch(e){ return json(400, { error: 'corpo-invalido' }); }
+  if(!body || typeof body !== 'object' || Array.isArray(body)) return json(400, { error: 'corpo-invalido' });
 
   const session = verifySession(typeof body.session === 'string' ? body.session : '', process.env.DISCORD_CLIENT_SECRET);
   if(!session) return json(401, { error: 'sessao-invalida' });
+  if(!livesLimiter.allow(session.id)) return json(429, { error: 'muitos-pedidos' });
 
   // Servers que a pessoa quer ver ∩ servers de que ela faz parte.
   const mine = new Set((session.guilds || []).map((g) => g[0]));

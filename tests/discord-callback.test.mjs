@@ -29,17 +29,29 @@ function fakeDiscord({ profile, guilds, guildsStatus = 200, tokenStatus = 200 })
     throw new Error('chamada inesperada: ' + u);
   };
 }
-const cb = (qs) => callback(new Request('https://sinal.test/api/discord-callback?' + qs));
+const CSRF = 'c0ffee00c0ffee00c0ffee00c0ffee00';
+// Por padrão manda o cookie que o discord-login.js deixaria no navegador (a validação anti login-CSRF).
+const cb = (qs, cookie = 'sinal_oauth=' + CSRF) => callback(new Request('https://sinal.test/api/discord-callback?' + qs, cookie ? { headers: { cookie } } : undefined));
 const sessionFrom = (res) => verifySession(new URL(res.headers.get('location')).hash.replace('#session=', ''), SECRET);
 
-test('login pede identify + guilds e leva a sala em "state"', async () => {
+test('login pede identify + guilds; o state é "<nonce>.<SALA>" e o MESMO nonce vai num cookie HttpOnly', async () => {
   const res = await login(new Request('https://sinal.test/api/discord-login?sala=abc123'));
   const url = new URL(res.headers.get('location'));
   assert.equal(res.status, 302);
   assert.equal(url.origin + url.pathname, 'https://discord.com/oauth2/authorize');
   assert.equal(url.searchParams.get('scope'), 'identify guilds');
   assert.equal(url.searchParams.get('redirect_uri'), 'https://sinal.test/api/discord-callback');
-  assert.equal(url.searchParams.get('state'), 'ABC123');
+  const [nonce, sala] = url.searchParams.get('state').split('.');
+  assert.match(nonce, /^[a-f0-9]{32}$/);
+  assert.equal(sala, 'ABC123');
+  const cookie = res.headers.get('set-cookie');
+  assert.ok(cookie.startsWith('sinal_oauth=' + nonce + ';'));
+  for(const part of ['HttpOnly', 'SameSite=Lax', 'Secure', 'Path=/api/discord-callback', 'Max-Age=600']) assert.ok(cookie.includes(part), part);
+});
+
+test('login: cada pedido gera um nonce diferente', async () => {
+  const get = async () => new URL((await login(new Request('https://sinal.test/api/discord-login'))).headers.get('location')).searchParams.get('state');
+  assert.notEqual(await get(), await get());
 });
 
 test('login com refresh=1 usa prompt=none (renovar servers sem tela de consentimento); sem refresh, não', async () => {
@@ -54,11 +66,12 @@ test('callback: sessão assinada no FRAGMENTO (não na query) com nome, avatar e
     profile: { id: '100000000000000001', username: 'u', global_name: 'Fulano', avatar: 'h' },
     guilds: [{ id: '1', name: 'Galera', icon: 'i', owner: true, permissions: '0' }]
   });
-  const res = await cb('code=xyz&state=ABC123');
+  const res = await cb('code=xyz&state=' + CSRF + '.ABC123');
   const loc = new URL(res.headers.get('location'));
   assert.equal(res.status, 302);
   assert.equal(loc.origin, 'https://sinal.test');
   assert.equal(loc.searchParams.get('sala'), 'ABC123');
+  assert.match(res.headers.get('set-cookie'), /^sinal_oauth=; Max-Age=0/); // o cookie é apagado depois de usado
   assert.equal([...loc.searchParams.keys()].some((k) => k.startsWith('discord_')), false); // nada do formato antigo
   assert.equal(loc.search.includes('session'), false);
   const s = sessionFrom(res);
@@ -72,21 +85,21 @@ test('callback: sessão assinada no FRAGMENTO (não na query) com nome, avatar e
 
 test('callback: ID de ADMIN_DISCORD_IDS vira admin do Sinal', async () => {
   fakeDiscord({ profile: { id: '555000000000000002', username: 'dono' }, guilds: [] });
-  assert.equal(sessionFrom(await cb('code=xyz')).admin, true);
+  assert.equal(sessionFrom(await cb('code=xyz&state=' + CSRF)).admin, true);
 });
 
 test('callback: se a lista de servers falhar, o login continua (sem servers)', async () => {
   fakeDiscord({ profile: { id: '100000000000000001', username: 'u' }, guilds: [], guildsStatus: 429 });
-  const s = sessionFrom(await cb('code=xyz'));
+  const s = sessionFrom(await cb('code=xyz&state=' + CSRF));
   assert.equal(s.name, 'u');
   assert.deepEqual(s.guilds, []);
 });
 
 test('callback: sem code, ou Discord recusando o code: volta com ?discord_error=1 e sem sessão', async () => {
-  const noCode = await cb('state=X');
+  const noCode = await cb('state=' + CSRF);
   assert.equal(new URL(noCode.headers.get('location')).searchParams.get('discord_error'), '1');
   fakeDiscord({ profile: {}, guilds: [], tokenStatus: 400 });
-  const refused = await cb('code=ruim');
+  const refused = await cb('code=ruim&state=' + CSRF);
   const loc = new URL(refused.headers.get('location'));
   assert.equal(loc.searchParams.get('discord_error'), '1');
   assert.equal(loc.hash, '');
@@ -134,9 +147,25 @@ test('callback do app: falhas (sem code, Discord recusando) vão pra /login-app.
   assert.equal(refused.hash, '#error=1');
 });
 
-test('callback: state que só PARECE do app (nonce inválido) é tratado como código de sala comum', async () => {
+test('anti login-CSRF: sem o cookie do login, ou com cookie diferente do state, o callback recusa e NÃO gera sessão', async () => {
   fakeDiscord({ profile: { id: '100000000000000001', username: 'u' }, guilds: [] });
-  const loc = new URL((await cb('code=xyz&state=app.nao-e-hex')).headers.get('location'));
-  assert.equal(loc.pathname, '/');
-  assert.ok(loc.hash.startsWith('#session='));
+  const attempts = [
+    cb('code=xyz&state=' + CSRF, ''),                                   // sem cookie (vítima que nunca iniciou o login)
+    cb('code=xyz&state=' + CSRF, 'sinal_oauth=' + 'a'.repeat(32)),      // cookie de outro login
+    cb('code=xyz&state=' + CSRF, 'outro=1; sinal_oauth='),             // cookie vazio
+    cb('code=xyz', 'sinal_oauth=' + CSRF),                              // sem state
+    cb('code=xyz&state=ABC123', 'sinal_oauth=' + CSRF),                 // formato antigo (só a sala)
+    cb('code=xyz&state=app.nao-e-hex', 'sinal_oauth=' + CSRF)           // "parece" do app mas o nonce é inválido
+  ];
+  for(const p of attempts){
+    const loc = new URL((await p).headers.get('location'));
+    assert.equal(loc.searchParams.get('discord_error'), '1');
+    assert.equal(loc.hash, '');
+  }
+});
+
+test('callback: o cookie certo entre vários cookies funciona', async () => {
+  fakeDiscord({ profile: { id: '100000000000000001', username: 'u' }, guilds: [] });
+  const res = await cb('code=xyz&state=' + CSRF, 'a=1; sinal_oauth=' + CSRF + '; b=2');
+  assert.ok(new URL(res.headers.get('location')).hash.startsWith('#session='));
 });

@@ -127,3 +127,22 @@ test('desligar tela/câmera segue a mesma hierarquia e exige a faixa', async () 
   assert.equal((await act(tokenOf('dono'), { action: 'muteCamera', targetIdentity: 'comum-1' })).status, 400); // sem trackSid
   assert.equal(fake.actions.length, 1);
 });
+
+test('expulsar revoga o token que a pessoa estava usando (não volta na hora com o mesmo token)', async () => {
+  assert.equal((await kick('dono', 'comum')).status, 200);
+  const { options } = fake.actions[0];
+  assert.equal(typeof options.revokeTokenTs, 'bigint');
+  const agora = Math.floor(Date.now() / 1000);
+  assert.ok(Math.abs(Number(options.revokeTokenTs) - agora) <= 5);
+});
+
+test('limite de pedidos de moderação por IP', async () => {
+  const send = (ip) => POST(new Request('http://localhost/api/moderate', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-forwarded-for': ip, authorization: 'Bearer ' + tokenOf('dono') },
+    body: JSON.stringify({ room: ROOM, action: 'kick', targetIdentity: 'comum-1' })
+  }));
+  for(let i = 0; i < 60; i++) assert.notEqual((await send('198.51.100.7')).status, 429);
+  assert.equal((await send('198.51.100.7')).status, 429);
+  assert.notEqual((await send('198.51.100.8')).status, 429);
+});

@@ -29,13 +29,18 @@
 //                                 pra entregar só o que a pessoa pode ver.
 import { AccessToken, RoomServiceClient } from 'livekit-server-sdk';
 import { verifySession, guildTier } from '../lib/session.js';
+import { createLimiter, clientIp } from '../lib/ratelimit.js';
 import {
   MAX_ROOMS_PER_GUILD, MAX_PARTICIPANTS_PER_ROOM, PRESENCE_ROOM, MAX_PRESENCE_GUILDS,
-  parseServerRoom, newServerRoomName, cleanTitle,
+  parseServerRoom, newServerRoomName, cleanTitle, cleanDisplayName,
   buildRoomMetadata, parseRoomMetadata, canEnterPrivate
 } from '../lib/rooms.js';
 
 const MODES = ['join', 'create', 'server-join', 'server-create', 'presence'];
+
+// Pedidos de token por IP (melhor esforço, ver lib/ratelimit.js): sem isso qualquer um com um
+// loop gasta a cota da Vercel e cria salas/conexões em massa na VM.
+const tokenLimiter = createLimiter({ max: 60, windowMs: 60 * 1000 });
 
 function json(status, data){
   return new Response(JSON.stringify(data), { status, headers: { 'content-type': 'application/json' } });
@@ -48,10 +53,14 @@ function json(status, data){
 // foi. Bônus: a sessão (credencial de 7 dias) sai da query string e viaja no
 // corpo, longe de log/histórico/Referer.
 export async function POST(request){
+  if(!tokenLimiter.allow(clientIp(request))) return json(429, { error: 'muitos-pedidos' });
+
   let body;
   try{ body = await request.json(); }catch(e){
     return json(400, { error: 'corpo-invalido' });
   }
+  // JSON válido mas que não é um objeto (null, número, lista…) também é pedido inválido.
+  if(!body || typeof body !== 'object' || Array.isArray(body)) return json(400, { error: 'corpo-invalido' });
 
   // Antes vinha tudo de searchParams, que sempre devolve string. Agora é JSON,
   // então o cliente pode mandar número, objeto, null — e `.trim()` em cima
@@ -73,7 +82,7 @@ export async function POST(request){
   if(sessionRaw && !session) return json(401, { error: 'sessao-invalida' });
   if((isServerMode || mode === 'presence') && !session) return json(401, { error: 'login-necessario' });
 
-  const name = str(body.name).trim().slice(0, 40) || (session ? session.name : '');
+  const name = cleanDisplayName(str(body.name)) || (session ? cleanDisplayName(session.name) : '');
   if(!name) return json(400, { error: 'room e name são obrigatórios' });
 
   // Sala por código: sempre MAIÚSCULA (assim nunca colide com sala de server,
@@ -104,7 +113,8 @@ export async function POST(request){
   const livekitUrl = process.env.LIVEKIT_URL;
 
   if(!apiKey || !apiSecret || !livekitUrl){
-    return json(500, { error: 'Servidor não configurado (LIVEKIT_API_KEY/LIVEKIT_API_SECRET/LIVEKIT_URL ausentes nas variáveis de ambiente do Vercel)' });
+    console.error('get-token: LIVEKIT_API_KEY/LIVEKIT_API_SECRET/LIVEKIT_URL ausentes nas variáveis de ambiente da Vercel');
+    return json(500, { error: 'servidor-nao-configurado' });
   }
 
   // Presença: token que só escuta. Não cria sala nem confere nada no LiveKit —
@@ -119,7 +129,11 @@ export async function POST(request){
       name: session.name,
       attributes: { guilds: guilds.join(',') }
     });
-    at.addGrant({ room: PRESENCE_ROOM, roomJoin: true, canSubscribe: true, canPublish: false, canPublishData: false });
+    // hidden: o participante de presença fica INVISÍVEL pros outros. Sem isso, qualquer pessoa
+    // logada via nome, ID do Discord (no identity) e a lista de servidores de todo mundo que
+    // estivesse online (testado — vazava até de servidores em comum nenhum). O servidor ainda
+    // lista e entrega o push pra eles normalmente (testado no LiveKit real).
+    at.addGrant({ room: PRESENCE_ROOM, roomJoin: true, canSubscribe: true, canPublish: false, canPublishData: false, hidden: true });
     return json(200, { token: await at.toJwt(), url: livekitUrl, room: PRESENCE_ROOM });
   }
 
@@ -200,7 +214,7 @@ export async function POST(request){
       // relato). (O aviso "fulano abriu uma sala" no canal do Discord saiu na
       // v0.8.51+: agora quem está no server vê a sala na lista, HANDOFF §38.)
       try{
-        await roomService.createRoom({ name: room, emptyTimeout: 60, departureTimeout: 60 });
+        await roomService.createRoom({ name: room, emptyTimeout: 60, departureTimeout: 60, maxParticipants: MAX_PARTICIPANTS_PER_ROOM });
       }catch(e){
         console.error('createRoom falhou:', e && e.message, e);
       }
@@ -244,6 +258,7 @@ export async function POST(request){
 
     return json(200, { token, url: livekitUrl, room });
   }catch(e){
-    return json(500, { error: 'Falha ao gerar token: ' + e.message });
+    console.error('get-token falhou:', e && e.message, e);
+    return json(500, { error: 'falha-ao-gerar-token' });
   }
 }

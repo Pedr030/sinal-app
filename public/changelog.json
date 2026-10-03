@@ -1,5 +1,15 @@
 [
   {
+    "id": "2026-10-03-seguranca",
+    "date": "2026-10-03",
+    "title": "Melhorias de segurança",
+    "site": "0.8.56",
+    "app": "0.3.16",
+    "items": [
+      "Reforço de segurança no site e no app, incluindo mais privacidade para quem está online."
+    ]
+  },
+  {
     "id": "2026-10-03-moderacao-servidores",
     "date": "2026-10-03",
     "title": "Moderação nos servidores",

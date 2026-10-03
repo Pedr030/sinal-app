@@ -6,12 +6,18 @@
 // antes de qualquer coisa rodar.
 import { RoomServiceClient, TokenVerifier } from 'livekit-server-sdk';
 import { canModerateTarget, isModeratorToken } from '../lib/rooms.js';
+import { createLimiter, clientIp } from '../lib/ratelimit.js';
+
+const moderateLimiter = createLimiter({ max: 60, windowMs: 60 * 1000 });
 
 function parseMeta(raw){
   try{ return JSON.parse(raw || ''); }catch(e){ return null; }
 }
 
 export async function POST(request){
+  if(!moderateLimiter.allow(clientIp(request))){
+    return new Response(JSON.stringify({ error: 'muitos-pedidos' }), { status: 429, headers: { 'content-type': 'application/json' } });
+  }
   const apiKey = process.env.LIVEKIT_API_KEY;
   const apiSecret = process.env.LIVEKIT_API_SECRET;
   const livekitUrl = process.env.LIVEKIT_URL;
@@ -88,7 +94,10 @@ export async function POST(request){
     }
 
     if(action === 'kick'){
-      await roomService.removeParticipant(room, targetIdentity);
+      // revokeTokenTs: o token que a pessoa estava usando deixa de valer — sem isso um cliente
+      // modificado voltaria na hora com o MESMO token. (Expulsar não é banir: quem tem direito
+      // de entrar na sala ainda pode pedir um token novo.)
+      await roomService.removeParticipant(room, targetIdentity, { revokeTokenTs: BigInt(Math.floor(Date.now() / 1000)) });
     } else if(action === 'muteScreen' || action === 'muteCamera'){
       if(!trackSid){
         return new Response(JSON.stringify({ error: 'trackSid-faltando' }), {

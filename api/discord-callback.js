@@ -13,11 +13,24 @@
 // possível confirmar isso — a assinatura leva essa informação adiante.
 import { buildSession } from '../lib/session.js';
 
+// Cookie do login pelo navegador (ver api/discord-login.js): lê o valor e o apaga no retorno.
+function readCookie(request, name){
+  const raw = request.headers.get('cookie') || '';
+  for(const part of raw.split(';')){
+    const i = part.indexOf('=');
+    if(i > 0 && part.slice(0, i).trim() === name) return part.slice(i + 1).trim();
+  }
+  return '';
+}
+
 export async function GET(request){
   const clientId = process.env.DISCORD_CLIENT_ID;
   const clientSecret = process.env.DISCORD_CLIENT_SECRET;
   const url = new URL(request.url);
-  const redirectTo = (extra) => Response.redirect(url.origin + '/' + (extra || ''), 302);
+  // Redirect montado na mão (e não Response.redirect) pra poder apagar o cookie do login.
+  const clearCookie = `sinal_oauth=; Max-Age=0; Path=/api/discord-callback; HttpOnly; SameSite=Lax${url.protocol === 'https:' ? '; Secure' : ''}`;
+  const go = (location) => new Response(null, { status: 302, headers: { location, 'set-cookie': clearCookie } });
+  const redirectTo = (extra) => go(url.origin + '/' + (extra || ''));
 
   if(!clientId || !clientSecret){
     return new Response('Login com Discord não está configurado neste servidor.', {
@@ -33,7 +46,7 @@ export async function GET(request){
   const rawState = url.searchParams.get('state') || '';
   const appMatch = /^app\.([a-f0-9]{32})$/.exec(rawState);
   const appNonce = appMatch ? appMatch[1] : '';
-  const fail = () => (appNonce ? Response.redirect(url.origin + '/login-app.html#error=1', 302) : redirectTo('?discord_error=1'));
+  const fail = () => (appNonce ? go(url.origin + '/login-app.html#error=1') : redirectTo('?discord_error=1'));
 
   const code = url.searchParams.get('code');
   if(!code) return fail();
@@ -41,7 +54,16 @@ export async function GET(request){
   const redirectUri = `${url.origin}/api/discord-callback`;
   // "state" veio do discord-login.js — é o código de sala que a pessoa já
   // tinha digitado antes de clicar em "Entrar com Discord", se tinha.
-  const sala = appNonce ? '' : rawState.trim().toUpperCase().slice(0, 32);
+  // Login pelo navegador: o state é "<nonce>[.<sala>]" e o nonce precisa bater com o cookie que
+  // o discord-login.js deixou neste mesmo navegador (anti "login CSRF").
+  let sala = '';
+  if(!appNonce){
+    const dot = rawState.indexOf('.');
+    const stateNonce = dot === -1 ? rawState : rawState.slice(0, dot);
+    const cookieNonce = readCookie(request, 'sinal_oauth');
+    if(!/^[a-f0-9]{32}$/.test(stateNonce) || !cookieNonce || stateNonce !== cookieNonce) return fail();
+    sala = dot === -1 ? '' : rawState.slice(dot + 1).trim().toUpperCase().slice(0, 32);
+  }
 
   try{
     const tokenRes = await fetch('https://discord.com/api/oauth2/token', {
@@ -78,12 +100,12 @@ export async function GET(request){
     const adminIds = (process.env.ADMIN_DISCORD_IDS || '').split(',').map((s) => s.trim()).filter(Boolean);
     const session = buildSession({ profile, guilds, adminIds, secret: clientSecret });
 
-    if(appNonce) return Response.redirect(url.origin + '/login-app.html#session=' + session + '&nonce=' + appNonce, 302);
+    if(appNonce) return go(url.origin + '/login-app.html#session=' + session + '&nonce=' + appNonce);
 
     const dest = new URL(url.origin + '/');
     if(sala) dest.searchParams.set('sala', sala);
     dest.hash = 'session=' + session;
-    return Response.redirect(dest.toString(), 302);
+    return go(dest.toString());
   }catch(e){
     console.error('Login com Discord falhou:', e && e.message, e);
     return fail();

@@ -9,11 +9,12 @@
 // com os limites de tamanho e o próprio limite do Discord (~30 msg/min por
 // webhook), segura uso errado; se um dia virar spam, é só trocar o webhook.
 
+import { createLimiter, clientIp } from '../lib/ratelimit.js';
+
 const MAX_DESCRIPTION = 1500;
 const MAX_LOG_BYTES = 80 * 1024;
-const MAX_PER_IP = 3;               // envios por IP…
-const WINDOW_MS = 10 * 60 * 1000;   // …a cada 10 minutos
-const recentByIp = new Map();
+const MAX_BODY_BYTES = 200 * 1024;  // o registro tem teto de 80 KB; o resto é folga pro JSON
+const limiter = createLimiter({ max: 3, windowMs: 10 * 60 * 1000 }); // 3 envios por IP a cada 10 minutos
 
 function json(status, data){
   return new Response(JSON.stringify(data), { status, headers: { 'content-type': 'application/json' } });
@@ -30,13 +31,14 @@ export async function POST(request){
   const webhookUrl = process.env.DISCORD_REPORT_WEBHOOK_URL;
   if(!webhookUrl) return json(503, { error: 'relatorio-desligado' });
 
-  const ip = (request.headers.get('x-forwarded-for') || 'desconhecido').split(',')[0].trim();
+  // Corta antes de ler o corpo: ninguém precisa mandar megabytes pra um relatório.
+  if(Number(request.headers.get('content-length') || 0) > MAX_BODY_BYTES) return json(413, { error: 'corpo-grande-demais' });
+  if(!limiter.allow(clientIp(request))) return json(429, { error: 'muitos-envios' });
   const now = Date.now();
-  const recent = (recentByIp.get(ip) || []).filter((t) => now - t < WINDOW_MS);
-  if(recent.length >= MAX_PER_IP) return json(429, { error: 'muitos-envios' });
 
   let body;
   try{ body = await request.json(); }catch(e){ return json(400, { error: 'corpo-invalido' }); }
+  if(!body || typeof body !== 'object' || Array.isArray(body)) return json(400, { error: 'corpo-invalido' });
 
   const description = clean(body.description, MAX_DESCRIPTION);
   const name = clean(body.name, 40) || 'anônimo';
@@ -45,9 +47,6 @@ export async function POST(request){
   const log = typeof body.log === 'string' ? body.log : '';
   if(!description && !log) return json(400, { error: 'vazio' });
   if(Buffer.byteLength(log, 'utf8') > MAX_LOG_BYTES) return json(413, { error: 'registro-grande-demais' });
-
-  recent.push(now);
-  recentByIp.set(ip, recent);
 
   const content = [
     `🐞 **Relatório de problema** — ${name} · app v${appVersion} · site v${siteVersion}`,
