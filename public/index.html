@@ -71,7 +71,22 @@
 
   <!-- ENTRY SCREEN -->
   <section id="entryScreen">
-    <div class="panel">
+   <div class="srv-layout" id="srvLayout">
+    <!-- Servers no Sinal (HANDOFF §39): trilho | coluna de salas | principal. Só aparece logado com Discord. -->
+    <nav class="srv-rail" id="srvRail" aria-label="Seus servidores" hidden></nav>
+
+    <aside class="srv-col" id="srvCol" hidden>
+      <div class="srv-col-head">
+        <span class="srv-icon" id="srvColIcon"></span>
+        <span class="srv-col-name" id="srvColName"></span>
+      </div>
+      <div class="srv-col-label mono">Salas <span id="srvLiveCount"></span></div>
+      <div class="srv-rooms" id="srvRooms"></div>
+      <div class="srv-col-foot mono" id="srvFoot"></div>
+    </aside>
+
+    <div class="srv-main">
+    <div class="panel" id="homePanel">
       <button type="button" class="discord-btn" id="discordLoginBtn">
         <svg class="icon" viewBox="0 0 24 24" fill="currentColor"><path d="M20.317 4.37a19.79 19.79 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.865-.608 1.25a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.25.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057a.082.082 0 0 0 .031.057 19.9 19.9 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028 14.09 14.09 0 0 0 1.226-1.994.076.076 0 0 0-.041-.106 13.107 13.107 0 0 1-1.872-.892.077.077 0 0 1-.008-.128c.126-.094.252-.192.372-.291a.074.074 0 0 1 .077-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 0 1 .078.01c.12.099.246.197.373.291a.077.077 0 0 1-.006.128 12.3 12.3 0 0 1-1.873.892.076.076 0 0 0-.04.106c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.029 19.84 19.84 0 0 0 6.002-3.03.077.077 0 0 0 .032-.057c.5-5.177-.838-9.673-3.549-13.66a.061.061 0 0 0-.031-.028ZM8.02 15.331c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.955-2.418 2.157-2.418 1.211 0 2.176 1.094 2.157 2.418 0 1.334-.955 2.419-2.157 2.419Zm7.974 0c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.955-2.418 2.157-2.418 1.211 0 2.176 1.094 2.157 2.418 0 1.334-.946 2.419-2.157 2.419Z"/></svg>
         Entrar com Discord
@@ -95,6 +110,25 @@
       <p class="hint">Todo mundo na sala pode compartilhar a tela quando quiser — não tem "anfitrião", é tipo call de vídeo do Discord mesmo. Deixem a call de voz aberta no Discord normalmente, isso aqui cuida só da tela.</p>
       <div id="entryStatus"></div>
     </div>
+
+    <div class="panel srv-panel" id="serverPanel" hidden>
+      <div class="srv-hero">
+        <span class="srv-icon srv-icon-lg" id="srvHeroIcon"></span>
+        <div>
+          <div class="srv-hero-name" id="srvHeroName"></div>
+          <div class="srv-hero-role mono" id="srvHeroRole"></div>
+        </div>
+      </div>
+      <div class="field">
+        <label for="srvRoomTitle">Criar uma sala neste servidor</label>
+        <input type="text" id="srvRoomTitle" maxlength="40" placeholder="Nome da sala (ex: Ranqueada, Treino)" autocomplete="off">
+      </div>
+      <button type="button" class="primary" id="srvCreateBtn">Criar sala</button>
+      <p class="hint">Ou clique numa sala ao lado pra entrar. Só quem está neste servidor do Discord vê e entra nas salas dele.</p>
+      <div id="srvStatus" class="entry-status"></div>
+    </div>
+    </div>
+   </div>
   </section>
 
   <!-- MANUTENÇÃO — ver MAINTENANCE_MODE em app.js; ligar/desligar só ali, nada aqui precisa mudar -->
@@ -110,6 +144,13 @@
 
   <!-- ROOM SCREEN -->
   <section id="roomScreen">
+    <!-- Coluna de salas do servidor dentro da call (HANDOFF §39, fase 2b): pular de sala sem sair pra tela inicial -->
+    <aside class="call-side" id="callSide" hidden>
+      <div class="call-rail" id="callRail"></div>
+      <div class="call-side-name" id="callSideName"></div>
+      <div class="srv-rooms" id="callRooms"></div>
+    </aside>
+    <div class="room-main">
     <div class="room-bar">
       <div class="freq">
         <span class="code-chip" id="roomCodeChip">------</span>
@@ -124,6 +165,9 @@
       </div>
       <div class="avatars" id="avatarsRow"></div>
       <div class="end">
+        <button class="icon-btn" id="sideToggleBtn" title="Salas do servidor" aria-label="Salas do servidor" hidden>
+          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="9" y1="3" x2="9" y2="21"/></svg>
+        </button>
         <button class="icon-btn" id="rosterBtn" title="Ver quem está na sala" aria-label="Ver quem está na sala">
           <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
         </button>
@@ -204,6 +248,7 @@
       </div>
       <div class="roster-list" id="rosterList"></div>
     </aside>
+    </div>
   </section>
 
   <footer>
@@ -283,6 +328,24 @@
         <span class="settings-note" id="settingsUpdateStatus">…</span>
         <button type="button" id="settingsUpdateBtn">Procurar atualização</button>
       </div>
+    </div>
+  </div>
+</div>
+
+<!-- Escolher servidores do Discord que aparecem no Sinal — ver setupServersUI() em app.js -->
+<div id="srvPickerOverlay" class="settings-overlay" hidden>
+  <div class="settings-panel srv-picker" role="dialog" aria-modal="true" aria-labelledby="srvPickerTitle">
+    <div class="settings-panel-header">
+      <span id="srvPickerTitle">Seus servidores no Sinal</span>
+      <button type="button" id="srvPickerClose" class="settings-close" aria-label="Fechar">&times;</button>
+    </div>
+    <div class="settings-note">Escolha quais servidores do Discord aparecem aqui. Vale só neste dispositivo. Entrou num servidor novo? Use "Atualizar meus servidores".</div>
+    <input type="text" id="srvPickerSearch" placeholder="Buscar servidor" autocomplete="off">
+    <div class="srv-pick-list" id="srvPickerList"></div>
+    <div class="settings-note srv-pick-msg" id="srvPickerMsg"></div>
+    <div class="srv-pick-foot">
+      <button type="button" id="srvPickerRefresh" class="ghost-btn">Atualizar meus servidores</button>
+      <button type="button" id="srvPickerDone" class="primary">Pronto</button>
     </div>
   </div>
 </div>

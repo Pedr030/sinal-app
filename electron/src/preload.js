@@ -8,6 +8,14 @@ const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('sinalElectron', {
   isElectron: true,
 
+  // Login com Discord pelo navegador padrão (v0.3.14+, HANDOFF §39). openLogin
+  // abre o navegador (o main monta a URL; aqui só vai o nonce gerado pelo site);
+  // a sessão volta por onAuth (app aberto) ou takePendingAuth (chegou enquanto a
+  // página carregava).
+  openLogin: (nonce, options) => ipcRenderer.invoke('sinal:open-login', nonce, options),
+  onAuth: (callback) => { ipcRenderer.on('sinal:auth', (_event, auth) => callback(auth)); },
+  takePendingAuth: () => ipcRenderer.invoke('sinal:take-pending-auth'),
+
   // Versão do INSTALADOR (electron/package.json), não a do site
   // (APP_VERSION em app.js) — pro rodapé mostrar algo que combine com "isso
   // é um app de verdade", não o número de versão do deploy do site.

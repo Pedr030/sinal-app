@@ -13,7 +13,6 @@ import { dirname, join } from 'node:path';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const appJs = readFileSync(join(ROOT, 'public/app.js'), 'utf8');
-const getTokenJs = readFileSync(join(ROOT, 'api/get-token.js'), 'utf8');
 
 function extractFunction(src, name){
   const m = src.match(new RegExp('function ' + name + '\\([^)]*\\)\\{[\\s\\S]*?\\n\\}', 'm'));
@@ -22,11 +21,6 @@ function extractFunction(src, name){
 }
 
 const escapeHtml = new Function(extractFunction(appJs, 'escapeHtml') + '; return escapeHtml;')();
-
-const avatarRegexMatch = getTokenJs.match(/const avatar = (\/\^https[^;]+?)\.test\(avatarRaw\)/);
-if(!avatarRegexMatch) throw new Error('não achei o regex de validação de avatar em api/get-token.js');
-const avatarRegex = new Function('return ' + avatarRegexMatch[1])();
-const validaAvatar = (raw) => (avatarRegex.test(raw) ? raw : '');
 
 test('escapeHtml escapa aspas duplas (contexto de atributo)', () => {
   assert.equal(escapeHtml('x" onerror="alert(1)'), 'x&quot; onerror=&quot;alert(1)');
@@ -53,26 +47,51 @@ test('escapeHtml não mexe em texto normal', () => {
   assert.equal(escapeHtml('Pedro Henrique'), 'Pedro Henrique');
 });
 
-test('avatar: aceita URLs reais do CDN do Discord', () => {
-  assert.equal(
-    validaAvatar('https://cdn.discordapp.com/avatars/123456789012345678/a1b2c3d4e5f6.png?size=64'),
-    'https://cdn.discordapp.com/avatars/123456789012345678/a1b2c3d4e5f6.png?size=64'
-  );
-  assert.equal(validaAvatar('https://cdn.discordapp.com/embed/avatars/3.png'), 'https://cdn.discordapp.com/embed/avatars/3.png');
+// ---------- servers no Sinal (HANDOFF §39): helpers puros do app.js ----------
+const serverHelpers = new Function(
+  "const SERVER_ROOM_RE = /^s[0-9]{15,21}-[a-z0-9]{6}$/;" +
+  extractFunction(appJs, 'isServerRoomName') + extractFunction(appJs, 'guildIconUrl') +
+  extractFunction(appJs, 'guildInitials') + extractFunction(appJs, 'isDiscordAvatarUrl') +
+  '; return { isServerRoomName, guildIconUrl, guildInitials, isDiscordAvatarUrl };'
+)();
+
+test('isServerRoomName: só o formato s<id>-xxxxxx em minúsculas', () => {
+  assert.equal(serverHelpers.isServerRoomName('s800000000000000001-abc123'), true);
+  for(const bad of ['ABC123', 'S800000000000000001-ABC123', 's1-abc123', 's800000000000000001-abc12', '', null, undefined]){
+    assert.equal(serverHelpers.isServerRoomName(bad), false, String(bad));
+  }
 });
 
-test('avatar: bloqueia payload de XSS mesmo com prefixo certo', () => {
-  assert.equal(validaAvatar('https://cdn.discordapp.com/a" onerror="alert(1)'), '');
+test('guildIconUrl: monta a URL do CDN só com id e hash válidos', () => {
+  assert.equal(serverHelpers.guildIconUrl({ id: '800000000000000001', icon: 'a_1b2c3' }), 'https://cdn.discordapp.com/icons/800000000000000001/a_1b2c3.png?size=64');
+  assert.equal(serverHelpers.guildIconUrl({ id: '800000000000000001', icon: '' }), '');
+  assert.equal(serverHelpers.guildIconUrl({ id: '800000000000000001', icon: 'x"onerror="1' }), '');
+  assert.equal(serverHelpers.guildIconUrl({ id: 'abc', icon: 'ok' }), '');
+  assert.equal(serverHelpers.guildIconUrl(null), '');
 });
 
-test('avatar: bloqueia domínio parecido mas diferente', () => {
-  assert.equal(validaAvatar('https://cdn.discordapp.com.evil.com/x.png'), '');
+test('guildInitials: iniciais de duas palavras, ou as duas primeiras letras', () => {
+  assert.equal(serverHelpers.guildInitials('Galera do Valorant'), 'GV');
+  assert.equal(serverHelpers.guildInitials('Sinal'), 'SI');
+  assert.equal(serverHelpers.guildInitials('Estudos e Café'), 'EC');
+  assert.equal(serverHelpers.guildInitials('de'), '?');
+  assert.equal(serverHelpers.guildInitials(''), '?');
+  assert.equal(serverHelpers.guildInitials(undefined), '?');
 });
 
-test('avatar: bloqueia http (exige https)', () => {
-  assert.equal(validaAvatar('http://cdn.discordapp.com/x.png'), '');
+test('isDiscordAvatarUrl: só imagens do CDN do Discord', () => {
+  assert.equal(serverHelpers.isDiscordAvatarUrl('https://cdn.discordapp.com/avatars/1/a.png?size=64'), true);
+  assert.equal(serverHelpers.isDiscordAvatarUrl('https://evil.com/a.png'), false);
+  assert.equal(serverHelpers.isDiscordAvatarUrl('https://cdn.discordapp.com/a" onerror="x'), false);
+  assert.equal(serverHelpers.isDiscordAvatarUrl(undefined), false);
 });
 
-test('avatar: bloqueia string qualquer', () => {
-  assert.equal(validaAvatar('x'), '');
+// ---------- login pelo navegador no app desktop (HANDOFF §39, fase 2c) ----------
+const newLoginNonce = new Function(extractFunction(appJs, 'newLoginNonce') + '; return newLoginNonce;')();
+
+test('newLoginNonce: 32 hex minúsculos (o formato que o servidor e o app exigem) e diferente a cada vez', () => {
+  const a = newLoginNonce();
+  const b = newLoginNonce();
+  assert.match(a, /^[a-f0-9]{32}$/);
+  assert.notEqual(a, b);
 });

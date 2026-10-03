@@ -60,7 +60,10 @@ let selfInitiatedUnpublish = false; // true durante o unpublishTrack() do própr
 const tileStreams = new Map(); // tileId -> MediaStream (junta vídeo+áudio da mesma fonte, ex: tela+áudio da guia)
 const tileVideoTracks = new Map(); // tileId -> Track de vídeo do LiveKit (pra amostrar getRTCStatsReport())
 
-function setEntryStatus(msg){ document.getElementById('entryStatus').textContent = msg || ''; }
+function setEntryStatus(msg){
+  document.getElementById('entryStatus').textContent = msg || '';
+  document.getElementById('srvStatus').textContent = msg || ''; // painel do servidor (HANDOFF §39)
+}
 function setRoomStatus(msg, isError){
   const el = document.getElementById('roomStatus');
   el.textContent = msg || '';
@@ -73,6 +76,7 @@ function getName(){
     try{ localStorage.setItem('sinal:lastName', v); }catch(e){ /* modo privado etc — sem problema, só não vai lembrar da próxima vez */ }
     return v;
   }
+  if(discordUser && discordUser.name) return discordUser.name;
   return 'Convidado' + Math.floor(Math.random()*90+10);
 }
 
@@ -147,9 +151,12 @@ function createRoom(){
 }
 function joinRoom(){
   getAudioCtx();
-  const code = document.getElementById('joinCodeInput').value.trim().toUpperCase();
-  if(!code){ setEntryStatus('Digite o código da sala.'); return; }
-  connectToRoom(code, getName(), 'join');
+  const raw = document.getElementById('joinCodeInput').value.trim();
+  if(!raw){ setEntryStatus('Digite o código da sala.'); return; }
+  // Link de convite de sala de SERVER (s<id>-xxxxxx, minúsculo) entra pelo modo
+  // próprio; o resto é código de sala normal, sempre em maiúsculas.
+  const server = isServerRoomName(raw);
+  connectToRoom(server ? raw : raw.toUpperCase(), getName(), server ? 'server-join' : 'join');
 }
 
 // Pede um token de acesso pra função serverless (que fala com a API do
@@ -159,9 +166,12 @@ function joinRoom(){
 // uma sala vazia silenciosa — sem isso, digitar o código errado deixava a
 // pessoa sozinha numa sala fantasma sem nenhum aviso (relato real, ver
 // HANDOFF §5).
-async function connectToRoom(code, name, mode){
+// mode: 'join' | 'create' (salas por código) | 'server-join' | 'server-create'
+// (salas de um server do Discord). `extra` leva { guild, title } no server-create.
+async function connectToRoom(code, name, mode, extra){
   myName = name;
-  roomCode = code;
+  roomCode = code || '';
+  const hadSession = !!(discordUser && discordUser.session);
   setEntryStatus('Conectando...');
 
   let token, url;
@@ -173,8 +183,8 @@ async function connectToRoom(code, name, mode){
     //    <img src="https://sinal.../api/get-token?...&mode=create"> e fazer o
     //    navegador de quem visitasse criar salas e mandar mensagem no Discord
     //    de vocês, sem clicar em nada.
-    // 2. O adminProof é uma credencial de 30 dias (ver lib/adminProof.js). Em
-    //    query string ele ia parar em log de plataforma, histórico do navegador
+    // 2. A sessão do Discord é uma credencial de 7 dias (ver lib/session.js). Em
+    //    query string ela ia parar em log de plataforma, histórico do navegador
     //    e cabeçalho Referer, a cada entrada em sala. No corpo do POST, não vai.
     const res = await fetch('/api/get-token', {
       method: 'POST',
@@ -183,17 +193,39 @@ async function connectToRoom(code, name, mode){
         room: code,
         name,
         mode,
-        avatar: (discordUser && discordUser.avatar) || undefined,
-        adminProof: (discordUser && discordUser.adminProof) || undefined
+        guild: extra && extra.guild,
+        title: extra && extra.title,
+        session: (discordUser && discordUser.session) || undefined
       })
     });
     if(res.status === 404){
       setEntryStatus('Sala não encontrada. Confira o código.');
       return;
     }
+    if(res.status === 401){
+      if(!hadSession){
+        setEntryStatus('Essa sala é de um servidor do Discord — entre com o Discord pra abrir.');
+        return;
+      }
+      // Sessão do Discord vencida (dura 7 dias) ou inválida — limpa e pede login de novo.
+      clearDiscordUser();
+      renderServersUI();
+      setEntryStatus('Sua sessão do Discord expirou. Entre com o Discord de novo (ou use só o nome).');
+      return;
+    }
+    if(res.status === 403){
+      const why = (await res.json().catch(() => ({}))).error;
+      setEntryStatus(why === 'sala-privada' ? 'Essa sala é privada.' : 'Você não faz parte desse servidor do Discord.');
+      return;
+    }
+    if(res.status === 429){
+      setEntryStatus('Esse servidor já tem 10 salas ao vivo. Entre numa delas ou espere alguma fechar.');
+      return;
+    }
     if(!res.ok) throw new Error('token-fetch-failed');
     const data = await res.json();
     token = data.token; url = data.url;
+    if(data.room) roomCode = data.room; // sala de server: o nome sai do servidor
     if(!token || !url) throw new Error('token-fetch-empty');
   }catch(e){
     setEntryStatus('Não foi possível falar com o servidor. Confira sua internet e tente de novo.');
@@ -438,7 +470,16 @@ function enterRoomUI(){
   // Marca a sala ativa pro CSS deixar o rodapé compacto (§ ver style.css) —
   // o texto descritivo do rodapé só faz sentido na tela de entrada.
   document.body.classList.add('in-room');
-  document.getElementById('roomCodeChip').textContent = roomCode;
+  callView = '';
+  renderCallSide();
+  startLivesPolling();
+  fetchLives(); // a foto da tela inicial pode estar velha
+  // Sala de server: o chip mostra o NOME da sala (do metadata no LiveKit), não o id interno.
+  let chipText = roomCode;
+  if(isServerRoomName(roomCode)){
+    try{ chipText = JSON.parse(room.metadata || '{}').title || 'Sala'; }catch(e){ chipText = 'Sala'; }
+  }
+  document.getElementById('roomCodeChip').textContent = chipText;
   document.getElementById('selfName').firstChild.textContent = myName + ' ';
   document.getElementById('chatMessages').innerHTML = '<div class="chat-empty mono">Sem mensagens ainda</div>';
   renderAvatars();
@@ -447,7 +488,7 @@ function enterRoomUI(){
   // tô na sala) — sem isso, transmissão de quem chegou primeiro nunca
   // ganhava o card "clique pra assistir".
   syncExistingPublications();
-  try{ localStorage.setItem('sinal:lastRoomCode', roomCode); }catch(e){ /* modo privado etc — sem problema, só não vai lembrar da próxima vez */ }
+  try{ if(!isServerRoomName(roomCode)) localStorage.setItem('sinal:lastRoomCode', roomCode); }catch(e){ /* modo privado etc — sem problema, só não vai lembrar da próxima vez */ }
 }
 
 function syncExistingPublications(){
@@ -1725,7 +1766,7 @@ function addTile(id, name, stream){
       <button type="button" class="ctl-btn mute-btn" title="Mutar/desmutar">${ICON_VOLUME}</button>
       <input type="range" class="vol-slider" min="0" max="100" value="100" title="Volume">
       <button type="button" class="ctl-btn hide-btn" title="Parar de assistir">${ICON_EYE_OFF}</button>
-      ${discordUser && discordUser.adminProof ? `
+      ${discordUser && discordUser.admin ? `
       <button type="button" class="ctl-btn mod-btn" title="Opções de moderação">${ICON_DOTS}</button>
       <div class="mod-menu">
         <button type="button" class="mod-menu-item">${id.endsWith(':cam') ? 'Desligar câmera' : 'Desligar tela'}</button>
@@ -1882,7 +1923,7 @@ function updateStageVisibility(){
 }
 
 // ---------------- MODERAÇÃO (admin fixo via Discord) ----------------
-// Só existe UI de moderação quando discordUser.adminProof está presente
+// Só existe UI de moderação quando discordUser.admin está presente
 // (indicador local, cosmético). O poder de verdade é conferido de novo aqui
 // no servidor a cada chamada (api/moderate.js, via TokenVerifier + grant
 // roomAdmin do myAccessToken) — editar isso no localStorage/na URL não dá
@@ -1982,7 +2023,7 @@ function renderRosterPanel(){
   const { Track } = LivekitClient;
   const list = document.getElementById('rosterList');
   const all = [room.localParticipant, ...room.remoteParticipants.values()];
-  const viewerIsAdmin = !!(discordUser && discordUser.adminProof);
+  const viewerIsAdmin = !!(discordUser && discordUser.admin);
   // Montado via DOM (e não por string de innerHTML) pelo mesmo motivo de
   // renderAvatars(): nome, identity e avatarUrl vêm de outros participantes.
   // De quebra, o botão de expulsar não precisa mais carregar data-identity/
@@ -2099,6 +2140,8 @@ function leaveRoom(){
   document.body.classList.remove('in-room');
   setEntryStatus('');
   prefillJoinCode();
+  renderServersUI();
+  startLivesPolling();
 }
 
 // auto-preencher código: prioridade pro link de convite (?sala=CODE); sem
@@ -2128,7 +2171,7 @@ function prefillJoinCode(){
   const params = new URLSearchParams(window.location.search);
   const sala = params.get('sala');
   if(sala){
-    document.getElementById('joinCodeInput').value = sala.toUpperCase();
+    document.getElementById('joinCodeInput').value = isServerRoomName(sala) ? sala : sala.toUpperCase();
     return;
   }
   try{
@@ -2171,27 +2214,63 @@ function prefillLastName(){
 }
 
 // ---------------- LOGIN OPCIONAL COM DISCORD ----------------
-// Não guarda sessão nenhuma no servidor — só usa o OAuth do Discord uma vez
-// pra perguntar "quem é essa pessoa" (nome + avatar) e guarda a resposta
-// aqui no navegador, igual sinal:lastName. Totalmente opcional: quem não usa
-// isso continua com o fluxo de sempre (digitar o nome).
-let discordUser = null; // { name, avatar } ou null
+// Não guarda nada no servidor — o OAuth do Discord roda uma vez, o servidor
+// assina o resultado (nome, avatar, se é admin do Sinal e os servers da
+// pessoa com o nível dela em cada um — lib/session.js, HANDOFF §38) e ele fica
+// aqui no navegador em sinal:session, válido por 7 dias. O navegador lê o
+// conteúdo pra desenhar a interface, mas só o servidor decide permissões (a
+// assinatura impede de alterar). Totalmente opcional: quem não usa isso
+// continua com o fluxo de sempre (digitar o nome e usar códigos de sala).
+let discordUser = null; // { name, avatar, admin, guilds, exp, session } ou null
+
+// Lê o conteúdo (sem conferir a assinatura — isso é trabalho do servidor) de
+// um token de sessão. Devolve null se estiver malformado ou vencido.
+function decodeSession(token){
+  try{
+    const payload = token.split('.')[0].replace(/-/g, '+').replace(/_/g, '/');
+    const bytes = Uint8Array.from(atob(payload), (c) => c.charCodeAt(0));
+    const data = JSON.parse(new TextDecoder().decode(bytes));
+    if(!data || data.v !== 1 || !data.id || typeof data.exp !== 'number' || data.exp <= Date.now()) return null;
+    return {
+      id: data.id,
+      name: data.name,
+      avatar: data.avatar || null,
+      admin: !!data.admin,
+      guilds: (data.guilds || []).map(([id, name, icon, tier]) => ({ id, name, icon, tier })),
+      exp: data.exp,
+      session: token
+    };
+  }catch(e){
+    return null;
+  }
+}
 
 function loadDiscordUser(){
   try{
-    const raw = localStorage.getItem('sinal:discordUser');
-    if(raw) discordUser = JSON.parse(raw);
+    // v0.8.52: o formato antigo (nome/avatar/adminProof soltos) acabou — todo
+    // mundo entra com o Discord de novo, agora pedindo também os servers.
+    if(localStorage.getItem('sinal:discordUser') !== null){
+      localStorage.removeItem('sinal:discordUser');
+      legacyLoginDropped = true;
+    }
+    const raw = localStorage.getItem('sinal:session');
+    if(raw){
+      discordUser = decodeSession(raw);
+      if(!discordUser) localStorage.removeItem('sinal:session'); // vencida ou corrompida
+    }
   }catch(e){ /* localStorage indisponível ou dado corrompido — segue sem Discord */ }
 }
+let legacyLoginDropped = false;
 
 function saveDiscordUser(user){
   discordUser = user;
-  try{ localStorage.setItem('sinal:discordUser', JSON.stringify(user)); }catch(e){}
+  try{ localStorage.setItem('sinal:session', user.session); }catch(e){}
 }
 
 function clearDiscordUser(){
   discordUser = null;
-  try{ localStorage.removeItem('sinal:discordUser'); }catch(e){}
+  stopPresence();
+  try{ localStorage.removeItem('sinal:session'); }catch(e){}
   document.getElementById('nameInput').value = '';
   renderDiscordStatus();
 }
@@ -2201,7 +2280,7 @@ function renderDiscordStatus(){
   const btn = document.getElementById('discordLoginBtn');
   if(discordUser && discordUser.name){
     el.hidden = false;
-    const adminTag = discordUser.adminProof ? ' 👑' : '';
+    const adminTag = discordUser.admin ? ' 👑' : '';
     el.innerHTML = `Conectado como <b>${escapeHtml(discordUser.name)}</b> (Discord)${adminTag} — `;
     const swapBtn = document.createElement('button');
     swapBtn.type = 'button';
@@ -2222,36 +2301,651 @@ function renderDiscordStatus(){
 // código de sala já digitado (se tiver algum), pra não se perder no
 // vai-e-volta do login.
 function loginWithDiscord(){
+  // App desktop v0.3.14+: o login acontece no navegador padrão (onde a pessoa já
+  // costuma estar logada no Discord) e volta pelo sinal://auth — ver "Login
+  // pelo navegador" abaixo. No navegador comum (e no app antigo) segue na mesma aba.
+  if(hasAppLogin()){ startAppLogin(); return; }
   const sala = document.getElementById('joinCodeInput').value.trim().toUpperCase();
   window.location.href = '/api/discord-login' + (sala ? ('?sala=' + encodeURIComponent(sala)) : '');
 }
 
+// ---------------- Login pelo navegador (app desktop, HANDOFF §39 fase 2c) ----------------
+// O app gera um NONCE aleatório, guarda aqui e abre o navegador padrão no login do
+// Discord levando só o nonce. A sessão volta por sinal://auth?session=…&nonce=… e só
+// é aceita se o nonce for exatamente o que geramos (e ainda dentro de 10 minutos) —
+// um link sinal://auth forjado por outra página não consegue logar ninguém numa
+// conta alheia. A sessão em si é validada pelo servidor a cada uso (assinatura).
+const LOGIN_NONCE_KEY = 'sinal:loginNonce';
+const LOGIN_NONCE_TTL_MS = 10 * 60 * 1000;
+
+function hasAppLogin(){
+  return !!(window.sinalElectron && typeof window.sinalElectron.openLogin === 'function');
+}
+
+function newLoginNonce(){
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+async function startAppLogin(options){
+  const nonce = newLoginNonce();
+  try{ localStorage.setItem(LOGIN_NONCE_KEY, JSON.stringify({ nonce, at: Date.now() })); }catch(e){}
+  setEntryStatus('Abrindo o navegador pra você entrar com o Discord…');
+  let opened = false;
+  try{ opened = await window.sinalElectron.openLogin(nonce, { refresh: !!(options && options.refresh) }); }catch(e){}
+  setEntryStatus(opened
+    ? 'Entre com o Discord no navegador que abriu — quando terminar, o Sinal te traz de volta sozinho.'
+    : 'Não consegui abrir o navegador. Tente de novo.');
+}
+
+// Chegou a sessão pelo sinal://auth (ver main.js: sinal:auth / sinal:take-pending-auth).
+function consumeAppAuth(auth){
+  let saved = null;
+  try{
+    saved = JSON.parse(localStorage.getItem(LOGIN_NONCE_KEY) || 'null');
+    localStorage.removeItem(LOGIN_NONCE_KEY); // uso único
+  }catch(e){}
+  if(!auth || !saved || saved.nonce !== auth.nonce || Date.now() - saved.at > LOGIN_NONCE_TTL_MS){
+    setEntryStatus('Não reconheci esse login (ele vale por 10 minutos). Clique em "Entrar com Discord" de novo.');
+    return;
+  }
+  const user = decodeSession(auth.session);
+  if(!user){
+    setEntryStatus('Não foi possível entrar com Discord. Tente de novo.');
+    return;
+  }
+  applyNewLogin(user);
+}
+
+// Logou sem recarregar a página (o caminho normal recarrega e passa pela inicialização).
+function applyNewLogin(user){
+  saveDiscordUser(user);
+  try{ localStorage.setItem('sinal:lastName', user.name); }catch(e){}
+  document.getElementById('nameInput').value = user.name;
+  renderDiscordStatus();
+  loadServerPrefs();
+  renderServersUI();
+  setEntryStatus('');
+  startPresence();
+  startLivesPolling();
+  fetchLives();
+  let asked = true;
+  try{ asked = localStorage.getItem(SERVERS_KEY) !== null; }catch(e){}
+  if(myGuilds().length && !asked) openServersPicker();
+}
+
+function setupAppLogin(){
+  if(!hasAppLogin() || typeof window.sinalElectron.onAuth !== 'function') return;
+  window.sinalElectron.onAuth(consumeAppAuth);
+  window.sinalElectron.takePendingAuth().then((auth) => { if(auth) consumeAppAuth(auth); }).catch(() => {});
+}
+
 // Roda no carregamento da página — detecta se acabamos de voltar do
-// callback do Discord (api/discord-callback.js) via query string.
+// callback do Discord (api/discord-callback.js): a sessão assinada vem no
+// fragmento (#session=…), que o navegador não manda pra servidor nenhum.
 function handleDiscordCallback(){
   const params = new URLSearchParams(window.location.search);
   if(params.get('discord_error')){
     setEntryStatus('Não foi possível entrar com Discord. Tente de novo ou use seu nome normalmente.');
   }
-  const name = params.get('discord_name');
-  const avatar = params.get('discord_avatar');
-  // Só vem preenchido se o Discord ID bater com ADMIN_DISCORD_IDS no
-  // servidor (ver api/discord-callback.js) — é só um indicador local pra UI,
-  // o poder de verdade é conferido de novo no servidor a cada ação (ver
-  // moderateAction()), então não tem como "forjar" isso editando a URL.
-  const adminProof = params.get('discord_admin_proof');
-  if(name){
-    saveDiscordUser({ name, avatar: avatar || null, adminProof: adminProof || null });
-    try{ localStorage.setItem('sinal:lastName', name); }catch(e){}
+  const hash = new URLSearchParams(window.location.hash.replace(/^#/, ''));
+  const sessionToken = hash.get('session');
+  if(sessionToken){
+    const user = decodeSession(sessionToken);
+    if(user){
+      saveDiscordUser(user);
+      try{ localStorage.setItem('sinal:lastName', user.name); }catch(e){}
+    } else {
+      setEntryStatus('Não foi possível entrar com Discord. Tente de novo ou use seu nome normalmente.');
+    }
+  } else if(legacyLoginDropped){
+    setEntryStatus('Atualizamos o login com o Discord — entre de novo pra liberar os servers.');
   }
-  if(params.has('discord_name') || params.has('discord_avatar') || params.has('discord_admin_proof') || params.has('discord_error')){
+  if(sessionToken || params.has('discord_error')){
     const clean = new URL(window.location.href);
-    clean.searchParams.delete('discord_name');
-    clean.searchParams.delete('discord_avatar');
-    clean.searchParams.delete('discord_admin_proof');
     clean.searchParams.delete('discord_error');
     history.replaceState(null, '', clean.pathname + clean.search);
   }
+}
+
+// ---------------- SERVERS NO SINAL (HANDOFF §38/§39) ----------------
+// Os servers do Discord da pessoa (vindos da sessão assinada do login) viram
+// um trilho à esquerda, igual ao Discord: "Início" (sala rápida por código) +
+// os servers que ela escolheu. Cada server tem uma coluna com as salas ao
+// vivo — quem está dentro, quem está transmitindo — e dá pra criar sala nova.
+// Quem é membro de qual server quem diz é o Discord (no login); o servidor
+// confere de novo a cada pedido (api/get-token.js, api/lives.js).
+const SERVER_ROOM_RE = /^s\d{15,21}-[a-z0-9]{6}$/;
+const SERVERS_KEY = 'sinal:servers';       // ids dos servers escolhidos (por dispositivo)
+const SERVER_VIEW_KEY = 'sinal:serverView'; // último lugar aberto: 'home' ou o id de um server
+const MAX_CHOSEN_SERVERS = 15;
+const LIVES_POLL_MS = 15000;               // consulta periódica SEM a conexão de presença
+const LIVES_POLL_ROOM_MS = 120000;         // dentro da call
+const LIVES_POLL_SAFETY_MS = 60000;        // com a presença conectada, a consulta é só rede de segurança
+const TIER_LABEL = { o: 'dono do servidor', a: 'administrador', m: 'gerencia o servidor' };
+
+let chosenServers = [];
+let serverView = 'home';
+let livesData = {};      // { idDoServer: [sala, ...] } — última foto vinda de api/lives
+let livesError = false;
+let livesTimer = null;
+let livesBusy = false;
+
+function isServerRoomName(name){ return SERVER_ROOM_RE.test(name || ''); }
+
+// Ícone do server no CDN do Discord (o CSP já libera cdn.discordapp.com). Só
+// monta a URL se id e hash tiverem o formato certo — vem da sessão, mas é
+// barato não confiar.
+function guildIconUrl(g){
+  if(!g || !/^\d{15,21}$/.test(g.id || '') || !/^[a-z0-9_]{1,40}$/i.test(g.icon || '')) return '';
+  return 'https://cdn.discordapp.com/icons/' + g.id + '/' + g.icon + '.png?size=64';
+}
+
+function guildInitials(name){
+  // ignora ligações ("de", "e"…) pra "Estudos e Café" virar EC e não EE
+  const words = String(name || '?').trim().split(/\s+/).filter((w) => w && !/^(de|do|da|dos|das|e|the|of|&)$/i.test(w));
+  const letters = words.length > 1 ? words[0][0] + words[1][0] : (words[0] || '?').slice(0, 2);
+  return letters.toUpperCase();
+}
+
+function isDiscordAvatarUrl(url){
+  return typeof url === 'string' && /^https:\/\/cdn\.discordapp\.com\/[A-Za-z0-9/_.-]+(\?[A-Za-z0-9=&_-]*)?$/.test(url);
+}
+
+function myGuilds(){ return (discordUser && discordUser.guilds) || []; }
+function guildById(id){ return myGuilds().find((g) => g.id === id) || null; }
+
+function mk(tag, className, text){
+  const node = document.createElement(tag);
+  if(className) node.className = className;
+  if(text !== undefined) node.textContent = text;
+  return node;
+}
+
+// Bolinha redonda com o ícone do server (ou as iniciais, quando não tem).
+function fillGuildIcon(container, g){
+  container.innerHTML = '';
+  const url = guildIconUrl(g);
+  if(url){
+    const img = document.createElement('img');
+    img.src = url;
+    img.alt = '';
+    img.addEventListener('error', () => { container.innerHTML = ''; container.textContent = guildInitials(g.name); });
+    container.appendChild(img);
+  } else {
+    container.textContent = guildInitials(g && g.name);
+  }
+}
+
+function loadServerPrefs(){
+  let ids = [];
+  let view = 'home';
+  try{
+    const raw = localStorage.getItem(SERVERS_KEY);
+    if(raw) ids = JSON.parse(raw);
+    view = localStorage.getItem(SERVER_VIEW_KEY) || 'home';
+  }catch(e){ /* sem localStorage ou dado corrompido: começa vazio */ }
+  chosenServers = Array.isArray(ids) ? ids.filter((id) => typeof id === 'string' && guildById(id)) : [];
+  serverView = chosenServers.includes(view) ? view : 'home';
+}
+
+function saveChosenServers(){
+  try{ localStorage.setItem(SERVERS_KEY, JSON.stringify(chosenServers)); }catch(e){}
+}
+function saveServerView(){
+  try{ localStorage.setItem(SERVER_VIEW_KEY, serverView); }catch(e){}
+}
+
+function guildHasLive(id){
+  return (livesData[id] || []).some((r) => r.participants.length > 0);
+}
+
+function setServerView(view){
+  serverView = view === 'home' || chosenServers.includes(view) ? view : 'home';
+  saveServerView();
+  renderServersUI();
+  startLivesPolling();
+}
+
+function railButton(view, title, content, extraClass){
+  const btn = mk('button', 'srv-rail-btn' + (extraClass ? ' ' + extraClass : '') + (serverView === view ? ' active' : ''));
+  btn.type = 'button';
+  btn.title = title;
+  btn.setAttribute('aria-label', title);
+  btn.dataset.view = view;
+  btn.appendChild(content);
+  if(view !== 'home' && view !== '+' && guildHasLive(view)) btn.appendChild(mk('span', 'srv-live-dot'));
+  return btn;
+}
+
+function renderServersUI(){
+  const layout = document.getElementById('srvLayout');
+  const loggedIn = !!discordUser;
+  const inServer = loggedIn && serverView !== 'home' && !!guildById(serverView);
+  layout.classList.toggle('has-rail', loggedIn);
+  layout.classList.toggle('view-server', inServer);
+  const rail = document.getElementById('srvRail');
+  rail.hidden = !loggedIn;
+  document.getElementById('srvCol').hidden = !inServer;
+  document.getElementById('serverPanel').hidden = !inServer;
+  document.getElementById('homePanel').hidden = inServer;
+  if(!loggedIn) return;
+
+  rail.innerHTML = '';
+  const home = mk('span', 'srv-icon srv-home-icon');
+  home.appendChild(mk('span', 'srv-home-led'));
+  rail.appendChild(railButton('home', 'Início', home));
+  chosenServers.forEach((id) => {
+    const g = guildById(id);
+    if(!g) return;
+    const icon = mk('span', 'srv-icon');
+    fillGuildIcon(icon, g);
+    rail.appendChild(railButton(id, g.name, icon));
+  });
+  rail.appendChild(railButton('+', 'Escolher servidores', mk('span', 'srv-icon srv-add-icon', '+'), 'srv-add'));
+
+  if(inServer) renderServerView(guildById(serverView));
+}
+
+function renderServerView(g){
+  fillGuildIcon(document.getElementById('srvColIcon'), g);
+  fillGuildIcon(document.getElementById('srvHeroIcon'), g);
+  document.getElementById('srvColName').textContent = g.name;
+  document.getElementById('srvHeroName').textContent = g.name;
+  document.getElementById('srvHeroRole').textContent = TIER_LABEL[g.tier] ? 'Você é ' + TIER_LABEL[g.tier] : 'Membro do servidor';
+
+  const rooms = livesData[g.id] || [];
+  document.getElementById('srvLiveCount').textContent = rooms.length ? '· ' + rooms.length + ' ao vivo' : '';
+  const list = document.getElementById('srvRooms');
+  list.innerHTML = '';
+  if(!rooms.length){
+    list.appendChild(mk('div', 'srv-empty', 'Nenhuma sala ao vivo agora. Que tal abrir a primeira?'));
+  }
+  rooms.forEach((r) => list.appendChild(renderRoomRow(r)));
+  document.getElementById('srvFoot').textContent = livesError ? 'Sem conexão com o servidor — tentando de novo…' : '';
+}
+
+function renderRoomRow(r, currentRoom){
+  const row = mk('button', 'srv-room' + (r.room === currentRoom ? ' current' : ''));
+  if(r.room === currentRoom) row.setAttribute('aria-current', 'true');
+  row.type = 'button';
+  row.dataset.room = r.room;
+  const head = mk('span', 'srv-room-head');
+  head.appendChild(mk('span', 'srv-room-icon', r.access === 'open' ? '🔊' : '🔒'));
+  head.appendChild(mk('span', 'srv-room-title', r.title));
+  head.appendChild(mk('span', 'srv-room-count mono', String(r.participants.length)));
+  row.appendChild(head);
+  if(r.participants.length){
+    const people = mk('span', 'srv-people');
+    r.participants.forEach((p) => {
+      const line = mk('span', 'srv-person');
+      const av = mk('span', 'srv-person-avatar');
+      if(isDiscordAvatarUrl(p.avatar)){
+        const img = document.createElement('img');
+        img.src = p.avatar;
+        img.alt = '';
+        av.appendChild(img);
+      } else {
+        av.textContent = guildInitials(p.name);
+      }
+      line.appendChild(av);
+      line.appendChild(mk('span', 'srv-person-name', p.name + (p.admin ? ' 👑' : '')));
+      if(p.screen) line.appendChild(mk('span', 'srv-badge srv-badge-live', 'AO VIVO'));
+      else if(p.camera) line.appendChild(mk('span', 'srv-badge', 'CÂMERA'));
+      people.appendChild(line);
+    });
+    row.appendChild(people);
+  }
+  return row;
+}
+
+// ---- lista de salas ao vivo ----
+// Ponto único de entrada dos dados: applyLives(). A consulta (api/lives) e,
+// depois, o push em tempo real (§39) usam o mesmo caminho.
+function applyLives(guilds){
+  livesData = Object.assign({}, livesData, guilds || {});
+  livesError = false;
+  renderServersUI();
+  renderCallSide();
+}
+
+async function fetchLives(){
+  if(livesBusy || !discordUser || !chosenServers.length) return;
+  livesBusy = true;
+  try{
+    const res = await fetch('/api/lives', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ session: discordUser.session, guilds: chosenServers })
+    });
+    if(res.status === 401){
+      clearDiscordUser();
+      renderServersUI();
+      setEntryStatus('Sua sessão do Discord expirou. Entre com o Discord de novo.');
+      return;
+    }
+    if(!res.ok) throw new Error('lives-' + res.status);
+    const data = await res.json();
+    // Servers pedidos que não vieram = sem sala; troca a foto inteira dos pedidos.
+    const fresh = {};
+    chosenServers.forEach((id) => { fresh[id] = (data.guilds && data.guilds[id]) || []; });
+    applyLives(fresh);
+  }catch(e){
+    livesError = true;
+    renderServersUI();
+  }finally{
+    livesBusy = false;
+  }
+}
+
+function livesPollingAllowed(){
+  return !!discordUser && chosenServers.length > 0 && document.visibilityState === 'visible';
+}
+
+async function pollLives(){
+  clearTimeout(livesTimer);
+  if(!livesPollingAllowed()) return;
+  await fetchLives();
+  clearTimeout(livesTimer);
+  // Na call a lista vem pelo push; a consulta é só rede de segurança (e a bolinha dos outros servers).
+  if(livesPollingAllowed()) livesTimer = setTimeout(pollLives, room ? LIVES_POLL_ROOM_MS : presenceConnected() ? LIVES_POLL_SAFETY_MS : LIVES_POLL_MS);
+}
+
+function startLivesPolling(){
+  clearTimeout(livesTimer);
+  if(livesPollingAllowed()) pollLives();
+}
+
+function stopLivesPolling(){ clearTimeout(livesTimer); }
+
+// ---- coluna de salas dentro da call (fase 2b) ----
+// Dentro da call, a mesma lista de salas fica numa coluna à esquerda (recolhível):
+// dá pra ver quem está em cada sala do servidor e pular de uma pra outra sem
+// passar pela tela inicial. Aberta por padrão em tela larga, fechada em estreita.
+const CALL_SIDE_KEY = 'sinal:callSideOpen';
+let callView = '';       // servidor cujas salas a coluna mostra
+let callSideOpen = true;
+
+function loadCallSidePref(){
+  let v = null;
+  try{ v = localStorage.getItem(CALL_SIDE_KEY); }catch(e){}
+  callSideOpen = v === null ? window.matchMedia('(min-width: 1100px)').matches : v === '1';
+}
+
+function currentRoomGuild(){
+  const m = /^s(\d+)-/.exec(roomCode || '');
+  return m ? m[1] : '';
+}
+
+function renderCallSide(){
+  const side = document.getElementById('callSide');
+  const toggle = document.getElementById('sideToggleBtn');
+  const available = !!room && !!discordUser && chosenServers.length > 0;
+  const open = available && callSideOpen;
+  toggle.hidden = !available;
+  toggle.classList.toggle('active', open);
+  side.hidden = !open;
+  if(!open) return;
+
+  if(!chosenServers.includes(callView)){
+    const g = currentRoomGuild();
+    callView = chosenServers.includes(g) ? g : (chosenServers.includes(serverView) ? serverView : chosenServers[0]);
+  }
+  const rail = document.getElementById('callRail');
+  rail.innerHTML = '';
+  chosenServers.forEach((id) => {
+    const g = guildById(id);
+    if(!g) return;
+    const btn = mk('button', 'call-rail-btn' + (id === callView ? ' active' : ''));
+    btn.type = 'button';
+    btn.title = g.name;
+    btn.setAttribute('aria-label', g.name);
+    btn.dataset.view = id;
+    const icon = mk('span', 'srv-icon');
+    fillGuildIcon(icon, g);
+    btn.appendChild(icon);
+    if(guildHasLive(id)) btn.appendChild(mk('span', 'srv-live-dot'));
+    rail.appendChild(btn);
+  });
+  const g = guildById(callView);
+  document.getElementById('callSideName').textContent = g ? g.name : '';
+  const list = document.getElementById('callRooms');
+  list.innerHTML = '';
+  const rooms = livesData[callView] || [];
+  if(!rooms.length) list.appendChild(mk('div', 'srv-empty', 'Nenhuma sala ao vivo neste servidor.'));
+  rooms.forEach((r) => list.appendChild(renderRoomRow(r, roomCode)));
+}
+
+function toggleCallSide(){
+  callSideOpen = !callSideOpen;
+  try{ localStorage.setItem(CALL_SIDE_KEY, callSideOpen ? '1' : '0'); }catch(e){}
+  renderCallSide();
+}
+
+// Pular de sala sem passar pela tela inicial. Trocar de sala encerra a
+// transmissão/câmera de quem está transmitindo — pergunta antes.
+function hopToRoom(name){
+  if(!name || name === roomCode) return;
+  const sharing = document.getElementById('shareBtn').classList.contains('active-share')
+    || document.getElementById('cameraBtn').classList.contains('active-share');
+  if(sharing && !window.confirm('Você está transmitindo. Trocar de sala vai parar a transmissão. Continuar?')) return;
+  leaveRoom();
+  joinServerRoom(name);
+}
+
+// ---- tempo real (HANDOFF §39) ----
+// Uma conexão leve (só escuta) à sala "presence" do LiveKit. Quando alguém entra,
+// sai, abre ou fecha sala, ou começa/para de transmitir num dos servers
+// escolhidos, o servidor (api/lk-webhook.js) manda a foto nova daquele server
+// por aqui — a lista muda na hora, sem consulta. Se a conexão cair, volta
+// sozinha com espera crescente e a consulta periódica cobre o intervalo.
+const PRESENCE_RETRY_MS = [2000, 5000, 10000, 30000];
+let presenceRoom = null;
+let presenceKey = '';
+let presenceRetry = 0;
+let presenceTimer = null;
+let presenceConnecting = false;
+
+function presenceConnected(){ return !!presenceRoom && presenceRoom.state === 'connected'; }
+
+function handlePresenceData(payload, participant, kind, topic){
+  if(topic !== 'lives') return;
+  let msg;
+  try{ msg = JSON.parse(new TextDecoder().decode(payload)); }catch(e){ return; }
+  if(!msg || typeof msg.guild !== 'string' || !chosenServers.includes(msg.guild)) return;
+  if(msg.refresh){ fetchLives(); return; } // foto grande demais pro pacote: busca inteira
+  if(!Array.isArray(msg.rooms)) return;
+  const rooms = msg.rooms.filter((r) => r && typeof r.room === 'string' && Array.isArray(r.participants));
+  applyLives({ [msg.guild]: rooms });
+}
+
+function stopPresenceRoom(){
+  const old = presenceRoom;
+  presenceRoom = null;
+  presenceKey = '';
+  if(old){ try{ old.disconnect(); }catch(e){} }
+}
+
+function stopPresence(){
+  clearTimeout(presenceTimer);
+  presenceRetry = 0;
+  stopPresenceRoom();
+}
+
+function schedulePresenceRetry(){
+  clearTimeout(presenceTimer);
+  if(!discordUser || !chosenServers.length) return;
+  const wait = PRESENCE_RETRY_MS[Math.min(presenceRetry, PRESENCE_RETRY_MS.length - 1)];
+  presenceRetry++;
+  presenceTimer = setTimeout(startPresence, wait);
+}
+
+async function startPresence(){
+  clearTimeout(presenceTimer);
+  if(!discordUser || !chosenServers.length){ stopPresence(); return; }
+  const key = chosenServers.slice().sort().join(',');
+  if(presenceRoom && presenceKey === key) return;
+  if(presenceConnecting) return;
+  presenceConnecting = true;
+  stopPresenceRoom(); // servers mudaram: fecha a anterior e abre com os novos
+  try{
+    const res = await fetch('/api/get-token', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ mode: 'presence', guilds: chosenServers, session: discordUser.session })
+    });
+    if(res.status === 401){
+      clearDiscordUser();
+      renderServersUI();
+      setEntryStatus('Sua sessão do Discord expirou. Entre com o Discord de novo.');
+      return;
+    }
+    if(!res.ok) throw new Error('presence-token-' + res.status);
+    const data = await res.json();
+    const r = new LivekitClient.Room({ adaptiveStream: false, dynacast: false });
+    r.on(LivekitClient.RoomEvent.DataReceived, handlePresenceData);
+    r.on(LivekitClient.RoomEvent.Reconnected, () => { if(presenceRoom === r) fetchLives(); });
+    r.on(LivekitClient.RoomEvent.Disconnected, () => {
+      if(presenceRoom !== r) return; // fomos nós que fechamos
+      presenceRoom = null;
+      presenceKey = '';
+      schedulePresenceRetry();
+    });
+    await r.connect(data.url, data.token, { autoSubscribe: false });
+    presenceRoom = r;
+    presenceKey = key;
+    presenceRetry = 0;
+    fetchLives(); // sincroniza o que mudou enquanto estava fora
+  }catch(e){
+    schedulePresenceRetry();
+  }finally{
+    presenceConnecting = false;
+  }
+}
+
+// ---- entrar / criar ----
+function joinServerRoom(roomName){
+  getAudioCtx();
+  connectToRoom(roomName, getName(), 'server-join');
+}
+
+function createServerRoom(){
+  if(serverView === 'home' || !guildById(serverView)) return;
+  getAudioCtx();
+  const title = document.getElementById('srvRoomTitle').value;
+  connectToRoom(null, getName(), 'server-create', { guild: serverView, title });
+}
+
+// ---- escolher servers ----
+function renderServersPicker(){
+  const list = document.getElementById('srvPickerList');
+  const q = document.getElementById('srvPickerSearch').value.trim().toLowerCase();
+  list.innerHTML = '';
+  const guilds = myGuilds();
+  if(!guilds.length){
+    list.appendChild(mk('div', 'srv-empty', 'O Discord não devolveu nenhum servidor. Se você entrou em algum agora, use "Atualizar meus servidores".'));
+    return;
+  }
+  const shown = guilds.filter((g) => !q || g.name.toLowerCase().includes(q));
+  if(!shown.length) list.appendChild(mk('div', 'srv-empty', 'Nenhum servidor com esse nome.'));
+  shown.forEach((g) => {
+    const row = mk('label', 'srv-pick-row');
+    const box = document.createElement('input');
+    box.type = 'checkbox';
+    box.checked = chosenServers.includes(g.id);
+    box.addEventListener('change', () => {
+      if(box.checked){
+        if(chosenServers.length >= MAX_CHOSEN_SERVERS){
+          box.checked = false;
+          document.getElementById('srvPickerMsg').textContent = 'Dá pra escolher até ' + MAX_CHOSEN_SERVERS + ' servidores.';
+          return;
+        }
+        chosenServers.push(g.id);
+      } else {
+        chosenServers = chosenServers.filter((id) => id !== g.id);
+        if(serverView === g.id){ serverView = 'home'; saveServerView(); }
+      }
+      document.getElementById('srvPickerMsg').textContent = '';
+      saveChosenServers();
+      renderServersUI();
+      fetchLives();
+    });
+    const icon = mk('span', 'srv-icon srv-icon-sm');
+    fillGuildIcon(icon, g);
+    row.appendChild(box);
+    row.appendChild(icon);
+    row.appendChild(mk('span', 'srv-pick-name', g.name));
+    if(TIER_LABEL[g.tier]) row.appendChild(mk('span', 'srv-pick-tier mono', g.tier === 'o' ? 'dono' : g.tier === 'a' ? 'admin' : 'gerencia'));
+    list.appendChild(row);
+  });
+}
+
+function openServersPicker(){
+  document.getElementById('srvPickerSearch').value = '';
+  renderServersPicker();
+  document.getElementById('srvPickerOverlay').hidden = false;
+  document.getElementById('srvPickerSearch').focus();
+}
+
+function closeServersPicker(){
+  document.getElementById('srvPickerOverlay').hidden = true;
+  saveChosenServers(); // fecha sem escolher nada = guarda "nenhum" e não pergunta de novo sozinho
+  startLivesPolling();
+  startPresence();
+}
+
+function setupServersUI(){
+  loadServerPrefs();
+  renderServersUI();
+
+  document.getElementById('srvRail').addEventListener('click', (e) => {
+    const btn = e.target.closest('.srv-rail-btn');
+    if(!btn) return;
+    if(btn.dataset.view === '+') openServersPicker();
+    else setServerView(btn.dataset.view);
+  });
+  document.getElementById('srvRooms').addEventListener('click', (e) => {
+    const row = e.target.closest('.srv-room');
+    if(row) joinServerRoom(row.dataset.room);
+  });
+  document.getElementById('srvCreateBtn').addEventListener('click', createServerRoom);
+  loadCallSidePref();
+  document.getElementById('sideToggleBtn').addEventListener('click', toggleCallSide);
+  document.getElementById('callRail').addEventListener('click', (e) => {
+    const btn = e.target.closest('.call-rail-btn');
+    if(btn){ callView = btn.dataset.view; renderCallSide(); }
+  });
+  document.getElementById('callRooms').addEventListener('click', (e) => {
+    const row = e.target.closest('.srv-room');
+    if(row) hopToRoom(row.dataset.room);
+  });
+  document.getElementById('srvRoomTitle').addEventListener('keydown', (e) => { if(e.key === 'Enter') createServerRoom(); });
+
+  const overlay = document.getElementById('srvPickerOverlay');
+  document.getElementById('srvPickerClose').addEventListener('click', closeServersPicker);
+  document.getElementById('srvPickerDone').addEventListener('click', closeServersPicker);
+  overlay.addEventListener('click', (e) => { if(e.target === overlay) closeServersPicker(); });
+  document.addEventListener('keydown', (e) => { if(e.key === 'Escape' && !overlay.hidden) closeServersPicker(); });
+  document.getElementById('srvPickerSearch').addEventListener('input', renderServersPicker);
+  // Renova o login em silêncio (prompt=none no Discord) pra puxar a lista de servers de novo.
+  document.getElementById('srvPickerRefresh').addEventListener('click', () => {
+    if(hasAppLogin()) startAppLogin({ refresh: true });
+    else window.location.href = '/api/discord-login?refresh=1';
+  });
+
+  document.addEventListener('visibilitychange', () => {
+    if(document.visibilityState === 'visible'){ startLivesPolling(); startPresence(); } else stopLivesPolling();
+  });
+
+  // Primeira vez logado (nunca escolheu servers): já abre o seletor. Não
+  // atrapalha quem chegou por convite ou voltou de uma recuperação.
+  let asked = true;
+  try{ asked = localStorage.getItem(SERVERS_KEY) !== null; }catch(e){}
+  const params = new URLSearchParams(window.location.search);
+  if(discordUser && myGuilds().length && !asked && !params.has('sala')) openServersPicker();
+  else startLivesPolling();
+  startPresence();
 }
 
 // ---------------- Novidades (patch notes / log de versões) ----------------
@@ -2346,7 +3040,7 @@ async function setupChangelog(){
   let returningUser = false;
   try{
     seen = localStorage.getItem(CHANGELOG_SEEN_KEY);
-    returningUser = ['sinal:lastName', 'sinal:lastRoomCode', 'sinal:shareQuality', 'sinal:shareElectronAudio', 'sinal:discordUser']
+    returningUser = ['sinal:lastName', 'sinal:lastRoomCode', 'sinal:shareQuality', 'sinal:shareElectronAudio', 'sinal:session']
       .some((k) => localStorage.getItem(k) !== null);
   }catch(e){ /* sem localStorage: trata como primeira visita */ }
   if(seen === latest) return;
@@ -2695,6 +3389,8 @@ window.addEventListener('DOMContentLoaded', () => {
   setupGlobalShareShortcut();
   setupSettingsPanel();
   setupReportDialog();
+  setupServersUI();
+  setupAppLogin();
   resumeAfterAppRecovery();
 });
 
@@ -2705,7 +3401,7 @@ window.addEventListener('beforeunload', () => {
 });
 
 // PWA: versão, registro do service worker, detecção de atualização e botão de instalação
-const APP_VERSION = '0.8.51'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
+const APP_VERSION = '0.8.52'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
 // Dentro do Electron, mostra a versão do INSTALADOR (electron/package.json),
 // não a do site — ver preload.js. Fora dele (navegador normal), continua a
 // versão do deploy de sempre.

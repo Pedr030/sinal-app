@@ -1,5 +1,22 @@
 [
   {
+    "id": "2026-10-03-servidores",
+    "date": "2026-10-03",
+    "title": "Servidores do Discord dentro do Sinal",
+    "site": "0.8.52",
+    "app": "0.3.14",
+    "items": [
+      "Escolha quais dos seus servidores do Discord aparecem no Sinal e veja as salas ao vivo de cada um — quem está dentro e quem está transmitindo, como na lista de calls do Discord",
+      "Crie salas dentro de um servidor e entre com um clique; só quem faz parte do servidor vê e entra nas salas dele",
+      "A lista de salas atualiza em tempo real, sem precisar recarregar",
+      "Dentro da call, uma coluna (que dá pra recolher) mostra as outras salas do servidor e deixa pular de sala sem sair",
+      "App: o login com o Discord agora abre o seu navegador (onde você já costuma estar logado) e volta sozinho pro Sinal",
+      "Todo mundo precisa entrar com o Discord de novo uma vez — o login ficou mais seguro (sessão assinada, válida por 7 dias) e o Discord vai pedir também pra ver a lista dos seus servidores (só nomes e permissões)",
+      "Quem usa o Sinal sem Discord continua entrando só com o nome e o código da sala, como antes",
+      "Removido o aviso automático \"fulano abriu uma sala\" no canal do Discord — a lista de salas ao vivo de cada servidor substitui"
+    ]
+  },
+  {
     "id": "2026-10-03-recuperacao-e-relatorio",
     "date": "2026-10-03",
     "title": "Recuperação automática e relatório de problema",
