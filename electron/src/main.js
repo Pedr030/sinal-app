@@ -736,16 +736,32 @@ function setUpdateState(patch){
 function checkForUpdates({ manual = false } = {}){
   if(!app.isPackaged){ setUpdateState({ status: 'dev' }); return; }
   if(manual) manualUpdateCheck = true;
-  // Já baixou antes (e a pessoa disse "Depois"): pedido manual pergunta de novo.
-  if(updateState.status === 'ready'){ if(manual) maybePromptUpdate(); return; }
   if(updateState.status === 'checking' || updateState.status === 'downloading') return;
+  // Já tem uma baixada esperando a hora de perguntar (ex: a pessoa ficou horas numa
+  // call). Pedido manual pergunta na hora, MAS a checagem continua: antes ela parava
+  // aqui e, se saísse uma versão mais nova nesse meio-tempo, o app instalava a velha e
+  // só depois descobria a nova (o amigo na 0.3.12 teve que atualizar duas vezes, 0.3.13
+  // e 0.3.14). Agora ele baixa a mais nova e instala essa direto.
+  const hadReady = updateState.status === 'ready';
+  if(hadReady && manual) maybePromptUpdate();
   lastUpdateCheckAt = Date.now();
-  setUpdateState({ status: 'checking' });
+  if(!hadReady) setUpdateState({ status: 'checking' }); // com uma pronta, o status "pronta" fica até haver outra
   autoUpdater.checkForUpdates().catch((e) => {
     console.error('[sinal-update] falha na checagem:', e);
     manualUpdateCheck = false;
-    setUpdateState({ status: 'error' });
+    setUpdateState(pendingUpdateInfo ? { status: 'ready', percent: null } : { status: 'error' });
   });
+}
+
+// Ao sair da sala com uma atualização esperando: procura de novo ANTES de perguntar
+// (se passou mais de 2 min da última checagem) — se saiu uma mais nova, baixa e
+// pergunta uma vez só, pela mais nova.
+async function promptAfterFreshCheck(){
+  if(pendingUpdateInfo && app.isPackaged && Date.now() - lastUpdateCheckAt > 2 * 60 * 1000){
+    lastUpdateCheckAt = Date.now();
+    try{ await autoUpdater.checkForUpdates(); }catch(e){ console.error('[sinal-update] checagem ao sair da sala falhou:', e); }
+  }
+  maybePromptUpdate();
 }
 
 // Pergunta na hora certa: nunca no meio de uma call (a menos que tenha sido
@@ -753,6 +769,7 @@ function checkForUpdates({ manual = false } = {}){
 // de um jogo em janela/borderless — espera a janela aparecer).
 function maybePromptUpdate(){
   if(!pendingUpdateInfo || updatePromptOpen) return;
+  if(updateState.status === 'downloading') return; // baixando uma mais nova que a pendente: espera ela ('update-downloaded' chama de novo)
   if(updateDismissed && !manualUpdateCheck) return;
   if(inRoom && !manualUpdateCheck) return; // sinal:set-in-room(false) chama de novo ao sair da sala
   if(!mainWindow.isVisible()){
@@ -788,13 +805,16 @@ function setupAutoUpdater(){
   autoUpdater.on('error', (err) => {
     console.error('[sinal-update] erro checando/baixando atualização:', err);
     manualUpdateCheck = false;
-    setUpdateState({ status: 'error', percent: null });
+    // Se já tem uma baixada, ela continua valendo (o erro foi na busca por uma mais nova).
+    setUpdateState(pendingUpdateInfo ? { status: 'ready', percent: null } : { status: 'error', percent: null });
   });
   autoUpdater.on('checking-for-update', () => {
     console.log('[sinal-update] checando por atualização...');
   });
   autoUpdater.on('update-available', (info) => {
     console.log('[sinal-update] atualização disponível:', info.version);
+    // A mesma que já está baixada: não volta pra "baixando" (o arquivo vem do cache).
+    if(pendingUpdateInfo && pendingUpdateInfo.version === info.version) return;
     setUpdateState({ status: 'downloading', version: info.version, percent: 0 });
   });
   autoUpdater.on('download-progress', (progress) => {
@@ -803,6 +823,7 @@ function setupAutoUpdater(){
   autoUpdater.on('update-not-available', () => {
     console.log('[sinal-update] já está na versão mais recente');
     manualUpdateCheck = false;
+    if(pendingUpdateInfo) return; // já tem uma baixada esperando — não some com ela
     setUpdateState({ status: 'latest', version: app.getVersion(), percent: null });
   });
   autoUpdater.on('update-downloaded', (info) => {
@@ -827,7 +848,7 @@ function setupAutoUpdater(){
 ipcMain.on('sinal:set-in-room', (event, value, roomCode) => {
   inRoom = !!value;
   lastRoomCode = inRoom && typeof roomCode === 'string' ? roomCode.slice(0, 64) : null;
-  if(!inRoom) maybePromptUpdate();
+  if(!inRoom) promptAfterFreshCheck();
 });
 
 // ---- Login com Discord pelo navegador padrão (HANDOFF §39, fase 2c) ----

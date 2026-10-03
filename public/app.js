@@ -467,6 +467,10 @@ function enterRoomUI(){
   if(window.sinalElectron && window.sinalElectron.setInRoom) window.sinalElectron.setInRoom(true, roomCode);
   document.getElementById('entryScreen').style.display = 'none';
   document.getElementById('roomScreen').style.display = 'flex';
+  // Sala de SERVER entra-se pela lista do servidor (só quem faz parte vê e entra —
+  // o servidor recusa o resto): não há código nem convite pra copiar, então os
+  // botões somem (classe lida pelo CSS). Sala por código segue como sempre.
+  document.getElementById('roomScreen').classList.toggle('server-room', isServerRoomName(roomCode));
   // Marca a sala ativa pro CSS deixar o rodapé compacto (§ ver style.css) —
   // o texto descritivo do rodapé só faz sentido na tela de entrada.
   document.body.classList.add('in-room');
@@ -2136,6 +2140,7 @@ function leaveRoom(){
   if(titleFlashing){ titleFlashing = false; document.title = ORIGINAL_TITLE; }
 
   document.getElementById('roomScreen').style.display = 'none';
+  document.getElementById('roomScreen').classList.remove('server-room');
   document.getElementById('entryScreen').style.display = 'block';
   document.body.classList.remove('in-room');
   setEntryStatus('');
@@ -2566,13 +2571,22 @@ function renderServerView(g){
   document.getElementById('srvFoot').textContent = livesError ? 'Sem conexão com o servidor — tentando de novo…' : '';
 }
 
+// Ícone de tela (é um app de transmissão de tela, não de voz): vermelho quando alguém da sala está transmitindo.
+const ICON_SCREEN_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>';
+
 function renderRoomRow(r, currentRoom){
   const row = mk('button', 'srv-room' + (r.room === currentRoom ? ' current' : ''));
   if(r.room === currentRoom) row.setAttribute('aria-current', 'true');
   row.type = 'button';
   row.dataset.room = r.room;
   const head = mk('span', 'srv-room-head');
-  head.appendChild(mk('span', 'srv-room-icon', r.access === 'open' ? '🔊' : '🔒'));
+  if(r.access === 'open'){
+    const icon = mk('span', 'srv-room-icon' + (r.participants.some((p) => p.screen) ? ' live' : ''));
+    icon.innerHTML = ICON_SCREEN_SVG; // constante estática acima — nenhum dado de fora entra aqui
+    head.appendChild(icon);
+  } else {
+    head.appendChild(mk('span', 'srv-room-icon', '🔒'));
+  }
   head.appendChild(mk('span', 'srv-room-title', r.title));
   head.appendChild(mk('span', 'srv-room-count mono', String(r.participants.length)));
   row.appendChild(head);
@@ -3401,7 +3415,7 @@ window.addEventListener('beforeunload', () => {
 });
 
 // PWA: versão, registro do service worker, detecção de atualização e botão de instalação
-const APP_VERSION = '0.8.52'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
+const APP_VERSION = '0.8.53'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
 // Dentro do Electron, mostra a versão do INSTALADOR (electron/package.json),
 // não a do site — ver preload.js. Fora dele (navegador normal), continua a
 // versão do deploy de sempre.

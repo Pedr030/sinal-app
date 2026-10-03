@@ -1,5 +1,17 @@
 [
   {
+    "id": "2026-10-03-ajustes-servidores",
+    "date": "2026-10-03",
+    "title": "Ajustes nos servidores e na atualização do app",
+    "site": "0.8.53",
+    "app": "0.3.15",
+    "items": [
+      "Salas de servidor não têm mais código nem convite — a entrada é pela lista do servidor, e só quem está nele entra",
+      "Ícone de tela no lugar do alto-falante nas salas, que fica vermelho quando alguém está transmitindo",
+      "App: se uma atualização já estava baixada e saiu uma mais nova enquanto você estava numa call, ele agora instala a mais nova direto (antes podia pedir pra atualizar duas vezes seguidas)"
+    ]
+  },
+  {
     "id": "2026-10-03-servidores",
     "date": "2026-10-03",
     "title": "Servidores do Discord dentro do Sinal",
