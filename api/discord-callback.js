@@ -26,13 +26,22 @@ export async function GET(request){
     });
   }
 
+  // Login pedido pelo app desktop: o `state` é "app.<nonce>" (ver api/discord-login.js).
+  // Nesse caso o resultado não volta pra esta aba — vai pra /login-app.html, que
+  // entrega a sessão ao app pelo protocolo sinal://auth (mesma ideia da sessão no
+  // fragmento: não passa por servidor/log).
+  const rawState = url.searchParams.get('state') || '';
+  const appMatch = /^app\.([a-f0-9]{32})$/.exec(rawState);
+  const appNonce = appMatch ? appMatch[1] : '';
+  const fail = () => (appNonce ? Response.redirect(url.origin + '/login-app.html#error=1', 302) : redirectTo('?discord_error=1'));
+
   const code = url.searchParams.get('code');
-  if(!code) return redirectTo('?discord_error=1');
+  if(!code) return fail();
 
   const redirectUri = `${url.origin}/api/discord-callback`;
   // "state" veio do discord-login.js — é o código de sala que a pessoa já
   // tinha digitado antes de clicar em "Entrar com Discord", se tinha.
-  const sala = (url.searchParams.get('state') || '').trim().toUpperCase().slice(0, 32);
+  const sala = appNonce ? '' : rawState.trim().toUpperCase().slice(0, 32);
 
   try{
     const tokenRes = await fetch('https://discord.com/api/oauth2/token', {
@@ -69,12 +78,14 @@ export async function GET(request){
     const adminIds = (process.env.ADMIN_DISCORD_IDS || '').split(',').map((s) => s.trim()).filter(Boolean);
     const session = buildSession({ profile, guilds, adminIds, secret: clientSecret });
 
+    if(appNonce) return Response.redirect(url.origin + '/login-app.html#session=' + session + '&nonce=' + appNonce, 302);
+
     const dest = new URL(url.origin + '/');
     if(sala) dest.searchParams.set('sala', sala);
     dest.hash = 'session=' + session;
     return Response.redirect(dest.toString(), 302);
   }catch(e){
     console.error('Login com Discord falhou:', e && e.message, e);
-    return redirectTo('?discord_error=1');
+    return fail();
   }
 }

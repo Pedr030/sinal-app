@@ -91,3 +91,52 @@ test('callback: sem code, ou Discord recusando o code: volta com ?discord_error=
   assert.equal(loc.searchParams.get('discord_error'), '1');
   assert.equal(loc.hash, '');
 });
+
+// ---------- login pedido pelo app desktop (HANDOFF §39, fase 2c) ----------
+const NONCE = 'a1b2c3d4e5f60718293a4b5c6d7e8f90';
+
+test('login do app: o nonce vai no state ("app.<nonce>") e a sala digitada é ignorada', async () => {
+  const res = await login(new Request(`https://sinal.test/api/discord-login?client=app&nonce=${NONCE}&sala=ABC123`));
+  assert.equal(new URL(res.headers.get('location')).searchParams.get('state'), 'app.' + NONCE);
+});
+
+test('login do app: com refresh=1 também usa prompt=none', async () => {
+  const res = await login(new Request(`https://sinal.test/api/discord-login?client=app&nonce=${NONCE}&refresh=1`));
+  assert.equal(new URL(res.headers.get('location')).searchParams.get('prompt'), 'none');
+});
+
+test('login do app: sem nonce ou com nonce fora do formato é recusado (400)', async () => {
+  for(const q of ['client=app', 'client=app&nonce=abc', 'client=app&nonce=' + NONCE.toUpperCase() + 'x', 'client=app&nonce=a%26b']){
+    const res = await login(new Request('https://sinal.test/api/discord-login?' + q));
+    assert.equal(res.status, 400, q);
+  }
+});
+
+test('callback do app: vai pra /login-app.html (não pra home), sessão e nonce no FRAGMENTO', async () => {
+  fakeDiscord({ profile: { id: '100000000000000001', username: 'u', global_name: 'Fulano', avatar: 'h' }, guilds: [{ id: '1', name: 'G', icon: '', owner: true, permissions: '0' }] });
+  const res = await cb('code=xyz&state=app.' + NONCE);
+  const loc = new URL(res.headers.get('location'));
+  assert.equal(res.status, 302);
+  assert.equal(loc.pathname, '/login-app.html');
+  assert.equal(loc.search, '');
+  const hash = new URLSearchParams(loc.hash.replace(/^#/, ''));
+  assert.equal(hash.get('nonce'), NONCE);
+  assert.equal(verifySession(hash.get('session'), SECRET).name, 'Fulano');
+});
+
+test('callback do app: falhas (sem code, Discord recusando) vão pra /login-app.html#error=1, sem sessão', async () => {
+  const noCode = new URL((await cb('state=app.' + NONCE)).headers.get('location'));
+  assert.equal(noCode.pathname, '/login-app.html');
+  assert.equal(noCode.hash, '#error=1');
+  fakeDiscord({ profile: {}, guilds: [], tokenStatus: 400 });
+  const refused = new URL((await cb('code=ruim&state=app.' + NONCE)).headers.get('location'));
+  assert.equal(refused.pathname, '/login-app.html');
+  assert.equal(refused.hash, '#error=1');
+});
+
+test('callback: state que só PARECE do app (nonce inválido) é tratado como código de sala comum', async () => {
+  fakeDiscord({ profile: { id: '100000000000000001', username: 'u' }, guilds: [] });
+  const loc = new URL((await cb('code=xyz&state=app.nao-e-hex')).headers.get('location'));
+  assert.equal(loc.pathname, '/');
+  assert.ok(loc.hash.startsWith('#session='));
+});

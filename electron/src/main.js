@@ -12,7 +12,8 @@
 //  4. No Windows não existe seletor nativo pro Electron (useSystemPicker só
 //     funciona no macOS 15+), então a gente mostra nosso próprio seletor
 //     (picker.html) com os thumbnails do desktopCapturer.
-const { app, BrowserWindow, Tray, Menu, session, desktopCapturer, ipcMain, nativeImage, globalShortcut, screen, crashReporter } = require('electron');
+const { app, BrowserWindow, Tray, Menu, session, desktopCapturer, ipcMain, nativeImage, globalShortcut, screen, crashReporter, shell } = require('electron');
+const { buildLoginUrl, parseAuthUrl } = require('./auth-url');
 const path = require('node:path');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -829,6 +830,41 @@ ipcMain.on('sinal:set-in-room', (event, value, roomCode) => {
   if(!inRoom) maybePromptUpdate();
 });
 
+// ---- Login com Discord pelo navegador padrão (HANDOFF §39, fase 2c) ----
+// O site pede (sinal:open-login) → abrimos o navegador na URL do PRÓPRIO Sinal
+// (montada aqui, o site só fornece o nonce) → depois do login o navegador chama
+// sinal://auth?session=…&nonce=… → entregamos ao site, que confere o nonce.
+let pendingAuth = null;
+
+function deliverAuth(auth){
+  if(!mainWindow || mainWindow.isDestroyed()){ pendingAuth = auth; return; }
+  if(mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+  if(mainWindow.webContents.isLoading()){ pendingAuth = auth; return; } // o site pega ao carregar
+  mainWindow.webContents.send('sinal:auth', auth);
+}
+
+ipcMain.handle('sinal:open-login', async (event, nonce, options) => {
+  const target = buildLoginUrl(SINAL_URL, nonce, { refresh: !!(options && options.refresh) });
+  if(!target) return false;
+  // Só nos testes em modo dev (app não empacotado): grava a URL em vez de abrir o navegador de verdade.
+  if(!app.isPackaged && process.env.SINAL_TEST_LOGIN_FILE){
+    require('fs').writeFileSync(process.env.SINAL_TEST_LOGIN_FILE, target);
+    return true;
+  }
+  try{ await shell.openExternal(target); return true; }catch(e){
+    console.error('[sinal] não consegui abrir o navegador pro login:', e && e.message);
+    return false;
+  }
+});
+
+ipcMain.handle('sinal:take-pending-auth', () => {
+  const auth = pendingAuth;
+  pendingAuth = null;
+  return auth;
+});
+
 // Avisos do site pro registro (início/fim/troca de transmissão etc).
 ipcMain.on('sinal:log', (event, message) => {
   if(typeof message === 'string') writeLog('site', [message.slice(0, 600)]);
@@ -943,6 +979,8 @@ app.whenReady().then(() => {
   // nele antes de criar a janela, pra já abrir direto na sala certa em vez
   // de abrir vazio e só depois navegar.
   const launchUrl = process.argv.find((arg) => arg.startsWith('sinal://'));
+  const launchAuth = parseAuthUrl(launchUrl);
+  if(launchAuth) pendingAuth = launchAuth; // o site pega assim que carregar (sinal:take-pending-auth)
   // `--hidden` só vem da entrada de "iniciar com o Windows" — abrir pelo
   // atalho/menu iniciar nunca tem, então nesse caso a janela aparece
   // normal mesmo com "minimizado" ligado.
@@ -1012,6 +1050,8 @@ app.on('second-instance', (event, commandLine) => {
     mainWindow.focus();
   }
   const url = commandLine.find((arg) => arg.startsWith('sinal://'));
+  const auth = parseAuthUrl(url);
+  if(auth){ deliverAuth(auth); return; }
   const code = extractRoomCodeFromProtocolUrl(url);
   if(code && mainWindow){
     mainWindow.loadURL(`${SINAL_URL}/?sala=${encodeURIComponent(code)}`);

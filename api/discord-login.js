@@ -27,13 +27,22 @@ export async function GET(request){
   // digitado um antes de clicar em "Entrar com Discord"), pra não se perder
   // no vai-e-volta com o Discord.
   const sala = (url.searchParams.get('sala') || '').trim().toUpperCase().slice(0, 32);
+  // Login pedido pelo APP DESKTOP (HANDOFF §39, fase 2c): o app abre o navegador
+  // padrão aqui com um nonce que ele mesmo gerou; ele vai no `state` e volta no
+  // callback, que devolve a sessão pro app por sinal://auth. Sem nonce válido, 400.
+  const fromApp = url.searchParams.get('client') === 'app';
+  const nonce = (url.searchParams.get('nonce') || '').toLowerCase();
+  if(fromApp && !/^[a-f0-9]{32}$/.test(nonce)){
+    return new Response('Pedido de login do app inválido.', { status: 400, headers: { 'content-type': 'text/plain; charset=utf-8' } });
+  }
 
   const authorizeUrl = new URL('https://discord.com/oauth2/authorize');
   authorizeUrl.searchParams.set('client_id', clientId);
   authorizeUrl.searchParams.set('redirect_uri', redirectUri);
   authorizeUrl.searchParams.set('response_type', 'code');
   authorizeUrl.searchParams.set('scope', 'identify guilds');
-  if(sala) authorizeUrl.searchParams.set('state', sala);
+  if(fromApp) authorizeUrl.searchParams.set('state', 'app.' + nonce);
+  else if(sala) authorizeUrl.searchParams.set('state', sala);
   // "Atualizar meus servidores": renova o login sem tela de consentimento
   // (se a pessoa já autorizou, o Discord devolve o code direto).
   if(url.searchParams.get('refresh') === '1') authorizeUrl.searchParams.set('prompt', 'none');

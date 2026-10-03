@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SINAL — voltando pro app</title>
+<meta name="robots" content="noindex">
+<link rel="icon" href="favicon.ico" sizes="any">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=JetBrains+Mono:wght@400;500;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<!-- Página de retorno do login com Discord feito pelo NAVEGADOR PADRÃO a pedido do app desktop
+     (HANDOFF §39, fase 2c): api/discord-callback.js manda pra cá com a sessão no fragmento
+     (#session=…&nonce=…) e o script abaixo entrega pro app pelo protocolo sinal://auth.
+     Script em arquivo próprio (a CSP do site não aceita script inline). -->
+<main>
+  <section id="entryScreen">
+    <div class="panel login-app-panel">
+      <div class="eyebrow mono" id="laEyebrow">Login com Discord</div>
+      <h1 class="login-app-title" id="laTitle">Voltando pro Sinal…</h1>
+      <p class="hint" id="laText">Se o navegador perguntar, clique em <b>Abrir Sinal</b>.</p>
+      <a class="btn-link login-app-open" id="laOpen" hidden>Abrir o Sinal</a>
+    </div>
+  </section>
+</main>
+<script src="login-app.js"></script>
+</body>
+</html>

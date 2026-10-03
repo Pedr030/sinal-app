@@ -2301,8 +2301,84 @@ function renderDiscordStatus(){
 // código de sala já digitado (se tiver algum), pra não se perder no
 // vai-e-volta do login.
 function loginWithDiscord(){
+  // App desktop v0.3.14+: o login acontece no navegador padrão (onde a pessoa já
+  // costuma estar logada no Discord) e volta pelo sinal://auth — ver "Login
+  // pelo navegador" abaixo. No navegador comum (e no app antigo) segue na mesma aba.
+  if(hasAppLogin()){ startAppLogin(); return; }
   const sala = document.getElementById('joinCodeInput').value.trim().toUpperCase();
   window.location.href = '/api/discord-login' + (sala ? ('?sala=' + encodeURIComponent(sala)) : '');
+}
+
+// ---------------- Login pelo navegador (app desktop, HANDOFF §39 fase 2c) ----------------
+// O app gera um NONCE aleatório, guarda aqui e abre o navegador padrão no login do
+// Discord levando só o nonce. A sessão volta por sinal://auth?session=…&nonce=… e só
+// é aceita se o nonce for exatamente o que geramos (e ainda dentro de 10 minutos) —
+// um link sinal://auth forjado por outra página não consegue logar ninguém numa
+// conta alheia. A sessão em si é validada pelo servidor a cada uso (assinatura).
+const LOGIN_NONCE_KEY = 'sinal:loginNonce';
+const LOGIN_NONCE_TTL_MS = 10 * 60 * 1000;
+
+function hasAppLogin(){
+  return !!(window.sinalElectron && typeof window.sinalElectron.openLogin === 'function');
+}
+
+function newLoginNonce(){
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+async function startAppLogin(options){
+  const nonce = newLoginNonce();
+  try{ localStorage.setItem(LOGIN_NONCE_KEY, JSON.stringify({ nonce, at: Date.now() })); }catch(e){}
+  setEntryStatus('Abrindo o navegador pra você entrar com o Discord…');
+  let opened = false;
+  try{ opened = await window.sinalElectron.openLogin(nonce, { refresh: !!(options && options.refresh) }); }catch(e){}
+  setEntryStatus(opened
+    ? 'Entre com o Discord no navegador que abriu — quando terminar, o Sinal te traz de volta sozinho.'
+    : 'Não consegui abrir o navegador. Tente de novo.');
+}
+
+// Chegou a sessão pelo sinal://auth (ver main.js: sinal:auth / sinal:take-pending-auth).
+function consumeAppAuth(auth){
+  let saved = null;
+  try{
+    saved = JSON.parse(localStorage.getItem(LOGIN_NONCE_KEY) || 'null');
+    localStorage.removeItem(LOGIN_NONCE_KEY); // uso único
+  }catch(e){}
+  if(!auth || !saved || saved.nonce !== auth.nonce || Date.now() - saved.at > LOGIN_NONCE_TTL_MS){
+    setEntryStatus('Não reconheci esse login (ele vale por 10 minutos). Clique em "Entrar com Discord" de novo.');
+    return;
+  }
+  const user = decodeSession(auth.session);
+  if(!user){
+    setEntryStatus('Não foi possível entrar com Discord. Tente de novo.');
+    return;
+  }
+  applyNewLogin(user);
+}
+
+// Logou sem recarregar a página (o caminho normal recarrega e passa pela inicialização).
+function applyNewLogin(user){
+  saveDiscordUser(user);
+  try{ localStorage.setItem('sinal:lastName', user.name); }catch(e){}
+  document.getElementById('nameInput').value = user.name;
+  renderDiscordStatus();
+  loadServerPrefs();
+  renderServersUI();
+  setEntryStatus('');
+  startPresence();
+  startLivesPolling();
+  fetchLives();
+  let asked = true;
+  try{ asked = localStorage.getItem(SERVERS_KEY) !== null; }catch(e){}
+  if(myGuilds().length && !asked) openServersPicker();
+}
+
+function setupAppLogin(){
+  if(!hasAppLogin() || typeof window.sinalElectron.onAuth !== 'function') return;
+  window.sinalElectron.onAuth(consumeAppAuth);
+  window.sinalElectron.takePendingAuth().then((auth) => { if(auth) consumeAppAuth(auth); }).catch(() => {});
 }
 
 // Roda no carregamento da página — detecta se acabamos de voltar do
@@ -2853,7 +2929,10 @@ function setupServersUI(){
   document.addEventListener('keydown', (e) => { if(e.key === 'Escape' && !overlay.hidden) closeServersPicker(); });
   document.getElementById('srvPickerSearch').addEventListener('input', renderServersPicker);
   // Renova o login em silêncio (prompt=none no Discord) pra puxar a lista de servers de novo.
-  document.getElementById('srvPickerRefresh').addEventListener('click', () => { window.location.href = '/api/discord-login?refresh=1'; });
+  document.getElementById('srvPickerRefresh').addEventListener('click', () => {
+    if(hasAppLogin()) startAppLogin({ refresh: true });
+    else window.location.href = '/api/discord-login?refresh=1';
+  });
 
   document.addEventListener('visibilitychange', () => {
     if(document.visibilityState === 'visible'){ startLivesPolling(); startPresence(); } else stopLivesPolling();
@@ -3311,6 +3390,7 @@ window.addEventListener('DOMContentLoaded', () => {
   setupSettingsPanel();
   setupReportDialog();
   setupServersUI();
+  setupAppLogin();
   resumeAfterAppRecovery();
 });
 

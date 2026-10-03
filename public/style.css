@@ -823,3 +823,9 @@ footer .version{margin-top:12px; font-size:10.5px; letter-spacing:1.5px; color:#
     box-shadow:0 12px 40px rgba(0,0,0,.6);
   }
 }
+
+/* ---------- /login-app.html — retorno do login feito no navegador (HANDOFF §39, fase 2c) ---------- */
+.login-app-panel{ text-align:center; }
+.login-app-title{ font-family:'Bebas Neue', sans-serif; font-size:34px; letter-spacing:1.5px; font-weight:400; margin:10px 0 6px; }
+.login-app-open{ display:inline-block; margin-top:20px; background:var(--tune); color:#1a1200; font-weight:700; padding:12px 22px; border-radius:var(--radius); text-decoration:none; }
+.login-app-open[hidden]{ display:none; }

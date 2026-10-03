@@ -85,3 +85,13 @@ test('isDiscordAvatarUrl: só imagens do CDN do Discord', () => {
   assert.equal(serverHelpers.isDiscordAvatarUrl('https://cdn.discordapp.com/a" onerror="x'), false);
   assert.equal(serverHelpers.isDiscordAvatarUrl(undefined), false);
 });
+
+// ---------- login pelo navegador no app desktop (HANDOFF §39, fase 2c) ----------
+const newLoginNonce = new Function(extractFunction(appJs, 'newLoginNonce') + '; return newLoginNonce;')();
+
+test('newLoginNonce: 32 hex minúsculos (o formato que o servidor e o app exigem) e diferente a cada vez', () => {
+  const a = newLoginNonce();
+  const b = newLoginNonce();
+  assert.match(a, /^[a-f0-9]{32}$/);
+  assert.notEqual(a, b);
+});
