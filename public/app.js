@@ -1770,7 +1770,7 @@ function addTile(id, name, stream){
       <button type="button" class="ctl-btn mute-btn" title="Mutar/desmutar">${ICON_VOLUME}</button>
       <input type="range" class="vol-slider" min="0" max="100" value="100" title="Volume">
       <button type="button" class="ctl-btn hide-btn" title="Parar de assistir">${ICON_EYE_OFF}</button>
-      ${discordUser && discordUser.admin ? `
+      ${owner && canModerateParticipant(owner) ? `
       <button type="button" class="ctl-btn mod-btn" title="Opções de moderação">${ICON_DOTS}</button>
       <div class="mod-menu">
         <button type="button" class="mod-menu-item">${id.endsWith(':cam') ? 'Desligar câmera' : 'Desligar tela'}</button>
@@ -1926,12 +1926,50 @@ function updateStageVisibility(){
   document.getElementById('filmstrip').style.display = (total - pinnedOrder.length) > 0 ? 'flex' : 'none';
 }
 
-// ---------------- MODERAÇÃO (admin fixo via Discord) ----------------
-// Só existe UI de moderação quando discordUser.admin está presente
-// (indicador local, cosmético). O poder de verdade é conferido de novo aqui
-// no servidor a cada chamada (api/moderate.js, via TokenVerifier + grant
-// roomAdmin do myAccessToken) — editar isso no localStorage/na URL não dá
-// poder nenhum de verdade a ninguém.
+// ---------------- MODERAÇÃO (admin do Sinal e admins de servidor) ----------------
+// A UI de moderação aparece pra quem é moderador pelo PRÓPRIO token do LiveKit
+// (admin do Sinal = grant roomAdmin em qualquer sala; dono/administrador/"gerencia o
+// servidor" = nível assinado no metadata, só nas salas do próprio servidor — ver
+// api/get-token.js) e só nos participantes que estão ABAIXO dele
+// na hierarquia (admin do Sinal > dono > administrador > gerencia). É só indicador local,
+// cosmético: o poder de verdade é conferido de novo no servidor a cada ação
+// (api/moderate.js: TokenVerifier + grant + hierarquia) — editar isso no navegador não dá
+// poder nenhum a ninguém.
+
+// Mesma regra de lib/rooms.js (duplicada de propósito: o site não tem build, não importa módulo).
+function moderationRank(meta){
+  if(!meta) return 9;
+  if(meta.isAdmin) return 0;
+  return ({ o: 1, a: 2, m: 3 })[meta.tier] || 9;
+}
+function canModerateTarget(callerMeta, targetMeta){
+  const caller = moderationRank(callerMeta);
+  if(caller === 0) return true;
+  return caller < moderationRank(targetMeta);
+}
+
+// Lê o conteúdo (sem conferir assinatura — isso é do servidor) do token do LiveKit da sala atual.
+function myTokenClaims(){
+  try{
+    const payload = myAccessToken.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
+    return JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(payload), (c) => c.charCodeAt(0))));
+  }catch(e){
+    return null;
+  }
+}
+
+function canModerateParticipant(p){
+  if(!myAccessToken || !room || !p || p === room.localParticipant) return false;
+  const claims = myTokenClaims();
+  if(!claims || !claims.video) return false;
+  let myMeta = null;
+  try{ myMeta = JSON.parse(claims.metadata || ''); }catch(e){}
+  // Mesma regra de isModeratorToken (lib/rooms.js): admin do Sinal (roomAdmin) ou nível de
+  // servidor assinado no token, só na sala de servidor daquele mesmo guild.
+  const staff = !!(myMeta && ['o', 'a', 'm'].includes(myMeta.tier) && myMeta.guild && myMeta.guild === currentRoomGuild());
+  if(claims.video.roomAdmin !== true && !staff) return false;
+  return canModerateTarget(myMeta, participantMeta(p));
+}
 function toggleModMenu(menu){
   const wasOpen = menu.classList.contains('open');
   document.querySelectorAll('.mod-menu.open').forEach((m) => m.classList.remove('open'));
@@ -1952,7 +1990,12 @@ async function moderateAction(action, targetIdentity, trackSid){
     });
     const data = await res.json().catch(() => ({}));
     if(!res.ok){
-      setRoomStatus('Ação de moderação falhou: ' + (data.error || res.status), true);
+      const texts = {
+        'sem-permissao-sobre-alvo': 'Você não pode moderar essa pessoa.',
+        'sem-permissao': 'Você não tem permissão pra isso nesta sala.',
+        'participante-nao-encontrado': 'Essa pessoa já saiu da sala.'
+      };
+      setRoomStatus(texts[data.error] || 'Não foi possível concluir essa ação. Tente de novo.', true);
     }
   }catch(e){
     console.error('[sinal] moderateAction erro de rede:', e);
@@ -2027,7 +2070,6 @@ function renderRosterPanel(){
   const { Track } = LivekitClient;
   const list = document.getElementById('rosterList');
   const all = [room.localParticipant, ...room.remoteParticipants.values()];
-  const viewerIsAdmin = !!(discordUser && discordUser.admin);
   // Montado via DOM (e não por string de innerHTML) pelo mesmo motivo de
   // renderAvatars(): nome, identity e avatarUrl vêm de outros participantes.
   // De quebra, o botão de expulsar não precisa mais carregar data-identity/
@@ -2074,7 +2116,7 @@ function renderRosterPanel(){
     }
     rowEl.appendChild(info);
 
-    if(viewerIsAdmin && !isYou){
+    if(canModerateParticipant(p)){
       const kickBtn = document.createElement('button');
       kickBtn.type = 'button';
       kickBtn.className = 'roster-kick-btn';
@@ -3433,7 +3475,7 @@ window.addEventListener('beforeunload', () => {
 });
 
 // PWA: versão, registro do service worker, detecção de atualização e botão de instalação
-const APP_VERSION = '0.8.54'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
+const APP_VERSION = '0.8.55'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
 // Dentro do Electron, mostra a versão do INSTALADOR (electron/package.json),
 // não a do site — ver preload.js. Fora dele (navegador normal), continua a
 // versão do deploy de sempre.

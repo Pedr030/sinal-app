@@ -1,5 +1,14 @@
 [
   {
+    "id": "2026-10-03-moderacao-servidores",
+    "date": "2026-10-03",
+    "title": "Moderação nos servidores",
+    "site": "0.8.55",
+    "items": [
+      "Donos e administradores de servidor agora podem moderar as salas do próprio servidor: expulsar alguém ou desligar a transmissão. Cada cargo só modera quem está abaixo dele."
+    ]
+  },
+  {
     "id": "2026-10-03-codigo-da-ultima-sala",
     "date": "2026-10-03",
     "title": "Correções",

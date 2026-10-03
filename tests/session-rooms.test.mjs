@@ -9,7 +9,7 @@ import {
 } from '../lib/session.js';
 import {
   parseServerRoom, newServerRoomName, cleanTitle, buildRoomMetadata, parseRoomMetadata,
-  canModerate, canEnterPrivate, responsibleOf
+  canModerate, canEnterPrivate, responsibleOf, moderationRank, canModerateTarget, isModeratorToken
 } from '../lib/rooms.js';
 
 const SECRET = 'segredo-de-teste';
@@ -157,4 +157,47 @@ test('responsável: o criador se estiver, senão quem entrou primeiro; saída em
   assert.equal(responsibleOf(meta, [p('a', 'x', 10)]).identity, 'a');                                  // sobrou um só
   assert.equal(responsibleOf(meta, []), null);                                                          // sala vazia some
   assert.equal(responsibleOf(null, [p('a', 'x', 1)]).identity, 'a');                                    // sala sem metadados
+});
+
+// ---------- hierarquia de moderação (HANDOFF §41) ----------
+
+test('ranking: admin do Sinal > dono > administrador > gerencia > resto', () => {
+  const r = (meta) => moderationRank(meta);
+  assert.ok(r({ isAdmin: true }) < r({ tier: 'o' }));
+  assert.ok(r({ tier: 'o' }) < r({ tier: 'a' }));
+  assert.ok(r({ tier: 'a' }) < r({ tier: 'm' }));
+  assert.ok(r({ tier: 'm' }) < r({ tier: 'x' }));
+  assert.equal(r({ tier: 'x' }), r(null));
+  assert.equal(r({ isAdmin: true, tier: 'm' }), 0); // admin do Sinal vale mais que qualquer cargo de servidor
+});
+
+test('hierarquia: só modera quem está ESTRITAMENTE abaixo; o admin do Sinal modera qualquer um e ninguém modera ele', () => {
+  const sinal = { isAdmin: true }, dono = { tier: 'o' }, admin = { tier: 'a' }, gerente = { tier: 'm' }, comum = { tier: 'x' }, visitante = null;
+  const pode = (a, b) => canModerateTarget(a, b);
+  // o admin do Sinal expulsa todo mundo (inclusive outro admin do Sinal)
+  for(const alvo of [dono, admin, gerente, comum, visitante, sinal]) assert.equal(pode(sinal, alvo), true);
+  // dono: modera admin, gerente e comum — NÃO o admin do Sinal, nem outro dono
+  assert.deepEqual([admin, gerente, comum, visitante].map((a) => pode(dono, a)), [true, true, true, true]);
+  assert.equal(pode(dono, sinal), false);
+  assert.equal(pode(dono, dono), false);
+  // administrador: modera gerente e comum — NÃO dono, outro admin, nem o admin do Sinal
+  assert.deepEqual([gerente, comum].map((a) => pode(admin, a)), [true, true]);
+  assert.deepEqual([dono, admin, sinal].map((a) => pode(admin, a)), [false, false, false]);
+  // gerencia: só comum
+  assert.equal(pode(gerente, comum), true);
+  assert.deepEqual([dono, admin, gerente, sinal].map((a) => pode(gerente, a)), [false, false, false, false]);
+  // membro comum e visitante não moderam ninguém
+  for(const alvo of [dono, admin, gerente, comum, sinal]){ assert.equal(pode(comum, alvo), false); assert.equal(pode(visitante, alvo), false); }
+});
+
+test('quem é moderador pelo token: admin do Sinal (roomAdmin) em qualquer sala; staff só na sala de servidor do próprio guild', () => {
+  const room = 's111111111111111111-abc123';
+  assert.equal(isModeratorToken({ video: { room, roomAdmin: true }, metadata: null }, room), true);
+  assert.equal(isModeratorToken({ video: { room: 'ABC123', roomAdmin: true }, metadata: null }, 'ABC123'), true); // sala por código
+  for(const tier of ['o', 'a', 'm']) assert.equal(isModeratorToken({ video: { room }, metadata: { tier, guild: '111111111111111111' } }, room), true, tier);
+  assert.equal(isModeratorToken({ video: { room }, metadata: { tier: 'x', guild: '111111111111111111' } }, room), false);
+  assert.equal(isModeratorToken({ video: { room }, metadata: { tier: 'o', guild: '222222222222222222' } }, room), false); // dono de OUTRO servidor
+  assert.equal(isModeratorToken({ video: { room: 'outra' , roomAdmin: true }, metadata: null }, room), false);               // token de outra sala
+  assert.equal(isModeratorToken({ video: { room: 'ABC123' }, metadata: { tier: 'o', guild: '111111111111111111' } }, 'ABC123'), false); // staff em sala por código
+  assert.equal(isModeratorToken({ video: null, metadata: null }, room), false);
 });

@@ -5,6 +5,11 @@
 // uma segunda credencial) — TokenVerifier confirma a assinatura e o grant
 // antes de qualquer coisa rodar.
 import { RoomServiceClient, TokenVerifier } from 'livekit-server-sdk';
+import { canModerateTarget, isModeratorToken } from '../lib/rooms.js';
+
+function parseMeta(raw){
+  try{ return JSON.parse(raw || ''); }catch(e){ return null; }
+}
 
 export async function POST(request){
   const apiKey = process.env.LIVEKIT_API_KEY;
@@ -51,7 +56,9 @@ export async function POST(request){
       headers: { 'content-type': 'application/json' }
     });
   }
-  if(!claims.video || claims.video.roomAdmin !== true || claims.video.room !== room){
+  // Admin do Sinal (grant roomAdmin) ou dono/administrador/"gerencia" do servidor dessa sala
+  // (nível assinado no metadata do token) — ver isModeratorToken em lib/rooms.js.
+  if(!isModeratorToken({ video: claims.video, metadata: parseMeta(claims.metadata) }, room)){
     return new Response(JSON.stringify({ error: 'sem-permissao' }), {
       status: 403,
       headers: { 'content-type': 'application/json' }
@@ -61,6 +68,24 @@ export async function POST(request){
   try{
     const roomServiceUrl = livekitUrl.replace(/^wss:\/\//, 'https://').replace(/^ws:\/\//, 'http://');
     const roomService = new RoomServiceClient(roomServiceUrl, apiKey, apiSecret);
+
+    // Hierarquia (HANDOFF §41): ser moderador não basta — só dá pra moderar quem
+    // está abaixo (admin do Sinal > dono > administrador > gerencia o servidor). O nível de
+    // cada um vem do metadata gravado pelo get-token (sessão assinada), não do cliente.
+    const people = await roomService.listParticipants(room);
+    const target = people.find((p) => p.identity === targetIdentity);
+    if(!target){
+      return new Response(JSON.stringify({ error: 'participante-nao-encontrado' }), {
+        status: 404,
+        headers: { 'content-type': 'application/json' }
+      });
+    }
+    if(!canModerateTarget(parseMeta(claims.metadata), parseMeta(target.metadata))){
+      return new Response(JSON.stringify({ error: 'sem-permissao-sobre-alvo' }), {
+        status: 403,
+        headers: { 'content-type': 'application/json' }
+      });
+    }
 
     if(action === 'kick'){
       await roomService.removeParticipant(room, targetIdentity);

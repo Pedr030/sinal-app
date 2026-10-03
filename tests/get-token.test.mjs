@@ -194,14 +194,21 @@ test('server-join numa sala aberta do server: token, sem roomAdmin pra membro co
   assert.equal(payload.grant.roomAdmin, undefined);
 });
 
-test('server-join: dono, Administrador e Gerenciar Servidor moderam (roomAdmin)', async () => {
+test('server-join: staff do servidor (dono/admin/gerencia) NÃO recebe roomAdmin — o nível vai assinado no metadata; só o admin do Sinal tem o grant', async () => {
   fake.rooms = [openRoom()];
   for(const tier of ['o', 'a', 'm']){
-    const res = await post({ mode: 'server-join', room: serverRoom, session: sessionFor({ tier }) });
-    assert.equal((await grantOf(res)).grant.roomAdmin, true, `tier ${tier}`);
+    const payload = await grantOf(await post({ mode: 'server-join', room: serverRoom, session: sessionFor({ tier }) }));
+    assert.equal(payload.grant.roomAdmin, undefined, `tier ${tier} não pode ter roomAdmin (daria acesso à API admin do LiveKit)`);
+    const meta = JSON.parse(payload.metadata);
+    assert.equal(meta.tier, tier);
+    assert.equal(meta.guild, GUILD);
   }
+  const sinalAdmin = await grantOf(await post({ mode: 'server-join', room: serverRoom, session: sessionFor({ tier: 'x', admin: true }) }));
+  assert.equal(sinalAdmin.grant.roomAdmin, true);
+  assert.equal(JSON.parse(sinalAdmin.metadata).isAdmin, true);
 });
 
+
 test('server-join: sala inexistente 404; nome fora do formato 400; server alheio 403', async () => {
   assert.equal((await post({ mode: 'server-join', room: serverRoom, session: sessionFor() })).status, 404);
   assert.equal((await post({ mode: 'server-join', room: 'ABC123', session: sessionFor() })).status, 400);

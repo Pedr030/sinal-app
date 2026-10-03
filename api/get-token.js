@@ -32,7 +32,7 @@ import { verifySession, guildTier } from '../lib/session.js';
 import {
   MAX_ROOMS_PER_GUILD, MAX_PARTICIPANTS_PER_ROOM, PRESENCE_ROOM, MAX_PRESENCE_GUILDS,
   parseServerRoom, newServerRoomName, cleanTitle,
-  buildRoomMetadata, parseRoomMetadata, canModerate, canEnterPrivate
+  buildRoomMetadata, parseRoomMetadata, canEnterPrivate
 } from '../lib/rooms.js';
 
 const MODES = ['join', 'create', 'server-join', 'server-create', 'presence'];
@@ -210,13 +210,23 @@ export async function POST(request){
     // sessão assinada: o admin do Sinal em qualquer sala; nas salas de server,
     // também dono/Administrador/Gerenciar Servidor daquele server.
     const isSinalAdmin = !!(session && session.admin);
-    const roomAdmin = isServerMode ? canModerate(session, guildId) : isSinalAdmin;
+    // Só o admin do Sinal recebe o grant roomAdmin (ele dá acesso à API administrativa do
+    // LiveKit inteira). Dono/administrador/"gerencia" do servidor moderam pelo nível
+    // assinado no metadata (tier + guild), conferido em api/moderate.js com a hierarquia.
+    const roomAdmin = isSinalAdmin;
 
     // metadata vai pro participante — é assim que os OUTROS enxergam o avatar
     // de verdade e se essa pessoa é admin do Sinal (coroa pra todo mundo, não
     // só pra quem logou).
     const metadata = session
-      ? JSON.stringify({ avatarUrl: session.avatar || undefined, isAdmin: isSinalAdmin || undefined, userId: session.id })
+      ? JSON.stringify({
+          avatarUrl: session.avatar || undefined,
+          isAdmin: isSinalAdmin || undefined,
+          userId: session.id,
+          // nível no servidor (o/a/m/x) — usado na hierarquia de moderação (lib/rooms.js)
+          tier: isServerMode ? guildTier(session, guildId) : undefined,
+          guild: isServerMode ? guildId : undefined
+        })
       : undefined;
 
     // Sem "ttl" explícito: usa o padrão do SDK (6h), tempo de sobra pra uma

@@ -49,6 +49,16 @@ export class RoomServiceClient {
   async listParticipants(room){ return st().participants[room] || []; }
   async createRoom(opts){ st().created = opts; return { name: opts.name }; }
   async sendData(room, data, kind, options){ st().sent.push({ room, text: new TextDecoder().decode(data), kind, options }); }
+  async removeParticipant(room, identity){ (st().actions = st().actions || []).push({ type: 'kick', room, identity }); }
+  async mutePublishedTrack(room, identity, sid, muted){ (st().actions = st().actions || []).push({ type: 'mute', room, identity, sid, muted }); }
+}
+export class TokenVerifier {
+  constructor(key, secret){}
+  async verify(token){
+    if(!String(token).startsWith('FAKE_JWT.')) throw new Error('invalid');
+    const d = JSON.parse(String(token).slice(9));
+    return { video: d.grant, metadata: d.metadata, identity: d.identity };
+  }
 }
 export const DataPacket_Kind = { RELIABLE: 0, LOSSY: 1 };
 export class WebhookReceiver {
@@ -71,6 +81,6 @@ export class WebhookReceiver {
 }
 
 export function resetFake(){
-  globalThis.__fakeLivekit = { rooms: [], participants: {}, created: null, sent: [] };
+  globalThis.__fakeLivekit = { rooms: [], participants: {}, created: null, sent: [], actions: [] };
   return globalThis.__fakeLivekit;
 }
