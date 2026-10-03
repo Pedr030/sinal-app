@@ -21,15 +21,21 @@
 //                                 Exigem sessão assinada (lib/session.js) e que
 //                                 a pessoa faça parte do server; nome de sala
 //                                 `s<idDoServer>-<6>` e metadados no LiveKit.
+//   presence                    — conexão leve à sala "presence" só pra RECEBER
+//                                 o push da lista de salas ao vivo (HANDOFF §39):
+//                                 sem publicar nada. Os servers dela vão num
+//                                 atributo do participante assinado AQUI (o
+//                                 cliente não consegue mudar), que o webhook usa
+//                                 pra entregar só o que a pessoa pode ver.
 import { AccessToken, RoomServiceClient } from 'livekit-server-sdk';
 import { verifySession, guildTier } from '../lib/session.js';
 import {
-  MAX_ROOMS_PER_GUILD, MAX_PARTICIPANTS_PER_ROOM,
+  MAX_ROOMS_PER_GUILD, MAX_PARTICIPANTS_PER_ROOM, PRESENCE_ROOM, MAX_PRESENCE_GUILDS,
   parseServerRoom, newServerRoomName, cleanTitle,
   buildRoomMetadata, parseRoomMetadata, canModerate, canEnterPrivate
 } from '../lib/rooms.js';
 
-const MODES = ['join', 'create', 'server-join', 'server-create'];
+const MODES = ['join', 'create', 'server-join', 'server-create', 'presence'];
 
 function json(status, data){
   return new Response(JSON.stringify(data), { status, headers: { 'content-type': 'application/json' } });
@@ -65,7 +71,7 @@ export async function POST(request){
   const sessionRaw = str(body.session);
   const session = sessionRaw ? verifySession(sessionRaw, secret) : null;
   if(sessionRaw && !session) return json(401, { error: 'sessao-invalida' });
-  if(isServerMode && !session) return json(401, { error: 'login-necessario' });
+  if((isServerMode || mode === 'presence') && !session) return json(401, { error: 'login-necessario' });
 
   const name = str(body.name).trim().slice(0, 40) || (session ? session.name : '');
   if(!name) return json(400, { error: 'room e name são obrigatórios' });
@@ -88,7 +94,7 @@ export async function POST(request){
     }
     if(!/^\d{15,21}$/.test(guildId)) return json(400, { error: 'server-invalido' });
     if(!guildTier(session, guildId)) return json(403, { error: 'fora-do-server' });
-  } else {
+  } else if(mode !== 'presence'){
     room = str(body.room).trim().toUpperCase().slice(0, 32);
     if(!room) return json(400, { error: 'room e name são obrigatórios' });
   }
@@ -99,6 +105,22 @@ export async function POST(request){
 
   if(!apiKey || !apiSecret || !livekitUrl){
     return json(500, { error: 'Servidor não configurado (LIVEKIT_API_KEY/LIVEKIT_API_SECRET/LIVEKIT_URL ausentes nas variáveis de ambiente do Vercel)' });
+  }
+
+  // Presença: token que só escuta. Não cria sala nem confere nada no LiveKit —
+  // entrar com roomJoin já cria a sala "presence" (some sozinha quando esvazia).
+  if(mode === 'presence'){
+    const mine = new Set((session.guilds || []).map((g) => g[0]));
+    const wanted = Array.isArray(body.guilds) ? body.guilds.filter((g) => typeof g === 'string' && mine.has(g)) : [];
+    const guilds = [...new Set(wanted)].slice(0, MAX_PRESENCE_GUILDS);
+    if(guilds.length === 0) return json(400, { error: 'sem-servidores' });
+    const at = new AccessToken(apiKey, apiSecret, {
+      identity: `d${session.id}-${Math.random().toString(36).slice(2, 8)}`,
+      name: session.name,
+      attributes: { guilds: guilds.join(',') }
+    });
+    at.addGrant({ room: PRESENCE_ROOM, roomJoin: true, canSubscribe: true, canPublish: false, canPublishData: false });
+    return json(200, { token: await at.toJwt(), url: livekitUrl, room: PRESENCE_ROOM });
   }
 
   // Identity única por conexão (não só pelo nome escolhido) — permite duas

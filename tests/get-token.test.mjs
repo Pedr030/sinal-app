@@ -236,3 +236,35 @@ test('não há mais aviso de webhook ao criar sala', async () => {
   }
   assert.equal(called, false);
 });
+
+// ---------- presença (push em tempo real, HANDOFF §39) ----------
+
+test('presence: sem sessão 401; sem servers válidos 400', async () => {
+  assert.equal((await post({ mode: 'presence', guilds: [GUILD] })).status, 401);
+  const none = await post({ mode: 'presence', guilds: [OTHER_GUILD, 'lixo', 5], session: sessionFor() });
+  assert.equal(none.status, 400);
+  assert.equal((await none.json()).error, 'sem-servidores');
+});
+
+test('presence: token só escuta, na sala "presence", com os servers (∩ sessão) no atributo assinado', async () => {
+  const res = await post({ mode: 'presence', guilds: [GUILD, OTHER_GUILD, GUILD], session: sessionFor() });
+  assert.equal(res.status, 200);
+  const json = await res.json();
+  assert.equal(json.room, 'presence');
+  const payload = JSON.parse(json.token.split('FAKE_JWT.')[1]);
+  assert.deepEqual(payload.attributes, { guilds: GUILD }); // OTHER_GUILD não é da pessoa; duplicado sai
+  assert.equal(payload.grant.room, 'presence');
+  assert.equal(payload.grant.canPublish, false);
+  assert.equal(payload.grant.canPublishData, false);
+  assert.equal(payload.grant.canSubscribe, true);
+  assert.equal(payload.grant.roomAdmin, undefined);
+  assert.match(payload.identity, /^d900000000000000001-/);
+  assert.equal(fake.created, null); // não cria sala nenhuma
+});
+
+test('presence: não dá pra pedir servers a mais — o atributo vem da sessão, não do corpo', async () => {
+  const s = sessionFor({ extraGuild: true });
+  const res = await post({ mode: 'presence', guilds: [GUILD, OTHER_GUILD, '333333333333333333'], session: s });
+  const payload = JSON.parse((await res.json()).token.split('FAKE_JWT.')[1]);
+  assert.deepEqual(payload.attributes.guilds.split(',').sort(), [GUILD, OTHER_GUILD].sort());
+});

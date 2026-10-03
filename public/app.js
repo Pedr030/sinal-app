@@ -2266,6 +2266,7 @@ function saveDiscordUser(user){
 
 function clearDiscordUser(){
   discordUser = null;
+  stopPresence();
   try{ localStorage.removeItem('sinal:session'); }catch(e){}
   document.getElementById('nameInput').value = '';
   renderDiscordStatus();
@@ -2340,7 +2341,8 @@ const SERVER_ROOM_RE = /^s\d{15,21}-[a-z0-9]{6}$/;
 const SERVERS_KEY = 'sinal:servers';       // ids dos servers escolhidos (por dispositivo)
 const SERVER_VIEW_KEY = 'sinal:serverView'; // último lugar aberto: 'home' ou o id de um server
 const MAX_CHOSEN_SERVERS = 15;
-const LIVES_POLL_MS = 15000;               // rede de segurança — a lista muda na hora por push (§39)
+const LIVES_POLL_MS = 15000;               // consulta periódica SEM a conexão de presença
+const LIVES_POLL_SAFETY_MS = 60000;        // com a presença conectada, a consulta é só rede de segurança
 const TIER_LABEL = { o: 'dono do servidor', a: 'administrador', m: 'gerencia o servidor' };
 
 let chosenServers = [];
@@ -2564,7 +2566,7 @@ async function pollLives(){
   if(!livesPollingAllowed()) return;
   await fetchLives();
   clearTimeout(livesTimer);
-  if(livesPollingAllowed()) livesTimer = setTimeout(pollLives, LIVES_POLL_MS);
+  if(livesPollingAllowed()) livesTimer = setTimeout(pollLives, presenceConnected() ? LIVES_POLL_SAFETY_MS : LIVES_POLL_MS);
 }
 
 function startLivesPolling(){
@@ -2573,6 +2575,96 @@ function startLivesPolling(){
 }
 
 function stopLivesPolling(){ clearTimeout(livesTimer); }
+
+// ---- tempo real (HANDOFF §39) ----
+// Uma conexão leve (só escuta) à sala "presence" do LiveKit. Quando alguém entra,
+// sai, abre ou fecha sala, ou começa/para de transmitir num dos servers
+// escolhidos, o servidor (api/lk-webhook.js) manda a foto nova daquele server
+// por aqui — a lista muda na hora, sem consulta. Se a conexão cair, volta
+// sozinha com espera crescente e a consulta periódica cobre o intervalo.
+const PRESENCE_RETRY_MS = [2000, 5000, 10000, 30000];
+let presenceRoom = null;
+let presenceKey = '';
+let presenceRetry = 0;
+let presenceTimer = null;
+let presenceConnecting = false;
+
+function presenceConnected(){ return !!presenceRoom && presenceRoom.state === 'connected'; }
+
+function handlePresenceData(payload, participant, kind, topic){
+  if(topic !== 'lives') return;
+  let msg;
+  try{ msg = JSON.parse(new TextDecoder().decode(payload)); }catch(e){ return; }
+  if(!msg || typeof msg.guild !== 'string' || !chosenServers.includes(msg.guild)) return;
+  if(msg.refresh){ fetchLives(); return; } // foto grande demais pro pacote: busca inteira
+  if(!Array.isArray(msg.rooms)) return;
+  const rooms = msg.rooms.filter((r) => r && typeof r.room === 'string' && Array.isArray(r.participants));
+  applyLives({ [msg.guild]: rooms });
+}
+
+function stopPresenceRoom(){
+  const old = presenceRoom;
+  presenceRoom = null;
+  presenceKey = '';
+  if(old){ try{ old.disconnect(); }catch(e){} }
+}
+
+function stopPresence(){
+  clearTimeout(presenceTimer);
+  presenceRetry = 0;
+  stopPresenceRoom();
+}
+
+function schedulePresenceRetry(){
+  clearTimeout(presenceTimer);
+  if(!discordUser || !chosenServers.length) return;
+  const wait = PRESENCE_RETRY_MS[Math.min(presenceRetry, PRESENCE_RETRY_MS.length - 1)];
+  presenceRetry++;
+  presenceTimer = setTimeout(startPresence, wait);
+}
+
+async function startPresence(){
+  clearTimeout(presenceTimer);
+  if(!discordUser || !chosenServers.length){ stopPresence(); return; }
+  const key = chosenServers.slice().sort().join(',');
+  if(presenceRoom && presenceKey === key) return;
+  if(presenceConnecting) return;
+  presenceConnecting = true;
+  stopPresenceRoom(); // servers mudaram: fecha a anterior e abre com os novos
+  try{
+    const res = await fetch('/api/get-token', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ mode: 'presence', guilds: chosenServers, session: discordUser.session })
+    });
+    if(res.status === 401){
+      clearDiscordUser();
+      renderServersUI();
+      setEntryStatus('Sua sessão do Discord expirou. Entre com o Discord de novo.');
+      return;
+    }
+    if(!res.ok) throw new Error('presence-token-' + res.status);
+    const data = await res.json();
+    const r = new LivekitClient.Room({ adaptiveStream: false, dynacast: false });
+    r.on(LivekitClient.RoomEvent.DataReceived, handlePresenceData);
+    r.on(LivekitClient.RoomEvent.Reconnected, () => { if(presenceRoom === r) fetchLives(); });
+    r.on(LivekitClient.RoomEvent.Disconnected, () => {
+      if(presenceRoom !== r) return; // fomos nós que fechamos
+      presenceRoom = null;
+      presenceKey = '';
+      schedulePresenceRetry();
+    });
+    await r.connect(data.url, data.token, { autoSubscribe: false });
+    presenceRoom = r;
+    presenceKey = key;
+    presenceRetry = 0;
+    fetchLives(); // sincroniza o que mudou enquanto estava fora
+  }catch(e){
+    schedulePresenceRetry();
+  }finally{
+    presenceConnecting = false;
+  }
+}
 
 // ---- entrar / criar ----
 function joinServerRoom(roomName){
@@ -2642,6 +2734,7 @@ function closeServersPicker(){
   document.getElementById('srvPickerOverlay').hidden = true;
   saveChosenServers(); // fecha sem escolher nada = guarda "nenhum" e não pergunta de novo sozinho
   startLivesPolling();
+  startPresence();
 }
 
 function setupServersUI(){
@@ -2671,7 +2764,7 @@ function setupServersUI(){
   document.getElementById('srvPickerRefresh').addEventListener('click', () => { window.location.href = '/api/discord-login?refresh=1'; });
 
   document.addEventListener('visibilitychange', () => {
-    if(document.visibilityState === 'visible') startLivesPolling(); else stopLivesPolling();
+    if(document.visibilityState === 'visible'){ startLivesPolling(); startPresence(); } else stopLivesPolling();
   });
 
   // Primeira vez logado (nunca escolheu servers): já abre o seletor. Não
@@ -2681,6 +2774,7 @@ function setupServersUI(){
   const params = new URLSearchParams(window.location.search);
   if(discordUser && myGuilds().length && !asked && !params.has('sala')) openServersPicker();
   else startLivesPolling();
+  startPresence();
 }
 
 // ---------------- Novidades (patch notes / log de versões) ----------------

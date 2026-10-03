@@ -34,11 +34,11 @@ export async function loadApi(apiFile){
   writeFileSync(
     join(dir, 'node_modules/livekit-server-sdk/index.js'),
     `
-const st = () => (globalThis.__fakeLivekit = globalThis.__fakeLivekit || { rooms: [], participants: {}, created: null });
+const st = () => (globalThis.__fakeLivekit = globalThis.__fakeLivekit || { rooms: [], participants: {}, created: null, sent: [] });
 export class AccessToken {
   constructor(key, secret, opts){ this.opts = opts; this.grant = null; }
   addGrant(g){ this.grant = g; }
-  async toJwt(){ return 'FAKE_JWT.' + JSON.stringify({ identity: this.opts.identity, name: this.opts.name, metadata: this.opts.metadata, grant: this.grant }); }
+  async toJwt(){ return 'FAKE_JWT.' + JSON.stringify({ identity: this.opts.identity, name: this.opts.name, metadata: this.opts.metadata, attributes: this.opts.attributes, grant: this.grant }); }
 }
 export class RoomServiceClient {
   constructor(url, key, secret){ this.url = url; }
@@ -48,6 +48,15 @@ export class RoomServiceClient {
   }
   async listParticipants(room){ return st().participants[room] || []; }
   async createRoom(opts){ st().created = opts; return { name: opts.name }; }
+  async sendData(room, data, kind, options){ st().sent.push({ room, text: new TextDecoder().decode(data), kind, options }); }
+}
+export const DataPacket_Kind = { RELIABLE: 0, LOSSY: 1 };
+export class WebhookReceiver {
+  constructor(key, secret){}
+  async receive(body, auth){
+    if(auth !== 'assinatura-valida') throw new Error('invalid');
+    return JSON.parse(body);
+  }
 }
 `
   );
@@ -62,6 +71,6 @@ export class RoomServiceClient {
 }
 
 export function resetFake(){
-  globalThis.__fakeLivekit = { rooms: [], participants: {}, created: null };
+  globalThis.__fakeLivekit = { rooms: [], participants: {}, created: null, sent: [] };
   return globalThis.__fakeLivekit;
 }
