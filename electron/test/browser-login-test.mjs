@@ -62,7 +62,8 @@ function fakeSession(name){
 
 function launchSecondInstance(url){
   // Igual ao Windows ao clicar num sinal://… com o app já aberto: processo novo com a URL no argv.
-  return spawn('npx', ['electron', '.', url], { cwd: ELECTRON_DIR, shell: true, stdio: 'ignore' });
+  // Aspas: com shell:true o cmd do Windows trata o "&" da URL como separador de comandos e cortaria o nonce.
+  return spawn('npx', ['electron', '.', `"${url}"`], { cwd: ELECTRON_DIR, shell: true, stdio: 'ignore' });
 }
 
 if(existsSync(LOGIN_FILE)) rmSync(LOGIN_FILE);
@@ -101,6 +102,8 @@ try{
   // 2) retorno com nonce ERRADO é recusado
   launchSecondInstance(`sinal://auth?session=${fakeSession('Invasor')}&nonce=${'0'.repeat(32)}`);
   await sleep(4000);
+  const status2 = await evalIn(page, "document.getElementById('entryStatus').textContent");
+  check(/Não reconheci/.test(status2), 'o link chegou ao app e foi recusado ("' + status2 + '")');
   check(!(await evalIn(page, "localStorage.getItem('sinal:session')")), 'sinal://auth com nonce errado NÃO loga');
 
   // o nonce errado já consumiu o nonce de uso único — pede outro login
@@ -114,6 +117,7 @@ try{
   let logged = null;
   for(let i = 0; i < 20 && !logged; i++){ await sleep(500); logged = await evalIn(page, "(discordUser && discordUser.name) || null"); }
   check(logged === 'Pessoa de Teste', 'sinal://auth com o nonce certo loga: ' + logged);
+  if(logged !== 'Pessoa de Teste') log('status na tela:', await evalIn(page, "document.getElementById('entryStatus').textContent"), '| nonce guardado:', await evalIn(page, "localStorage.getItem('sinal:loginNonce')"));
   check(!!(await evalIn(page, "localStorage.getItem('sinal:session')")), 'a sessão ficou salva');
   check((await evalIn(page, "document.getElementById('discordStatus').textContent")).includes('Pessoa de Teste'), 'a tela mostra "Conectado como…"');
   check((await evalIn(page, "!!document.getElementById('srvRail') && !document.getElementById('srvRail').hidden")), 'o trilho de servidores apareceu');
