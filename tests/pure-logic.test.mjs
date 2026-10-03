@@ -95,3 +95,26 @@ test('newLoginNonce: 32 hex minúsculos (o formato que o servidor e o app exigem
   assert.match(a, /^[a-f0-9]{32}$/);
   assert.notEqual(a, b);
 });
+
+// ---------- campo "entrar em sala existente": só código de sala por código ----------
+const pickPrefillCode = new Function(extractFunction(appJs, 'pickPrefillCode') + '; return pickPrefillCode;')();
+const SERVER_ROOM = 's800000000000000001-abc123';
+
+test('prefill: convite com código normal vira o código em maiúsculas (e tem prioridade sobre o último)', () => {
+  assert.deepEqual(pickPrefillCode('abc123', 'ZZZ999'), { code: 'ABC123', dropLast: false, dropSala: false });
+});
+
+test('prefill: sem convite, relembra o último código por código', () => {
+  assert.deepEqual(pickPrefillCode(null, 'ZZZ999'), { code: 'ZZZ999', dropLast: false, dropSala: false });
+  assert.deepEqual(pickPrefillCode('', ''), { code: '', dropLast: false, dropSala: false });
+});
+
+test('prefill: nome de sala de servidor NUNCA aparece no campo (nem do convite, nem do último salvo)', () => {
+  // ?sala= de servidor: não mostra, tira da URL e cai no último código normal, se houver
+  assert.deepEqual(pickPrefillCode(SERVER_ROOM, 'ZZZ999'), { code: 'ZZZ999', dropLast: false, dropSala: true });
+  assert.deepEqual(pickPrefillCode(SERVER_ROOM, null), { code: '', dropLast: false, dropSala: true });
+  // último salvo era de servidor (bug antigo): esquece o valor
+  assert.deepEqual(pickPrefillCode(null, SERVER_ROOM), { code: '', dropLast: true, dropSala: false });
+  // também a versão em maiúsculas que o campo mostrava
+  assert.deepEqual(pickPrefillCode(null, SERVER_ROOM.toUpperCase()), { code: '', dropLast: true, dropSala: false });
+});

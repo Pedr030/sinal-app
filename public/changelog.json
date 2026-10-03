@@ -1,61 +1,63 @@
 [
   {
+    "id": "2026-10-03-codigo-da-ultima-sala",
+    "date": "2026-10-03",
+    "title": "Correções",
+    "site": "0.8.54",
+    "items": [
+      "Correção no campo de código da tela inicial."
+    ]
+  },
+  {
     "id": "2026-10-03-ajustes-servidores",
     "date": "2026-10-03",
-    "title": "Ajustes nos servidores e na atualização do app",
+    "title": "Melhorias nos servidores e nas atualizações",
     "site": "0.8.53",
     "app": "0.3.15",
     "items": [
-      "Salas de servidor não têm mais código nem convite — a entrada é pela lista do servidor, e só quem está nele entra",
-      "Ícone de tela no lugar do alto-falante nas salas, que fica vermelho quando alguém está transmitindo",
-      "App: se uma atualização já estava baixada e saiu uma mais nova enquanto você estava numa call, ele agora instala a mais nova direto (antes podia pedir pra atualizar duas vezes seguidas)"
+      "Salas de servidor ficaram mais simples: a entrada é pela lista do servidor, sem código nem convite.",
+      "App: atualizações mais confiáveis — o app sempre instala a versão mais recente disponível."
     ]
   },
   {
     "id": "2026-10-03-servidores",
     "date": "2026-10-03",
-    "title": "Servidores do Discord dentro do Sinal",
+    "title": "Servidores do Discord no Sinal",
     "site": "0.8.52",
     "app": "0.3.14",
     "items": [
-      "Escolha quais dos seus servidores do Discord aparecem no Sinal e veja as salas ao vivo de cada um — quem está dentro e quem está transmitindo, como na lista de calls do Discord",
-      "Crie salas dentro de um servidor e entre com um clique; só quem faz parte do servidor vê e entra nas salas dele",
-      "A lista de salas atualiza em tempo real, sem precisar recarregar",
-      "Dentro da call, uma coluna (que dá pra recolher) mostra as outras salas do servidor e deixa pular de sala sem sair",
-      "App: o login com o Discord agora abre o seu navegador (onde você já costuma estar logado) e volta sozinho pro Sinal",
-      "Todo mundo precisa entrar com o Discord de novo uma vez — o login ficou mais seguro (sessão assinada, válida por 7 dias) e o Discord vai pedir também pra ver a lista dos seus servidores (só nomes e permissões)",
-      "Quem usa o Sinal sem Discord continua entrando só com o nome e o código da sala, como antes",
-      "Removido o aviso automático \"fulano abriu uma sala\" no canal do Discord — a lista de salas ao vivo de cada servidor substitui"
+      "Veja as salas ao vivo dos seus servidores do Discord: quem está dentro e quem está transmitindo.",
+      "Crie salas dentro de um servidor e entre com um clique. Só quem faz parte do servidor vê e acessa as salas dele.",
+      "A lista de salas atualiza em tempo real.",
+      "Troque de sala durante a call pela coluna lateral, que pode ser recolhida.",
+      "App: o login com o Discord agora é feito no seu navegador e volta automaticamente para o Sinal.",
+      "Você vai precisar entrar com o Discord novamente. O Sinal passa a pedir acesso à lista dos seus servidores (somente nomes e permissões).",
+      "Entrar apenas com nome e código de sala continua funcionando normalmente."
     ]
   },
   {
     "id": "2026-10-03-recuperacao-e-relatorio",
     "date": "2026-10-03",
-    "title": "Recuperação automática e relatório de problema",
+    "title": "Mais estabilidade no app",
     "site": "0.8.51",
     "app": "0.3.13",
     "items": [
-      "App: se a janela do Sinal travar ou fechar sozinha (crash), ele se recupera sozinho e volta pra mesma sala, sem você precisar fazer nada",
-      "App: novo botão \"Enviar relatório de problema\" nas configurações — manda uma descrição e o registro do app direto pro dono do Sinal (dá pra ver tudo que vai junto antes de enviar)",
-      "App: agora guarda um registro (log) das atualizações, conexão, transmissões e falhas, pra ajudar a achar a causa de problemas",
-      "Corrigido: a tela de \"sem conexão\" ficava presa mesmo depois da internet voltar — agora o app abre sozinho assim que a conexão volta",
-      "O cronômetro \"Tentando novamente em Ns\" aparece desde o começo, e o botão \"Tentar agora\" funciona"
+      "App: se o Sinal fechar inesperadamente, ele reabre e volta para a mesma sala automaticamente.",
+      "App: novo botão \"Enviar relatório de problema\" nas configurações, para nos avisar quando algo der errado.",
+      "App: a tela de \"sem conexão\" agora reconecta sozinha quando a internet volta."
     ]
   },
   {
     "id": "2026-10-02-troca-qualidade",
     "date": "2026-10-02",
-    "title": "Trocar a qualidade sem parar a transmissão",
+    "title": "Qualidade ajustável durante a transmissão",
     "site": "0.8.50",
     "app": "0.3.12",
     "items": [
-      "Dá pra trocar entre Leve, Nítido e Fluido no meio da transmissão, sem parar e sem piscar pra quem assiste",
-      "App: o botão de qualidade aparece enquanto você transmite (a escolha inicial continua na tela de escolher o que compartilhar)",
-      "A qualidade que você troca no meio fica lembrada pra próxima transmissão",
-      "App: aberto sem internet, mostra uma tela de \"sem conexão\" e abre sozinho quando a internet volta (antes ficava numa tela preta até fechar o app)",
-      "Áudio da transmissão em estéreo e com qualidade de música (antes saía mono, em qualidade de voz)",
-      "Selo de qualidade no nome de cada transmissão (1080p60, 1080p, 720p) — mostra o que está chegando de verdade",
-      "Corrigido: a qualidade escolhida perdia o destaque ao passar o mouse em cima"
+      "Troque entre Leve, Nítido e Fluido durante a transmissão, sem interrompê-la.",
+      "Áudio da transmissão em estéreo e com qualidade de música.",
+      "Novo selo de qualidade em cada transmissão (por exemplo, 1080p60).",
+      "App: ao abrir sem internet, o Sinal mostra um aviso e conecta sozinho quando a conexão voltar."
     ]
   },
   {
@@ -65,11 +67,10 @@
     "site": "0.8.49",
     "app": "0.3.11",
     "items": [
-      "Nova janela de Novidades, no site e no app: mostra o que cada versão trouxe",
-      "App: procura atualização a cada 30 minutos e quando você abre a janela (antes podia levar até 4 horas)",
-      "App: se a atualização ficar pronta no meio de uma call, ele espera você sair da sala pra perguntar",
-      "App: \"Procurar atualização\" na bandeja e nas configurações, com o andamento do download",
-      "App: a tela de escolher o que compartilhar ganhou a cara do Sinal e explica cada qualidade"
+      "Nova janela de Novidades, no site e no app.",
+      "App: busca atualizações com mais frequência e permite procurar manualmente pela bandeja e pelas configurações.",
+      "App: se uma atualização ficar pronta durante uma call, ela só é oferecida quando você sair da sala.",
+      "App: seletor de tela redesenhado, com a descrição de cada qualidade."
     ]
   },
   {
