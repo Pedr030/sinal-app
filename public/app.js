@@ -432,7 +432,7 @@ function handleTrackRemoved(track, publication, participant){
 function enterRoomUI(){
   // App desktop (v0.3.11+): main.js espera sair da sala pra perguntar se
   // reinicia pra atualizar — nunca interrompe a call.
-  if(window.sinalElectron && window.sinalElectron.setInRoom) window.sinalElectron.setInRoom(true);
+  if(window.sinalElectron && window.sinalElectron.setInRoom) window.sinalElectron.setInRoom(true, roomCode);
   document.getElementById('entryScreen').style.display = 'none';
   document.getElementById('roomScreen').style.display = 'flex';
   // Marca a sala ativa pro CSS deixar o rodapé compacto (§ ver style.css) —
@@ -677,6 +677,89 @@ function setupQualityMenu(){
   document.addEventListener('keydown', (e) => { if(e.key === 'Escape') toggleQualityMenu(false); });
 }
 
+// ---------------- Enviar relatório de problema (app desktop) ----------------
+// Manda o texto da pessoa + o final do registro do app pra api/report.js, que
+// repassa pra um canal privado do Discord (HANDOFF §37). A pessoa vê
+// exatamente o que vai junto ("Ver o que vai junto") antes de enviar.
+let reportLogCache = null;
+
+async function loadReportLog(){
+  if(reportLogCache === null){
+    try{ reportLogCache = await window.sinalElectron.getLogTail(); }catch(e){ reportLogCache = ''; }
+  }
+  return reportLogCache;
+}
+
+function openReportDialog(){
+  reportLogCache = null;
+  document.getElementById('reportText').value = '';
+  document.getElementById('reportStatus').textContent = '';
+  document.getElementById('reportPreview').hidden = true;
+  document.getElementById('reportSendBtn').disabled = false;
+  document.getElementById('reportOverlay').hidden = false;
+  document.getElementById('reportText').focus();
+}
+
+function closeReportDialog(){ document.getElementById('reportOverlay').hidden = true; }
+
+function setupReportDialog(){
+  const overlay = document.getElementById('reportOverlay');
+  const status = document.getElementById('reportStatus');
+  const sendBtn = document.getElementById('reportSendBtn');
+  document.getElementById('reportCloseBtn').addEventListener('click', closeReportDialog);
+  overlay.addEventListener('click', (e) => { if(e.target === overlay) closeReportDialog(); });
+  document.addEventListener('keydown', (e) => { if(e.key === 'Escape' && !overlay.hidden) closeReportDialog(); });
+  document.getElementById('reportPreviewBtn').addEventListener('click', async () => {
+    const pre = document.getElementById('reportPreview');
+    pre.textContent = (await loadReportLog()) || '(o registro do app está vazio)';
+    pre.hidden = !pre.hidden;
+  });
+  sendBtn.addEventListener('click', async () => {
+    sendBtn.disabled = true;
+    status.textContent = 'Enviando…';
+    let savedName = '';
+    try{ savedName = localStorage.getItem('sinal:lastName') || ''; }catch(e){}
+    const payload = {
+      description: document.getElementById('reportText').value,
+      name: (discordUser && discordUser.name) || savedName,
+      appVersion: (window.sinalElectron && window.sinalElectron.appVersion) || '',
+      siteVersion: APP_VERSION,
+      log: await loadReportLog()
+    };
+    try{
+      const res = await fetch('/api/report', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) });
+      if(res.ok){
+        status.textContent = 'Enviado, valeu! Vou dar uma olhada.';
+        setTimeout(closeReportDialog, 1800);
+        return;
+      }
+      const texts = {
+        503: 'O envio de relatórios ainda não foi ligado no servidor.',
+        429: 'Muitos envios seguidos — tenta de novo daqui a alguns minutos.',
+        413: 'O registro ficou grande demais pra enviar.'
+      };
+      status.textContent = texts[res.status] || 'Não consegui enviar agora — tenta de novo.';
+    }catch(e){
+      status.textContent = 'Sem conexão — tenta de novo quando a internet voltar.';
+    }
+    sendBtn.disabled = false;
+  });
+}
+
+// Registro do app desktop (v0.3.13+, ver HANDOFF §37) — no navegador não faz nada.
+function appLog(message){
+  try{ if(window.sinalElectron && window.sinalElectron.log) window.sinalElectron.log(message); }catch(e){ /* nunca atrapalha */ }
+}
+// "janela 1920x1080@60" / "tela inteira …" — pra saber o que estava sendo
+// capturado quando algo deu errado (queda com janela de jogo, 2026-10-02).
+function describeCaptureSurface(videoTrack){
+  try{
+    const st = videoTrack.mediaStreamTrack.getSettings();
+    const kind = { monitor: 'tela inteira', window: 'janela', browser: 'aba' }[st.displaySurface] || 'captura';
+    return `${kind} ${st.width || '?'}x${st.height || '?'}@${Math.round(st.frameRate || 0)}`;
+  }catch(e){ return 'captura'; }
+}
+
 // Resolução/fps da captura + dica de conteúdo pra uma qualidade. Só limites
 // máximos: a captura é sempre pedida no teto (ver toggleShare), então trocar
 // pra uma qualidade maior só afrouxa o limite.
@@ -735,6 +818,7 @@ async function changeActiveShareQuality(q){
   capBackupCodec(track); // VP8 reserva segue o activeShareQuality novo
   sendStatsPrev = null;
   updateQualityBtn();
+  appLog(`[sinal] qualidade trocada no meio da transmissão: ${q}`);
 }
 
 // Áudio da transmissão (aba no site / áudio isolado no app) como MÚSICA, não
@@ -1106,6 +1190,7 @@ async function toggleShare(){
   const btn = document.getElementById('shareBtn');
   setBtnLabel(btn, 'Parar compartilhamento');
   btn.classList.add('active-share');
+  appLog(`[sinal] transmissão iniciada: ${activeShareQuality} · ${activeShareCodec} · ${describeCaptureSurface(videoTrack)}`);
   // Botão de qualidade fica ativo: dá pra trocar no meio (changeActiveShareQuality).
   // body.sharing: no app, o botão (escondido fora da transmissão, já que lá
   // a escolha é no seletor) aparece enquanto transmite.
@@ -1160,6 +1245,7 @@ function resetShareButton(){
   document.getElementById('audioToggleBtn').disabled = false;
   document.getElementById('selfPreview').style.display = 'none';
   document.getElementById('selfStatus').textContent = 'Assistindo';
+  if(activeShareQuality) appLog('[sinal] transmissão encerrada');
   sendStatsPrev = null;
   activeShareQuality = null;
   activeShareCodec = null;
@@ -2021,6 +2107,23 @@ function leaveRoom(){
 // carregamento da página quanto ao sair de uma sala — como é um SPA, sair
 // não recarrega a página, então sem essa segunda chamada o valor só
 // apareceria depois de um F5 de verdade.
+// O app desktop recarrega sozinho quando a página cai (v0.3.13, HANDOFF §37)
+// e manda ?sala=CODIGO&retomar=1 — volta direto pra sala, sem clique, se o
+// nome já estiver salvo. Só nessa situação: um ?sala= normal (convite)
+// continua só preenchendo o código.
+function resumeAfterAppRecovery(){
+  const params = new URLSearchParams(window.location.search);
+  if(params.get('retomar') !== '1') return;
+  params.delete('retomar');
+  const clean = window.location.pathname + (params.toString() ? '?' + params.toString() : '');
+  history.replaceState(null, '', clean);
+  const code = (params.get('sala') || '').trim();
+  if(!code || !document.getElementById('nameInput').value.trim()) return;
+  setEntryStatus('O app se recuperou de uma falha — voltando pra sala…');
+  appLog('[sinal] voltando pra sala depois da recuperação');
+  joinRoom();
+}
+
 function prefillJoinCode(){
   const params = new URLSearchParams(window.location.search);
   const sala = params.get('sala');
@@ -2403,6 +2506,12 @@ function setupSettingsPanel(){
 
   window.sinalElectron.getSettings().then(applySettingsToUI);
 
+  // Relatório de problema (instalador v0.3.13+, precisa do registro do app).
+  if(typeof window.sinalElectron.getLogTail === 'function'){
+    document.getElementById('settingsReportSection').hidden = false;
+    document.getElementById('settingsReportBtn').addEventListener('click', openReportDialog);
+  }
+
   // Atualizações (instalador v0.3.11+): status ao vivo + procurar na mão.
   // Instalador antigo não tem essas funções — a seção fica escondida.
   const updatesSection = document.getElementById('settingsUpdatesSection');
@@ -2585,6 +2694,8 @@ window.addEventListener('DOMContentLoaded', () => {
   setupOpenInApp();
   setupGlobalShareShortcut();
   setupSettingsPanel();
+  setupReportDialog();
+  resumeAfterAppRecovery();
 });
 
 // Tenta desconectar educadamente ao fechar/recarregar a aba, pra sumir na
@@ -2594,7 +2705,7 @@ window.addEventListener('beforeunload', () => {
 });
 
 // PWA: versão, registro do service worker, detecção de atualização e botão de instalação
-const APP_VERSION = '0.8.50'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
+const APP_VERSION = '0.8.51'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
 // Dentro do Electron, mostra a versão do INSTALADOR (electron/package.json),
 // não a do site — ver preload.js. Fora dele (navegador normal), continua a
 // versão do deploy de sempre.

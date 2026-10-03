@@ -79,7 +79,12 @@ contextBridge.exposeInMainWorld('sinalElectron', {
   // Atualizações (v0.3.11+) — o site avisa se está numa sala (main.js espera
   // sair dela pra perguntar se reinicia) e mostra o status na seção
   // "Atualizações" das configurações. Site antigo não chama nada disso.
-  setInRoom: (inRoom) => ipcRenderer.send('sinal:set-in-room', !!inRoom),
+  // roomCode: pra recuperação depois de uma queda voltar pra mesma sala.
+  setInRoom: (inRoom, roomCode) => ipcRenderer.send('sinal:set-in-room', !!inRoom, typeof roomCode === 'string' ? roomCode : undefined),
+  // Registro do app (v0.3.13+): o site anota eventos (início/fim de
+  // transmissão…) e o "Enviar relatório" lê o final do arquivo.
+  log: (message) => ipcRenderer.send('sinal:log', String(message)),
+  getLogTail: () => ipcRenderer.invoke('sinal:get-log-tail'),
   getUpdateState: () => ipcRenderer.invoke('sinal:get-update-state'),
   checkForUpdates: () => ipcRenderer.invoke('sinal:check-for-updates'),
   installUpdate: () => ipcRenderer.send('sinal:install-update'),
