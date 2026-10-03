@@ -270,7 +270,8 @@ body.electron-app #updateBar{display:none !important;}
 .ghost-btn:hover{color:var(--tune);}
 
 /* ---------- ROOM SCREEN ---------- */
-#roomScreen{display:none; flex-direction:column; flex:1;}
+#roomScreen{display:none; flex-direction:row; flex:1; gap:16px; align-items:stretch;}
+.room-main{flex:1; min-width:0; display:flex; flex-direction:column;}
 .room-bar{
   display:grid; grid-template-columns:1fr auto 1fr; align-items:center; gap:14px;
   background:var(--panel); border:1px solid var(--line); border-radius:10px;
@@ -798,4 +799,27 @@ footer .version{margin-top:12px; font-size:10.5px; letter-spacing:1.5px; color:#
   .srv-rail-btn.active::before{ left:10px; top:-8px; width:28px; height:4px; border-radius:0 0 4px 4px; }
   .srv-col{ width:100%; max-height:none; min-height:0; }
   .srv-main{ width:100%; }
+}
+
+/* ---------- COLUNA DE SALAS DENTRO DA CALL (HANDOFF §39, fase 2b) ---------- */
+.call-side{
+  width:250px; flex-shrink:0; align-self:flex-start; position:sticky; top:16px; max-height:calc(100vh - 40px);
+  background:var(--panel); border:1px solid var(--line); border-radius:12px; display:flex; flex-direction:column;
+}
+.call-side[hidden]{ display:none; }
+.call-rail{ display:flex; gap:8px; padding:10px; overflow-x:auto; border-bottom:1px solid var(--line); scrollbar-width:thin; }
+.call-rail-btn{ position:relative; width:36px; height:36px; padding:0; border:none; background:transparent; border-radius:50%; flex-shrink:0; cursor:pointer; }
+.call-rail-btn .srv-icon{ width:36px; height:36px; font-size:12px; }
+.call-rail-btn:hover .srv-icon{ border-radius:12px; }
+.call-rail-btn.active .srv-icon{ border-radius:12px; border-color:var(--tune); }
+.call-rail-btn .srv-live-dot{ width:11px; height:11px; }
+.call-side-name{ padding:12px 14px 6px; font-weight:700; font-size:13px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.call-side .srv-rooms{ padding-bottom:10px; }
+.srv-room.current{ background:var(--tune-dim); border-color:var(--tune); cursor:default; }
+#sideToggleBtn.active{ border-color:var(--tune); color:var(--tune); }
+@media (max-width:900px){
+  .call-side{
+    position:fixed; left:12px; top:70px; bottom:12px; z-index:150; width:280px; max-height:none; align-self:auto;
+    box-shadow:0 12px 40px rgba(0,0,0,.6);
+  }
 }

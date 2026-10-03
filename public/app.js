@@ -470,7 +470,10 @@ function enterRoomUI(){
   // Marca a sala ativa pro CSS deixar o rodapé compacto (§ ver style.css) —
   // o texto descritivo do rodapé só faz sentido na tela de entrada.
   document.body.classList.add('in-room');
-  stopLivesPolling();
+  callView = '';
+  renderCallSide();
+  startLivesPolling();
+  fetchLives(); // a foto da tela inicial pode estar velha
   // Sala de server: o chip mostra o NOME da sala (do metadata no LiveKit), não o id interno.
   let chipText = roomCode;
   if(isServerRoomName(roomCode)){
@@ -2342,6 +2345,7 @@ const SERVERS_KEY = 'sinal:servers';       // ids dos servers escolhidos (por di
 const SERVER_VIEW_KEY = 'sinal:serverView'; // último lugar aberto: 'home' ou o id de um server
 const MAX_CHOSEN_SERVERS = 15;
 const LIVES_POLL_MS = 15000;               // consulta periódica SEM a conexão de presença
+const LIVES_POLL_ROOM_MS = 120000;         // dentro da call
 const LIVES_POLL_SAFETY_MS = 60000;        // com a presença conectada, a consulta é só rede de segurança
 const TIER_LABEL = { o: 'dono do servidor', a: 'administrador', m: 'gerencia o servidor' };
 
@@ -2486,8 +2490,9 @@ function renderServerView(g){
   document.getElementById('srvFoot').textContent = livesError ? 'Sem conexão com o servidor — tentando de novo…' : '';
 }
 
-function renderRoomRow(r){
-  const row = mk('button', 'srv-room');
+function renderRoomRow(r, currentRoom){
+  const row = mk('button', 'srv-room' + (r.room === currentRoom ? ' current' : ''));
+  if(r.room === currentRoom) row.setAttribute('aria-current', 'true');
   row.type = 'button';
   row.dataset.room = r.room;
   const head = mk('span', 'srv-room-head');
@@ -2526,6 +2531,7 @@ function applyLives(guilds){
   livesData = Object.assign({}, livesData, guilds || {});
   livesError = false;
   renderServersUI();
+  renderCallSide();
 }
 
 async function fetchLives(){
@@ -2558,7 +2564,7 @@ async function fetchLives(){
 }
 
 function livesPollingAllowed(){
-  return !!discordUser && chosenServers.length > 0 && !room && document.visibilityState === 'visible';
+  return !!discordUser && chosenServers.length > 0 && document.visibilityState === 'visible';
 }
 
 async function pollLives(){
@@ -2566,7 +2572,8 @@ async function pollLives(){
   if(!livesPollingAllowed()) return;
   await fetchLives();
   clearTimeout(livesTimer);
-  if(livesPollingAllowed()) livesTimer = setTimeout(pollLives, presenceConnected() ? LIVES_POLL_SAFETY_MS : LIVES_POLL_MS);
+  // Na call a lista vem pelo push; a consulta é só rede de segurança (e a bolinha dos outros servers).
+  if(livesPollingAllowed()) livesTimer = setTimeout(pollLives, room ? LIVES_POLL_ROOM_MS : presenceConnected() ? LIVES_POLL_SAFETY_MS : LIVES_POLL_MS);
 }
 
 function startLivesPolling(){
@@ -2575,6 +2582,81 @@ function startLivesPolling(){
 }
 
 function stopLivesPolling(){ clearTimeout(livesTimer); }
+
+// ---- coluna de salas dentro da call (fase 2b) ----
+// Dentro da call, a mesma lista de salas fica numa coluna à esquerda (recolhível):
+// dá pra ver quem está em cada sala do servidor e pular de uma pra outra sem
+// passar pela tela inicial. Aberta por padrão em tela larga, fechada em estreita.
+const CALL_SIDE_KEY = 'sinal:callSideOpen';
+let callView = '';       // servidor cujas salas a coluna mostra
+let callSideOpen = true;
+
+function loadCallSidePref(){
+  let v = null;
+  try{ v = localStorage.getItem(CALL_SIDE_KEY); }catch(e){}
+  callSideOpen = v === null ? window.matchMedia('(min-width: 1100px)').matches : v === '1';
+}
+
+function currentRoomGuild(){
+  const m = /^s(\d+)-/.exec(roomCode || '');
+  return m ? m[1] : '';
+}
+
+function renderCallSide(){
+  const side = document.getElementById('callSide');
+  const toggle = document.getElementById('sideToggleBtn');
+  const available = !!room && !!discordUser && chosenServers.length > 0;
+  const open = available && callSideOpen;
+  toggle.hidden = !available;
+  toggle.classList.toggle('active', open);
+  side.hidden = !open;
+  if(!open) return;
+
+  if(!chosenServers.includes(callView)){
+    const g = currentRoomGuild();
+    callView = chosenServers.includes(g) ? g : (chosenServers.includes(serverView) ? serverView : chosenServers[0]);
+  }
+  const rail = document.getElementById('callRail');
+  rail.innerHTML = '';
+  chosenServers.forEach((id) => {
+    const g = guildById(id);
+    if(!g) return;
+    const btn = mk('button', 'call-rail-btn' + (id === callView ? ' active' : ''));
+    btn.type = 'button';
+    btn.title = g.name;
+    btn.setAttribute('aria-label', g.name);
+    btn.dataset.view = id;
+    const icon = mk('span', 'srv-icon');
+    fillGuildIcon(icon, g);
+    btn.appendChild(icon);
+    if(guildHasLive(id)) btn.appendChild(mk('span', 'srv-live-dot'));
+    rail.appendChild(btn);
+  });
+  const g = guildById(callView);
+  document.getElementById('callSideName').textContent = g ? g.name : '';
+  const list = document.getElementById('callRooms');
+  list.innerHTML = '';
+  const rooms = livesData[callView] || [];
+  if(!rooms.length) list.appendChild(mk('div', 'srv-empty', 'Nenhuma sala ao vivo neste servidor.'));
+  rooms.forEach((r) => list.appendChild(renderRoomRow(r, roomCode)));
+}
+
+function toggleCallSide(){
+  callSideOpen = !callSideOpen;
+  try{ localStorage.setItem(CALL_SIDE_KEY, callSideOpen ? '1' : '0'); }catch(e){}
+  renderCallSide();
+}
+
+// Pular de sala sem passar pela tela inicial. Trocar de sala encerra a
+// transmissão/câmera de quem está transmitindo — pergunta antes.
+function hopToRoom(name){
+  if(!name || name === roomCode) return;
+  const sharing = document.getElementById('shareBtn').classList.contains('active-share')
+    || document.getElementById('cameraBtn').classList.contains('active-share');
+  if(sharing && !window.confirm('Você está transmitindo. Trocar de sala vai parar a transmissão. Continuar?')) return;
+  leaveRoom();
+  joinServerRoom(name);
+}
 
 // ---- tempo real (HANDOFF §39) ----
 // Uma conexão leve (só escuta) à sala "presence" do LiveKit. Quando alguém entra,
@@ -2752,6 +2834,16 @@ function setupServersUI(){
     if(row) joinServerRoom(row.dataset.room);
   });
   document.getElementById('srvCreateBtn').addEventListener('click', createServerRoom);
+  loadCallSidePref();
+  document.getElementById('sideToggleBtn').addEventListener('click', toggleCallSide);
+  document.getElementById('callRail').addEventListener('click', (e) => {
+    const btn = e.target.closest('.call-rail-btn');
+    if(btn){ callView = btn.dataset.view; renderCallSide(); }
+  });
+  document.getElementById('callRooms').addEventListener('click', (e) => {
+    const row = e.target.closest('.srv-room');
+    if(row) hopToRoom(row.dataset.room);
+  });
   document.getElementById('srvRoomTitle').addEventListener('keydown', (e) => { if(e.key === 'Enter') createServerRoom(); });
 
   const overlay = document.getElementById('srvPickerOverlay');
