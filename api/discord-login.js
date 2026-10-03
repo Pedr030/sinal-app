@@ -4,6 +4,10 @@
 // segredo, mas fica em variável de ambiente (não hardcoded no app.js) pra
 // ficar fácil de trocar sem precisar mexer em código, igual as chaves do
 // LiveKit.
+//
+// Escopos: `identify` (nome + avatar) e `guilds` (lista de servers do Discord
+// da pessoa, com as permissões dela em cada um — é o que alimenta os "servers
+// no Sinal", HANDOFF §38). Nada além disso: não lê mensagens, não vê membros.
 export async function GET(request){
   const clientId = process.env.DISCORD_CLIENT_ID;
   if(!clientId){
@@ -28,7 +32,7 @@ export async function GET(request){
   authorizeUrl.searchParams.set('client_id', clientId);
   authorizeUrl.searchParams.set('redirect_uri', redirectUri);
   authorizeUrl.searchParams.set('response_type', 'code');
-  authorizeUrl.searchParams.set('scope', 'identify');
+  authorizeUrl.searchParams.set('scope', 'identify guilds');
   if(sala) authorizeUrl.searchParams.set('state', sala);
 
   return Response.redirect(authorizeUrl.toString(), 302);

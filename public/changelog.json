@@ -1,5 +1,17 @@
 [
   {
+    "id": "2026-10-03-login-servers",
+    "date": "2026-10-03",
+    "title": "Login com Discord renovado (base dos servers)",
+    "site": "0.8.52",
+    "items": [
+      "Todo mundo precisa entrar com o Discord de novo uma vez: o login ficou mais seguro (sessão assinada, válida por 7 dias)",
+      "O Discord vai pedir também pra ver a lista dos seus servidores (só nomes e suas permissões) — é a base pra, em breve, ver e criar salas dentro dos servers do Discord",
+      "Quem usa o Sinal sem Discord continua entrando só com o nome e o código da sala, como antes",
+      "Removido o aviso automático \"fulano abriu uma sala\" no canal do Discord — vai ser substituído pela lista de salas ao vivo de cada servidor"
+    ]
+  },
+  {
     "id": "2026-10-03-recuperacao-e-relatorio",
     "date": "2026-10-03",
     "title": "Recuperação automática e relatório de problema",

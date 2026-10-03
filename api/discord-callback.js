@@ -1,19 +1,17 @@
 // Segundo passo do login com Discord: o Discord manda a pessoa de volta pra
-// cá com um "code" de uso único. Trocamos esse code pelo perfil dela (nome +
-// avatar) usando o Client Secret — que só existe aqui, no servidor, nunca no
-// navegador (mesma cautela da LIVEKIT_API_SECRET em get-token.js).
+// cá com um "code" de uso único. Trocamos esse code pelo perfil e pela lista
+// de servers dela usando o Client Secret — que só existe aqui, no servidor,
+// nunca no navegador (mesma cautela da LIVEKIT_API_SECRET em get-token.js).
 //
-// Importante: não precisamos assinar nem guardar sessão nenhuma depois disso.
-// O nome/avatar que devolvemos pro navegador só controlam o que a PRÓPRIA
-// pessoa vê como identidade dela no Sinal — exatamente como o campo de nome
-// livre já funciona hoje. Não é um token de acesso a nada, então não tem
-// como alguém "forjar" isso pra ganhar permissão de outra pessoa.
+// O resultado vira uma SESSÃO ASSINADA (lib/session.js, HANDOFF §38): nome,
+// avatar, se é admin do Sinal e os servers com o nível dela em cada um. Ela
+// volta pro navegador no fragmento da URL (#session=…), que o navegador não
+// manda pra servidor nenhum — não vai pra log, histórico de requisição nem
+// cabeçalho Referer. O token do Discord em si é descartado aqui.
 //
-// Exceção: se o Discord ID bater com ADMIN_DISCORD_IDS, aqui é o único lugar
-// que pode confirmar isso de verdade (via OAuth real) — por isso assinamos
-// um comprovante (ver lib/adminProof.js) pra get-token.js poder confiar
-// nisso depois, sem precisar repetir o login do Discord a cada sala.
-import { signAdminProof } from '../lib/adminProof.js';
+// Se o Discord ID bater com ADMIN_DISCORD_IDS, só aqui (via OAuth real) é
+// possível confirmar isso — a assinatura leva essa informação adiante.
+import { buildSession } from '../lib/session.js';
 
 export async function GET(request){
   const clientId = process.env.DISCORD_CLIENT_ID;
@@ -50,28 +48,30 @@ export async function GET(request){
     });
     if(!tokenRes.ok) throw new Error('token-exchange-failed: ' + tokenRes.status);
     const tokenData = await tokenRes.json();
+    const auth = { authorization: `Bearer ${tokenData.access_token}` };
 
-    const profileRes = await fetch('https://discord.com/api/users/@me', {
-      headers: { authorization: `Bearer ${tokenData.access_token}` }
-    });
+    const profileRes = await fetch('https://discord.com/api/users/@me', { headers: auth });
     if(!profileRes.ok) throw new Error('profile-fetch-failed: ' + profileRes.status);
     const profile = await profileRes.json();
 
-    const displayName = (profile.global_name || profile.username || 'Convidado').slice(0, 40);
-    const avatarUrl = profile.avatar
-      ? `https://cdn.discordapp.com/avatars/${profile.id}/${profile.avatar}.png?size=64`
-      : `https://cdn.discordapp.com/embed/avatars/${Number((BigInt(profile.id) >> 22n) % 6n)}.png`;
-
-    const dest = new URL(url.origin + '/');
-    dest.searchParams.set('discord_name', displayName);
-    dest.searchParams.set('discord_avatar', avatarUrl);
-    if(sala) dest.searchParams.set('sala', sala);
-
-    const adminIds = (process.env.ADMIN_DISCORD_IDS || '').split(',').map((s) => s.trim()).filter(Boolean);
-    if(adminIds.includes(profile.id) && clientSecret){
-      dest.searchParams.set('discord_admin_proof', signAdminProof(profile.id, clientSecret));
+    // A lista de servers é o que alimenta os "servers no Sinal", mas o login em
+    // si não depende dela: se falhar, a pessoa entra do mesmo jeito (só sem
+    // servers) em vez de ficar sem conseguir usar o Sinal.
+    let guilds = [];
+    try{
+      const guildsRes = await fetch('https://discord.com/api/users/@me/guilds', { headers: auth });
+      if(guildsRes.ok) guilds = await guildsRes.json();
+      else console.error('Lista de servers do Discord recusada:', guildsRes.status);
+    }catch(e){
+      console.error('Lista de servers do Discord falhou:', e && e.message);
     }
 
+    const adminIds = (process.env.ADMIN_DISCORD_IDS || '').split(',').map((s) => s.trim()).filter(Boolean);
+    const session = buildSession({ profile, guilds, adminIds, secret: clientSecret });
+
+    const dest = new URL(url.origin + '/');
+    if(sala) dest.searchParams.set('sala', sala);
+    dest.hash = 'session=' + session;
     return Response.redirect(dest.toString(), 302);
   }catch(e){
     console.error('Login com Discord falhou:', e && e.message, e);

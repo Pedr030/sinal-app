@@ -173,8 +173,8 @@ async function connectToRoom(code, name, mode){
     //    <img src="https://sinal.../api/get-token?...&mode=create"> e fazer o
     //    navegador de quem visitasse criar salas e mandar mensagem no Discord
     //    de vocês, sem clicar em nada.
-    // 2. O adminProof é uma credencial de 30 dias (ver lib/adminProof.js). Em
-    //    query string ele ia parar em log de plataforma, histórico do navegador
+    // 2. A sessão do Discord é uma credencial de 7 dias (ver lib/session.js). Em
+    //    query string ela ia parar em log de plataforma, histórico do navegador
     //    e cabeçalho Referer, a cada entrada em sala. No corpo do POST, não vai.
     const res = await fetch('/api/get-token', {
       method: 'POST',
@@ -183,12 +183,17 @@ async function connectToRoom(code, name, mode){
         room: code,
         name,
         mode,
-        avatar: (discordUser && discordUser.avatar) || undefined,
-        adminProof: (discordUser && discordUser.adminProof) || undefined
+        session: (discordUser && discordUser.session) || undefined
       })
     });
     if(res.status === 404){
       setEntryStatus('Sala não encontrada. Confira o código.');
+      return;
+    }
+    if(res.status === 401){
+      // Sessão do Discord vencida (dura 7 dias) ou inválida — limpa e pede login de novo.
+      clearDiscordUser();
+      setEntryStatus('Sua sessão do Discord expirou. Entre com o Discord de novo (ou use só o nome).');
       return;
     }
     if(!res.ok) throw new Error('token-fetch-failed');
@@ -1725,7 +1730,7 @@ function addTile(id, name, stream){
       <button type="button" class="ctl-btn mute-btn" title="Mutar/desmutar">${ICON_VOLUME}</button>
       <input type="range" class="vol-slider" min="0" max="100" value="100" title="Volume">
       <button type="button" class="ctl-btn hide-btn" title="Parar de assistir">${ICON_EYE_OFF}</button>
-      ${discordUser && discordUser.adminProof ? `
+      ${discordUser && discordUser.admin ? `
       <button type="button" class="ctl-btn mod-btn" title="Opções de moderação">${ICON_DOTS}</button>
       <div class="mod-menu">
         <button type="button" class="mod-menu-item">${id.endsWith(':cam') ? 'Desligar câmera' : 'Desligar tela'}</button>
@@ -1882,7 +1887,7 @@ function updateStageVisibility(){
 }
 
 // ---------------- MODERAÇÃO (admin fixo via Discord) ----------------
-// Só existe UI de moderação quando discordUser.adminProof está presente
+// Só existe UI de moderação quando discordUser.admin está presente
 // (indicador local, cosmético). O poder de verdade é conferido de novo aqui
 // no servidor a cada chamada (api/moderate.js, via TokenVerifier + grant
 // roomAdmin do myAccessToken) — editar isso no localStorage/na URL não dá
@@ -1982,7 +1987,7 @@ function renderRosterPanel(){
   const { Track } = LivekitClient;
   const list = document.getElementById('rosterList');
   const all = [room.localParticipant, ...room.remoteParticipants.values()];
-  const viewerIsAdmin = !!(discordUser && discordUser.adminProof);
+  const viewerIsAdmin = !!(discordUser && discordUser.admin);
   // Montado via DOM (e não por string de innerHTML) pelo mesmo motivo de
   // renderAvatars(): nome, identity e avatarUrl vêm de outros participantes.
   // De quebra, o botão de expulsar não precisa mais carregar data-identity/
@@ -2171,27 +2176,62 @@ function prefillLastName(){
 }
 
 // ---------------- LOGIN OPCIONAL COM DISCORD ----------------
-// Não guarda sessão nenhuma no servidor — só usa o OAuth do Discord uma vez
-// pra perguntar "quem é essa pessoa" (nome + avatar) e guarda a resposta
-// aqui no navegador, igual sinal:lastName. Totalmente opcional: quem não usa
-// isso continua com o fluxo de sempre (digitar o nome).
-let discordUser = null; // { name, avatar } ou null
+// Não guarda nada no servidor — o OAuth do Discord roda uma vez, o servidor
+// assina o resultado (nome, avatar, se é admin do Sinal e os servers da
+// pessoa com o nível dela em cada um — lib/session.js, HANDOFF §38) e ele fica
+// aqui no navegador em sinal:session, válido por 7 dias. O navegador lê o
+// conteúdo pra desenhar a interface, mas só o servidor decide permissões (a
+// assinatura impede de alterar). Totalmente opcional: quem não usa isso
+// continua com o fluxo de sempre (digitar o nome e usar códigos de sala).
+let discordUser = null; // { name, avatar, admin, guilds, exp, session } ou null
+
+// Lê o conteúdo (sem conferir a assinatura — isso é trabalho do servidor) de
+// um token de sessão. Devolve null se estiver malformado ou vencido.
+function decodeSession(token){
+  try{
+    const payload = token.split('.')[0].replace(/-/g, '+').replace(/_/g, '/');
+    const bytes = Uint8Array.from(atob(payload), (c) => c.charCodeAt(0));
+    const data = JSON.parse(new TextDecoder().decode(bytes));
+    if(!data || data.v !== 1 || !data.id || typeof data.exp !== 'number' || data.exp <= Date.now()) return null;
+    return {
+      id: data.id,
+      name: data.name,
+      avatar: data.avatar || null,
+      admin: !!data.admin,
+      guilds: (data.guilds || []).map(([id, name, icon, tier]) => ({ id, name, icon, tier })),
+      exp: data.exp,
+      session: token
+    };
+  }catch(e){
+    return null;
+  }
+}
 
 function loadDiscordUser(){
   try{
-    const raw = localStorage.getItem('sinal:discordUser');
-    if(raw) discordUser = JSON.parse(raw);
+    // v0.8.52: o formato antigo (nome/avatar/adminProof soltos) acabou — todo
+    // mundo entra com o Discord de novo, agora pedindo também os servers.
+    if(localStorage.getItem('sinal:discordUser') !== null){
+      localStorage.removeItem('sinal:discordUser');
+      legacyLoginDropped = true;
+    }
+    const raw = localStorage.getItem('sinal:session');
+    if(raw){
+      discordUser = decodeSession(raw);
+      if(!discordUser) localStorage.removeItem('sinal:session'); // vencida ou corrompida
+    }
   }catch(e){ /* localStorage indisponível ou dado corrompido — segue sem Discord */ }
 }
+let legacyLoginDropped = false;
 
 function saveDiscordUser(user){
   discordUser = user;
-  try{ localStorage.setItem('sinal:discordUser', JSON.stringify(user)); }catch(e){}
+  try{ localStorage.setItem('sinal:session', user.session); }catch(e){}
 }
 
 function clearDiscordUser(){
   discordUser = null;
-  try{ localStorage.removeItem('sinal:discordUser'); }catch(e){}
+  try{ localStorage.removeItem('sinal:session'); }catch(e){}
   document.getElementById('nameInput').value = '';
   renderDiscordStatus();
 }
@@ -2201,7 +2241,7 @@ function renderDiscordStatus(){
   const btn = document.getElementById('discordLoginBtn');
   if(discordUser && discordUser.name){
     el.hidden = false;
-    const adminTag = discordUser.adminProof ? ' 👑' : '';
+    const adminTag = discordUser.admin ? ' 👑' : '';
     el.innerHTML = `Conectado como <b>${escapeHtml(discordUser.name)}</b> (Discord)${adminTag} — `;
     const swapBtn = document.createElement('button');
     swapBtn.type = 'button';
@@ -2227,28 +2267,28 @@ function loginWithDiscord(){
 }
 
 // Roda no carregamento da página — detecta se acabamos de voltar do
-// callback do Discord (api/discord-callback.js) via query string.
+// callback do Discord (api/discord-callback.js): a sessão assinada vem no
+// fragmento (#session=…), que o navegador não manda pra servidor nenhum.
 function handleDiscordCallback(){
   const params = new URLSearchParams(window.location.search);
   if(params.get('discord_error')){
     setEntryStatus('Não foi possível entrar com Discord. Tente de novo ou use seu nome normalmente.');
   }
-  const name = params.get('discord_name');
-  const avatar = params.get('discord_avatar');
-  // Só vem preenchido se o Discord ID bater com ADMIN_DISCORD_IDS no
-  // servidor (ver api/discord-callback.js) — é só um indicador local pra UI,
-  // o poder de verdade é conferido de novo no servidor a cada ação (ver
-  // moderateAction()), então não tem como "forjar" isso editando a URL.
-  const adminProof = params.get('discord_admin_proof');
-  if(name){
-    saveDiscordUser({ name, avatar: avatar || null, adminProof: adminProof || null });
-    try{ localStorage.setItem('sinal:lastName', name); }catch(e){}
+  const hash = new URLSearchParams(window.location.hash.replace(/^#/, ''));
+  const sessionToken = hash.get('session');
+  if(sessionToken){
+    const user = decodeSession(sessionToken);
+    if(user){
+      saveDiscordUser(user);
+      try{ localStorage.setItem('sinal:lastName', user.name); }catch(e){}
+    } else {
+      setEntryStatus('Não foi possível entrar com Discord. Tente de novo ou use seu nome normalmente.');
+    }
+  } else if(legacyLoginDropped){
+    setEntryStatus('Atualizamos o login com o Discord — entre de novo pra liberar os servers.');
   }
-  if(params.has('discord_name') || params.has('discord_avatar') || params.has('discord_admin_proof') || params.has('discord_error')){
+  if(sessionToken || params.has('discord_error')){
     const clean = new URL(window.location.href);
-    clean.searchParams.delete('discord_name');
-    clean.searchParams.delete('discord_avatar');
-    clean.searchParams.delete('discord_admin_proof');
     clean.searchParams.delete('discord_error');
     history.replaceState(null, '', clean.pathname + clean.search);
   }
@@ -2346,7 +2386,7 @@ async function setupChangelog(){
   let returningUser = false;
   try{
     seen = localStorage.getItem(CHANGELOG_SEEN_KEY);
-    returningUser = ['sinal:lastName', 'sinal:lastRoomCode', 'sinal:shareQuality', 'sinal:shareElectronAudio', 'sinal:discordUser']
+    returningUser = ['sinal:lastName', 'sinal:lastRoomCode', 'sinal:shareQuality', 'sinal:shareElectronAudio', 'sinal:session']
       .some((k) => localStorage.getItem(k) !== null);
   }catch(e){ /* sem localStorage: trata como primeira visita */ }
   if(seen === latest) return;
@@ -2705,7 +2745,7 @@ window.addEventListener('beforeunload', () => {
 });
 
 // PWA: versão, registro do service worker, detecção de atualização e botão de instalação
-const APP_VERSION = '0.8.51'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
+const APP_VERSION = '0.8.52'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
 // Dentro do Electron, mostra a versão do INSTALADOR (electron/package.json),
 // não a do site — ver preload.js. Fora dele (navegador normal), continua a
 // versão do deploy de sempre.

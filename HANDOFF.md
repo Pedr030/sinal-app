@@ -1045,7 +1045,7 @@ Primeiro pacote de código do roadmap (§33 item 0), tudo aprovado pelo usuário
 - O modo dev usa a **mesma pasta de dados do app instalado** (`%AppData%\sinal-desktop`) — depois do teste, limpar as origens de teste (`Storage.clearDataForOrigin` via CDP) foi feito.
 - Release: depois de publicar, o "Procurar atualização" leva 1–2 min pra enxergar a versão nova (feed de releases do GitHub) — normal, observado na 0.3.12.
 
-## 36. PLANO — Servers no Sinal (estilo Discord) — pesquisado em 2026-10-02, **não implementado**
+## 36. PLANO — Servers no Sinal (estilo Discord) — pesquisado em 2026-10-02 (Fase 1 implementada, ver §38)
 
 **Pedido do usuário** (resumo fiel): servers tipo Discord; "a pessoa abre a live no server e outros membros simplesmente entram na call por lá"; os servers do Sinal **são os servers do Discord**, mas **a pessoa escolhe quais aparecem** (exige Discord); cada server tem espaço pra **criar salas** (podem ser lives soltas), **bem organizado, estilo a lista de calls de voz do Discord** (avatar de quem está, nome da sala…); **salas privadas** onde quem cria é admin e **aprova a entrada ou pede senha**; **cuidado com o problema de sucessão de host** (saída em massa e o admin não passa direito); e **tirar o webhook** de "fulano abriu uma sala".
 
@@ -1108,3 +1108,29 @@ Primeiro pacote de código do roadmap (§33 item 0), tudo aprovado pelo usuário
 
 ### Ideias futuras
 - Tentar Fluido com tela inteira em vez de janela pra isolar o gatilho do crash do Valorant; se o relatório mostrar `render-process-gone` com `reason` de GPU, considerar desligar aceleração de GPU no app como opção.
+
+## 38. Servers — FASE 1 (base) implementada (2026-10-03, site v0.8.52)
+
+Executa a "Fase 1" do plano do §36. **Sem mudança visível** além do login: a interface (trilho, coluna de salas) é a Fase 2.
+
+### Decisões novas do usuário (2026-10-03)
+- **Todo mundo é deslogado** (sem compatibilidade com o formato antigo): ao abrir o site, `sinal:discordUser` é apagado e aparece "Atualizamos o login com o Discord — entre de novo pra liberar os servers". O Discord pede o escopo extra `guilds` na nova autorização.
+- **Moderação por patente no server:** dono, Administrador e Gerenciar Servidor **moderam** as salas do próprio server; **só dono e Administrador entram em sala privada** sem pedir/senha ("cargos de patente mais alta"). Gerenciar Servidor modera mas pede pra entrar em privada. O admin do Sinal (`ADMIN_DISCORD_IDS`) entra em qualquer sala dos servers de que faz parte. (Interpretação minha de "patente": o Discord só expõe permissões no OAuth, não a hierarquia de cargos; se o usuário quiser outra regra, é só `canEnterPrivate` em `lib/rooms.js`.)
+- **Login pelo navegador padrão no app desktop (`sinal://`)** fica pra Fase 2 ("na fase de utilização"); até lá o app usa o login atual (navega na própria janela e volta com `#session=`).
+
+### O que foi feito
+- **`lib/session.js`** (substitui `lib/adminProof.js`, removido): sessão `{ v:1, id, name, avatar, admin, guilds:[[id,nome,icone,nivel]], exp }` assinada com HMAC-SHA256; chave **derivada** do `DISCORD_CLIENT_SECRET` com rótulo de domínio (não precisou de variável nova; trocar o secret desloga todo mundo). Validade **7 dias** (igual ao token do Discord). Níveis: `o` dono, `a` Administrador (0x8), `m` Gerenciar Servidor (0x20), `x` membro. Limite de ~7000 caracteres pro redirect: se passar (Discord permite 200 servers), ficam os de mais poder e corta o resto.
+- **`api/discord-login.js`**: escopo `identify guilds`. **`api/discord-callback.js`**: busca perfil + `/users/@me/guilds`, monta a sessão e redireciona pra `/?sala=…#session=<token>` — **fragmento**, não query (não vai pra servidor/log/Referer). Se a lista de servers falhar, o login segue sem servers. O token do Discord é descartado.
+- **`api/get-token.js`** (reescrito): `session` no corpo (assinada) substitui `avatar`/`adminProof`. Sessão presente e inválida/vencida → **401 `sessao-invalida`** (o site limpa e pede login). Modos `join`/`create` (salas por código — visitante e logado) e **`server-join`/`server-create`**. Identity do logado: `d<discordId>-<rand>`; metadata `{ avatarUrl, isAdmin?, userId }` vem **da sessão**, nunca do corpo. `roomAdmin`: admin do Sinal em salas por código; em salas de server, `canModerate` (dono/Admin/Gerenciar + admin do Sinal). **Webhook "fulano abriu uma sala" removido** — a variável `DISCORD_WEBHOOK_URL` na Vercel já não é usada (pode apagar; deixei pro usuário decidir). Resposta agora traz também `room`.
+- **Salas de server:** nome `s<guildId>-<6 minúsculas/números>` (sempre minúsculo, as por código são sempre MAIÚSCULAS → nunca colidem); criada com `emptyTimeout/departureTimeout: 60`, `maxParticipants: 25` e metadados `{ v:1, guild, title, creator:{id,name}, access:'open', createdAt }`. **Limite de 10 salas por server** (429 `limite-de-salas`). Título limpo (sem `< >` nem controle, 40 chars). Só `access:'open'` existe; o campo e a checagem de privada já estão no lugar pra Fase 3 (403 `sala-privada`).
+- **`api/lives.js`** (novo): POST `{session, guilds:[ids]}` → só servers pedidos **∩** servers da sessão; por server, salas ao vivo (com gente, ou criadas há < 30 s) com `{room,title,access,creator,createdAt,participants:[{name,avatar,admin,screen,camera,joinedAt}]}`. Nunca devolve segredo (a senha das privadas, quando existir, é só um hash nos metadados e não sai daqui).
+- **`lib/rooms.js`**: regras puras — `parseServerRoom`, `newServerRoomName`, `cleanTitle`, `buildRoomMetadata/parseRoomMetadata`, `canModerate`, `canEnterPrivate`, **`responsibleOf`** (criador se estiver, senão quem entrou primeiro; recalculado a cada ação, sem "passar" o cargo — a resposta pro problema de sucessão de host). `responsibleOf` ainda não é usado por nenhuma rota (entra na Fase 3).
+- **Cliente (`public/app.js`)**: `discordUser = { id, name, avatar, admin, guilds:[{id,name,icon,tier}], exp, session }` guardado em `sinal:session`; `decodeSession` só LÊ o conteúdo (quem decide é o servidor); vencida/corrompida é descartada; `connectToRoom` manda `session` e trata 401. Os indicadores de admin passaram de `adminProof` pra `discordUser.admin` (cosméticos; o poder é conferido no servidor).
+
+### Testado
+- **56 testes** (`npm test`): assinatura/adulteração/validade, níveis de permissão (inclusive bitfield > 32 bits), 200 servers cabendo no redirect, nomes de sala, quem modera/entra em privada, `responsibleOf` (saída em massa), `get-token` (visitante, logado, admin, sessão adulterada/vencida, server-create/join, limite de 10, privada), `lives` (filtro por servers, sala vazia antiga some, bigint, sem vazar segredo), login/callback com Discord falso (escopos, fragmento, falha da lista de servers).
+- **LiveKit real via `vercel dev`** (sessões de teste assinadas com o secret do `.env`, usuários/servers falsos): `server-create` → duas conexões reais → uma publicando tela → `/api/lives` listou título, criador, os dois participantes, `screen:true` e `joinedAt` correto (segundos×1000); `roomAdmin` só pro dono; 404 sala inexistente; 403 server alheio. No navegador: login antigo apagado com a mensagem, `#session=` salvo e limpo da URL, nome preenchido, criar sala por código logado funciona.
+- **Não testado:** login real com o Discord (precisa do usuário — o fluxo OAuth em si não mudou, só o escopo e o que se faz com o resultado).
+
+### Próximo (Fase 2 — interface)
+Trilho de servers + escolher servers (por dispositivo) + coluna de salas ao vivo (atualiza a cada 15 s visível) + criar sala aberta + entrar + login pelo navegador padrão no app (`sinal://`, com nonce). Depois Fase 3 (privadas: senha/aprovação, sala de espera, ticket, ações do responsável) e Fase 4 (polimento).

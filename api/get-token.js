@@ -10,65 +10,87 @@
 // Adaptado de netlify/functions/get-token.js na migração pra Vercel
 // (2026-08-24, motivo: cota de deploy grátis do Netlify esgotada no meio da
 // sessão). Mesma lógica de negócio — só a casca da function muda: Vercel usa
-// export nomeado por verbo HTTP (`GET`) em vez de export default, mas o
+// export nomeado por verbo HTTP (`POST`) em vez de export default, mas o
 // corpo (Request in, Response out, process.env.*) é o mesmo Web Handler.
+//
+// Quatro modos (campo `mode`):
+//   join / create               — salas por CÓDIGO (o "Início": convidar quem
+//                                 não usa Discord, ou uma sala rápida). Valem
+//                                 pra visitante e pra quem logou.
+//   server-join / server-create — salas de um SERVER do Discord (HANDOFF §38).
+//                                 Exigem sessão assinada (lib/session.js) e que
+//                                 a pessoa faça parte do server; nome de sala
+//                                 `s<idDoServer>-<6>` e metadados no LiveKit.
 import { AccessToken, RoomServiceClient } from 'livekit-server-sdk';
-import { verifyAdminProof } from '../lib/adminProof.js';
+import { verifySession, guildTier } from '../lib/session.js';
+import {
+  MAX_ROOMS_PER_GUILD, MAX_PARTICIPANTS_PER_ROOM,
+  parseServerRoom, newServerRoomName, cleanTitle,
+  buildRoomMetadata, parseRoomMetadata, canModerate, canEnterPrivate
+} from '../lib/rooms.js';
+
+const MODES = ['join', 'create', 'server-join', 'server-create'];
+
+function json(status, data){
+  return new Response(JSON.stringify(data), { status, headers: { 'content-type': 'application/json' } });
+}
 
 // POST, e não GET: esta função tem efeito colateral de verdade (cria sala no
-// LiveKit e posta no canal do Discord). Num GET, qualquer <img src="...">
-// numa página aleatória — ou um bot de preview de link que tocasse a URL —
-// dispararia isso pelo navegador de quem passasse por lá. GET deveria ser
-// seguro/idempotente, e este nunca foi. Bônus: o adminProof sai da query
-// string (era credencial de 30 dias em URL, que vaza pra log/histórico/Referer)
-// e passa a viajar no corpo.
+// LiveKit). Num GET, qualquer <img src="..."> numa página aleatória — ou um
+// bot de preview de link que tocasse a URL — dispararia isso pelo navegador
+// de quem passasse por lá. GET deveria ser seguro/idempotente, e este nunca
+// foi. Bônus: a sessão (credencial de 7 dias) sai da query string e viaja no
+// corpo, longe de log/histórico/Referer.
 export async function POST(request){
-  const url = new URL(request.url); // usado só pra montar o link do webhook (url.origin)
-
   let body;
   try{ body = await request.json(); }catch(e){
-    return new Response(JSON.stringify({ error: 'corpo-invalido' }), {
-      status: 400,
-      headers: { 'content-type': 'application/json' }
-    });
+    return json(400, { error: 'corpo-invalido' });
   }
 
   // Antes vinha tudo de searchParams, que sempre devolve string. Agora é JSON,
   // então o cliente pode mandar número, objeto, null — e `.trim()` em cima
   // disso explodiria. Daí normalizar pra string antes de qualquer coisa.
   const str = (v) => (typeof v === 'string' ? v : '');
-  const room = str(body.room).trim().toUpperCase().slice(0, 32);
-  const name = str(body.name).trim().slice(0, 40);
-  // Opcional — normalmente vem preenchido só quando a pessoa logou com Discord
-  // (ver api/discord-callback.js). Vai pro metadata do participante no LiveKit,
-  // que é como os OUTROS participantes enxergam o avatar de verdade (não só
-  // quem logou).
-  //
-  // Mas atenção: isso chega por query string, ou seja, é 100% controlado por
-  // quem chama — NÃO é prova de que houve login. Por isso só passa se for
-  // mesmo uma URL do CDN do Discord, e só com caracteres válidos de URL (nada
-  // de aspas ou espaço). O formato estrito fecha três coisas de uma vez:
-  //  1. usar o campo pra injetar marcação no navegador dos outros (o valor vai
-  //     parar num <img> na tela de todo mundo na sala);
-  //  2. disparar o webhook do Discord sem ter logado (a condição lá embaixo é
-  //     justamente `avatar` estar preenchido);
-  //  3. apontar o <img> pra um servidor de terceiro, que colheria o IP de
-  //     todos os participantes quando a imagem carregasse.
-  const avatarRaw = str(body.avatar).trim().slice(0, 300);
-  const avatar = /^https:\/\/cdn\.discordapp\.com\/[A-Za-z0-9/_.-]+(\?[A-Za-z0-9=&_-]*)?$/.test(avatarRaw) ? avatarRaw : '';
-  // Opcional — comprovante assinado em api/discord-callback.js (ver
-  // lib/adminProof.js) de que quem está pedindo o token é um Discord ID
-  // admin. Verificado abaixo antes de conceder o grant roomAdmin.
-  const adminProof = str(body.adminProof);
   // "join" é o padrão de propósito se vier ausente/inesperado — é o modo
   // mais restrito (dá erro em vez de criar sala à toa), falha mais seguro.
-  const mode = body.mode === 'create' ? 'create' : 'join';
+  const mode = MODES.includes(body.mode) ? body.mode : 'join';
+  const isServerMode = mode.startsWith('server-');
 
-  if(!room || !name){
-    return new Response(JSON.stringify({ error: 'room e name são obrigatórios' }), {
-      status: 400,
-      headers: { 'content-type': 'application/json' }
-    });
+  // Sessão do login com Discord: avatar, ID, "é admin do Sinal" e servers vêm
+  // DELA (assinados pelo servidor), nunca do que o cliente diz sobre si. Se
+  // veio uma sessão e ela não vale (adulterada ou vencida), recusa com 401 em
+  // vez de tratar a pessoa como visitante sem avisar — o site responde pedindo
+  // login de novo.
+  const secret = process.env.DISCORD_CLIENT_SECRET;
+  const sessionRaw = str(body.session);
+  const session = sessionRaw ? verifySession(sessionRaw, secret) : null;
+  if(sessionRaw && !session) return json(401, { error: 'sessao-invalida' });
+  if(isServerMode && !session) return json(401, { error: 'login-necessario' });
+
+  const name = str(body.name).trim().slice(0, 40) || (session ? session.name : '');
+  if(!name) return json(400, { error: 'room e name são obrigatórios' });
+
+  // Sala por código: sempre MAIÚSCULA (assim nunca colide com sala de server,
+  // que é minúscula). Sala de server: o nome sai do servidor (create) ou é
+  // conferido contra o formato exato (join).
+  let room = '';
+  let guildId = '';
+  let title = '';
+  if(isServerMode){
+    if(mode === 'server-create'){
+      guildId = str(body.guild).trim();
+      title = cleanTitle(body.title) || 'Sala';
+    } else {
+      room = str(body.room).trim();
+      const parsed = parseServerRoom(room);
+      if(!parsed) return json(400, { error: 'sala-invalida' });
+      guildId = parsed.guildId;
+    }
+    if(!/^\d{15,21}$/.test(guildId)) return json(400, { error: 'server-invalido' });
+    if(!guildTier(session, guildId)) return json(403, { error: 'fora-do-server' });
+  } else {
+    room = str(body.room).trim().toUpperCase().slice(0, 32);
+    if(!room) return json(400, { error: 'room e name são obrigatórios' });
   }
 
   const apiKey = process.env.LIVEKIT_API_KEY;
@@ -76,16 +98,18 @@ export async function POST(request){
   const livekitUrl = process.env.LIVEKIT_URL;
 
   if(!apiKey || !apiSecret || !livekitUrl){
-    return new Response(JSON.stringify({ error: 'Servidor não configurado (LIVEKIT_API_KEY/LIVEKIT_API_SECRET/LIVEKIT_URL ausentes nas variáveis de ambiente do Vercel)' }), {
-      status: 500,
-      headers: { 'content-type': 'application/json' }
-    });
+    return json(500, { error: 'Servidor não configurado (LIVEKIT_API_KEY/LIVEKIT_API_SECRET/LIVEKIT_URL ausentes nas variáveis de ambiente do Vercel)' });
   }
 
-  // Identity única por sessão de aba (não só pelo nome escolhido) — permite
-  // duas pessoas com o mesmo nome, ou a mesma pessoa reconectando em duas
-  // abas, sem colidir. O nome de exibição de verdade vai no campo "name".
-  const identity = name.replace(/\s+/g, '_').replace(/[^\w-]/g, '') + '-' + Math.random().toString(36).slice(2, 8);
+  // Identity única por conexão (não só pelo nome escolhido) — permite duas
+  // pessoas com o mesmo nome, ou a mesma pessoa reconectando em duas abas, sem
+  // colidir. Quem logou leva o ID do Discord no começo (`d<id>-…`), que é o que
+  // o servidor usa pra reconhecer "esse participante é fulano" (criador da
+  // sala, moderação). O nome de exibição de verdade vai no campo "name".
+  const rand = Math.random().toString(36).slice(2, 8);
+  const identity = session
+    ? `d${session.id}-${rand}`
+    : name.replace(/\s+/g, '_').replace(/[^\w-]/g, '') + '-' + rand;
 
   try{
     // RoomServiceClient é uma API HTTP administrativa — precisa de
@@ -94,87 +118,84 @@ export async function POST(request){
     const roomServiceUrl = livekitUrl.replace(/^wss:\/\//, 'https://').replace(/^ws:\/\//, 'http://');
     const roomService = new RoomServiceClient(roomServiceUrl, apiKey, apiSecret);
 
-    if(mode === 'join'){
+    if(mode === 'server-create'){
+      // Limite de salas ao vivo por server (decisão do usuário: 10). Cada sala
+      // some sozinha minutos depois de esvaziar, então o limite só pega
+      // quando o server de fato está cheio de salas em uso.
+      let rooms = [];
+      try{ rooms = await roomService.listRooms(); }catch(e){
+        console.error('listRooms falhou:', e && e.message, e);
+      }
+      const prefix = `s${guildId}-`;
+      if(rooms.filter((r) => typeof r.name === 'string' && r.name.startsWith(prefix)).length >= MAX_ROOMS_PER_GUILD){
+        return json(429, { error: 'limite-de-salas' });
+      }
+      room = newServerRoomName(guildId);
+      try{
+        await roomService.createRoom({
+          name: room,
+          emptyTimeout: 60,
+          departureTimeout: 60,
+          maxParticipants: MAX_PARTICIPANTS_PER_ROOM,
+          metadata: buildRoomMetadata({ guildId, title, creator: { id: session.id, name } })
+        });
+      }catch(e){
+        console.error('createRoom (server) falhou:', e && e.message, e);
+        return json(502, { error: 'falha-ao-criar-sala' });
+      }
+    } else if(mode === 'server-join' || mode === 'join'){
       // "Entrar numa sala existente" precisa checar de verdade — sem isso,
       // roomJoin:true no token cria uma sala vazia silenciosa pra qualquer
       // código digitado (inclusive errado por engano), e a pessoa fica
       // sozinha achando que está esperando a galera aparecer (relato real,
       // 2026-08-24). Só gera token se a sala já existir de verdade.
-      let exists = false;
+      let found = null;
+      let checked = true;
       try{
         const rooms = await roomService.listRooms([room]);
-        exists = rooms.some((r) => r.name === room);
+        found = rooms.find((r) => r.name === room) || null;
       }catch(e){
         console.error('listRooms falhou:', e && e.message, e);
         // Não travar o usuário por causa de uma falha nossa de checagem —
         // segue como se existisse, deixa o LiveKit decidir (comportamento
         // antigo: cria se não existir). Prioriza "funciona" sobre "erro
         // preciso" quando a própria checagem está com problema.
-        exists = true;
+        checked = false;
       }
-      if(!exists){
-        return new Response(JSON.stringify({ error: 'room-not-found' }), {
-          status: 404,
-          headers: { 'content-type': 'application/json' }
-        });
+      if(checked && !found) return json(404, { error: 'room-not-found' });
+      // Regra de acesso da sala de server (nesta fase só existem salas
+      // abertas; a regra já fica no lugar pras privadas da fase 3).
+      if(found && isServerMode){
+        const meta = parseRoomMetadata(found.metadata);
+        if(meta && meta.access !== 'open' && !canEnterPrivate(session, guildId)){
+          return json(403, { error: 'sala-privada' });
+        }
       }
     } else {
-      // "Criar sala nova": garante que ela nasce com timeouts curtos, em vez
-      // do padrão da plataforma — sem isso, a sala continuava "viva" e
-      // aceitando gente muito tempo depois de ficar vazia (mesmo relato).
+      // "Criar sala nova" por código: garante que ela nasce com timeouts
+      // curtos, em vez do padrão da plataforma — sem isso, a sala continuava
+      // "viva" e aceitando gente muito tempo depois de ficar vazia (mesmo
+      // relato). (O aviso "fulano abriu uma sala" no canal do Discord saiu na
+      // v0.8.51+: agora quem está no server vê a sala na lista, HANDOFF §38.)
       try{
         await roomService.createRoom({ name: room, emptyTimeout: 60, departureTimeout: 60 });
       }catch(e){
         console.error('createRoom falhou:', e && e.message, e);
       }
-
-      // Avisa automaticamente num canal do Discord que uma sala nova foi
-      // aberta — opcional, só dispara se DISCORD_WEBHOOK_URL estiver
-      // configurada. Não precisa de bot nem OAuth, é só uma URL secreta que
-      // qualquer POST nela vira mensagem no canal. Falha aqui não pode
-      // travar a criação da sala pra quem tá esperando o token.
-      //
-      // Só notifica se `avatar` veio preenchido — na prática, se a pessoa
-      // logou com Discord (ver §8.1) — de propósito, pra não avisar toda vez
-      // que alguém de fora (com o link, sem fazer parte do grupo) ou um teste
-      // rápido sem login criar uma sala.
-      //
-      // Isso é um filtro de RUÍDO, não de autenticação: o `avatar` é validado
-      // no formato lá em cima, mas nada impede alguém de copiar a URL de
-      // avatar de um perfil real do Discord e passar na mão. Se um dia isso
-      // virar spam no canal, a correção certa é assinar o perfil no
-      // discord-callback.js com HMAC, igual já é feito com o adminProof
-      // (lib/adminProof.js) — aí passa a ser verificável de verdade.
-      const webhookUrl = process.env.DISCORD_WEBHOOK_URL;
-      if(webhookUrl && avatar){
-        try{
-          await fetch(webhookUrl, {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({
-              content: `🟢 **${name}** abriu uma sala no Sinal: ${url.origin}/?sala=${room}`,
-              // "name" é digitado livremente por quem entra — sem isso, dava
-              // pra alguém colocar "@everyone" como nome e disparar um ping
-              // geral no canal toda vez que criasse uma sala.
-              allowed_mentions: { parse: [] }
-            })
-          });
-        }catch(e){
-          console.error('Webhook do Discord falhou:', e && e.message, e);
-        }
-      }
     }
 
-    // roomAdmin só é concedido se o comprovante do Discord vier válido (ver
-    // lib/adminProof.js) — sem isso, o grant fica de fora por padrão, igual
-    // sempre foi.
-    const clientSecret = process.env.DISCORD_CLIENT_SECRET;
-    const isAdmin = !!(adminProof && clientSecret && verifyAdminProof(adminProof, clientSecret));
+    // roomAdmin (moderar: expulsar, desligar tela/câmera de alguém) vem da
+    // sessão assinada: o admin do Sinal em qualquer sala; nas salas de server,
+    // também dono/Administrador/Gerenciar Servidor daquele server.
+    const isSinalAdmin = !!(session && session.admin);
+    const roomAdmin = isServerMode ? canModerate(session, guildId) : isSinalAdmin;
 
-    // metadata vai pro participante — é assim que os OUTROS enxergam o
-    // avatar de verdade (ver §8.1) e agora também se essa pessoa é admin
-    // (pra mostrar a coroa pra todo mundo, não só pra quem logou).
-    const metadata = (avatar || isAdmin) ? JSON.stringify({ avatarUrl: avatar || undefined, isAdmin: isAdmin || undefined }) : undefined;
+    // metadata vai pro participante — é assim que os OUTROS enxergam o avatar
+    // de verdade e se essa pessoa é admin do Sinal (coroa pra todo mundo, não
+    // só pra quem logou).
+    const metadata = session
+      ? JSON.stringify({ avatarUrl: session.avatar || undefined, isAdmin: isSinalAdmin || undefined, userId: session.id })
+      : undefined;
 
     // Sem "ttl" explícito: usa o padrão do SDK (6h), tempo de sobra pra uma
     // sessão longa de call/jogo sem cair no meio.
@@ -185,18 +206,12 @@ export async function POST(request){
       canPublish: true,
       canSubscribe: true,
       canPublishData: true,
-      roomAdmin: isAdmin || undefined
+      roomAdmin: roomAdmin || undefined
     });
     const token = await at.toJwt();
 
-    return new Response(JSON.stringify({ token, url: livekitUrl }), {
-      status: 200,
-      headers: { 'content-type': 'application/json' }
-    });
+    return json(200, { token, url: livekitUrl, room });
   }catch(e){
-    return new Response(JSON.stringify({ error: 'Falha ao gerar token: ' + e.message }), {
-      status: 500,
-      headers: { 'content-type': 'application/json' }
-    });
+    return json(500, { error: 'Falha ao gerar token: ' + e.message });
   }
 }
