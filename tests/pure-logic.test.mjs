@@ -187,7 +187,7 @@ test('aviso de atualização: dentro da sala pede confirmação (e cita a transm
   const fn = new Function(extractFunction(appJs, 'updateLeaveWarning') + '; return updateLeaveWarning;')();
   assert.equal(fn(false, false), null);
   assert.equal(fn(false, true), null);
-  assert.match(fn(true, false), /sair da sala/);
+  assert.equal(fn(true, false), 'Atualizar agora vai fazer você sair da sala.');
   assert.doesNotMatch(fn(true, false), /transmiss/);
-  assert.match(fn(true, true), /sair da sala e parar a sua transmissão/);
+  assert.equal(fn(true, true), 'Atualizar agora vai fazer você sair da sala e parar a sua transmissão.');
 });
