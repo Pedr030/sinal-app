@@ -3480,7 +3480,7 @@ window.addEventListener('beforeunload', () => {
 });
 
 // PWA: versão, registro do service worker, detecção de atualização e botão de instalação
-const APP_VERSION = '0.8.56'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
+const APP_VERSION = '0.8.57'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
 // Dentro do Electron, mostra a versão do INSTALADOR (electron/package.json),
 // não a do site — ver preload.js. Fora dele (navegador normal), continua a
 // versão do deploy de sempre.
