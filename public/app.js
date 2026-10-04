@@ -1927,6 +1927,76 @@ function updateStageVisibility(){
   document.getElementById('emptyState').style.display = total === 0 ? 'flex' : 'none';
   document.getElementById('spotlightGrid').style.display = pinnedOrder.length > 0 ? 'grid' : 'none';
   document.getElementById('filmstrip').style.display = (total - pinnedOrder.length) > 0 ? 'flex' : 'none';
+  scheduleFitSpotlight();
+}
+
+// ---------------- ENCAIXE DOS DESTAQUES (HANDOFF §43) ----------------
+// Os tiles em destaque (no máximo 2) são sempre 16:9. Antes a largura de cada um vinha de uma regra
+// fixa de CSS e sobrava muito espaço vazio embaixo (duas transmissões numa tela de 1920x1060 ficavam
+// com 712x400 e ~220px de vazio). Agora o tamanho vem de um cálculo: pra cada arrumação possível
+// (1 coluna, 2 colunas…) vê qual o MAIOR tile 16:9 que cabe no espaço livre e usa a melhor.
+const SPOTLIGHT_GAP = 16;
+const SPOTLIGHT_MIN_WIDTH = 240;
+
+// Maior largura de tile que cabe em (W x H) com n tiles 16:9 e o espaço entre eles. Pura (testada).
+function bestSpotlightLayout(n, W, H, gap){
+  let best = null;
+  for(let cols = 1; cols <= n; cols++){
+    const rows = Math.ceil(n / cols);
+    const byWidth = (W - gap * (cols - 1)) / cols;
+    const byHeight = ((H - gap * (rows - 1)) / rows) * 16 / 9;
+    const w = Math.min(byWidth, byHeight);
+    if(!best || w > best.width + 1) best = { cols, width: w }; // empate (±1px) fica com menos colunas
+  }
+  return { cols: best.cols, width: Math.max(SPOTLIGHT_MIN_WIDTH, Math.floor(best.width)) };
+}
+
+function fitSpotlight(){
+  const grid = document.getElementById('spotlightGrid');
+  const stage = document.getElementById('stageArea');
+  const n = pinnedOrder.length;
+  const props = ['--spot-cols', '--tile-w', '--tile-max', '--tile-max-w'];
+  if(!n || grid.style.display === 'none' || !stage.offsetParent){
+    props.forEach((p) => grid.style.removeProperty(p)); // sem destaque (ou sala fechada): volta ao padrão
+    return;
+  }
+  // Espaço livre: o palco ocupa (flex:1) o que sobra entre a barra da sala e os controles. Mede com os
+  // destaques recolhidos pra o tamanho deles não entrar na conta.
+  const keep = grid.style.display;
+  grid.style.display = 'none';
+  const freeH = stage.clientHeight;
+  const W = stage.clientWidth;
+  grid.style.display = keep;
+  const strip = document.getElementById('filmstrip');
+  const stripH = strip.style.display === 'none' ? 0 : strip.offsetHeight + 14;
+  const layout = bestSpotlightLayout(n, W, freeH - stripH, SPOTLIGHT_GAP);
+  grid.style.setProperty('--spot-cols', `repeat(${layout.cols}, ${layout.width}px)`);
+  grid.style.setProperty('--tile-w', `${layout.width}px`);
+  grid.style.setProperty('--tile-max', 'none');
+  grid.style.setProperty('--tile-max-w', 'none');
+}
+
+let fitQueued = false;
+function scheduleFitSpotlight(){
+  if(fitQueued) return;
+  fitQueued = true;
+  // O que vier primeiro: o quadro de animação (some em janela oculta/minimizada — o navegador
+  // suspende requestAnimationFrame) ou um temporizador curto. Sem o temporizador, o aviso de
+  // "recalcular" podia ficar preso até a janela voltar a ser visível.
+  const run = () => { if(!fitQueued) return; fitQueued = false; fitSpotlight(); };
+  requestAnimationFrame(run);
+  setTimeout(run, 120);
+}
+
+// Refaz o encaixe quando a janela muda de tamanho, a coluna de salas abre/fecha ou aparece algo
+// embaixo (painel de áudio, avisos) que muda o espaço livre.
+function setupStageFit(){
+  window.addEventListener('resize', scheduleFitSpotlight);
+  if(window.ResizeObserver){
+    const ro = new ResizeObserver(scheduleFitSpotlight);
+    ro.observe(document.querySelector('.room-main'));
+    ro.observe(document.getElementById('stageArea'));
+  }
 }
 
 // ---------------- MODERAÇÃO (admin do Sinal e admins de servidor) ----------------
@@ -3047,9 +3117,17 @@ function renderChangelog(){
   list.innerHTML = '';
   (changelogEntries || []).forEach((entry, i) => {
     const art = document.createElement('article');
-    art.className = 'changelog-entry' + (i === 0 ? ' latest' : '');
+    // "destaque": true no changelog.json = mudança grande (ganha moldura e selo); o resto fica mais discreto
+    const major = entry.destaque === true;
+    art.className = 'changelog-entry' + (i === 0 ? ' latest' : '') + (major ? ' major' : '');
     const meta = document.createElement('div');
     meta.className = 'changelog-meta mono';
+    if(major){
+      const big = document.createElement('span');
+      big.className = 'changelog-major';
+      big.textContent = 'Grande novidade';
+      meta.appendChild(big);
+    }
     if(i === 0){
       const isNew = document.createElement('span');
       isNew.className = 'changelog-new';
@@ -3470,6 +3548,7 @@ window.addEventListener('DOMContentLoaded', () => {
   setupReportDialog();
   setupServersUI();
   setupAppLogin();
+  setupStageFit();
   resumeAfterAppRecovery();
 });
 
@@ -3480,7 +3559,7 @@ window.addEventListener('beforeunload', () => {
 });
 
 // PWA: versão, registro do service worker, detecção de atualização e botão de instalação
-const APP_VERSION = '0.8.57'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
+const APP_VERSION = '0.8.58'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
 // Dentro do Electron, mostra a versão do INSTALADOR (electron/package.json),
 // não a do site — ver preload.js. Fora dele (navegador normal), continua a
 // versão do deploy de sempre.
