@@ -161,3 +161,33 @@ test('encaixe: empate fica com menos colunas', () => {
   assert.ok(l.cols === 1 || l.cols === 2);
   assert.deepEqual(bestSpotlightLayout(1, 1000, 1000, 16), { cols: 1, width: 1000 });
 });
+
+// ---------- aviso de atualização: um só por vez (site novo x app novo) ----------
+const pickUpdateBar = new Function(extractFunction(appJs, 'pickUpdateBar') + '; return pickUpdateBar;')();
+
+test('aviso de atualização: nada novo = sem barra (já atualizado)', () => {
+  for(const app of [null, undefined, 'idle', 'checking', 'latest', 'error', 'dev']) assert.equal(pickUpdateBar(false, app), null, String(app));
+});
+
+test('aviso de atualização: só o site novo mostra o botão do site (navegador comum e app sem versão nova)', () => {
+  for(const app of [null, 'idle', 'checking', 'latest', 'error']) assert.equal(pickUpdateBar(true, app), 'site', String(app));
+});
+
+test('aviso de atualização: app com versão pronta mostra só o do app, mesmo com site novo (nunca os dois juntos)', () => {
+  assert.equal(pickUpdateBar(false, 'ready'), 'app');
+  assert.equal(pickUpdateBar(true, 'ready'), 'app');
+});
+
+test('aviso de atualização: app baixando não mostra nada (nem o botão do site)', () => {
+  assert.equal(pickUpdateBar(true, 'downloading'), null);
+  assert.equal(pickUpdateBar(false, 'downloading'), null);
+});
+
+test('aviso de atualização: dentro da sala pede confirmação (e cita a transmissão); fora dela não', () => {
+  const fn = new Function(extractFunction(appJs, 'updateLeaveWarning') + '; return updateLeaveWarning;')();
+  assert.equal(fn(false, false), null);
+  assert.equal(fn(false, true), null);
+  assert.match(fn(true, false), /sair da sala/);
+  assert.doesNotMatch(fn(true, false), /transmiss/);
+  assert.match(fn(true, true), /sair da sala e parar a sua transmissão/);
+});

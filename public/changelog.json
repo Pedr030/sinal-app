@@ -1,5 +1,14 @@
 [
   {
+    "id": "2026-10-04-aviso-atualizacao",
+    "date": "2026-10-04",
+    "title": "Aviso de atualização no app",
+    "site": "0.8.59",
+    "items": [
+      "No app, quando sai uma atualização, aparece um aviso com um botão para atualizar, sem precisar fechar e abrir de novo. Dentro de uma chamada, pede confirmação antes, porque atualizar faz você sair da sala."
+    ]
+  },
+  {
     "id": "2026-10-04-tiles-maiores",
     "destaque": true,
     "date": "2026-10-04",

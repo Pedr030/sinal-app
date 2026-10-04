@@ -3559,7 +3559,7 @@ window.addEventListener('beforeunload', () => {
 });
 
 // PWA: versão, registro do service worker, detecção de atualização e botão de instalação
-const APP_VERSION = '0.8.58'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
+const APP_VERSION = '0.8.59'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
 // Dentro do Electron, mostra a versão do INSTALADOR (electron/package.json),
 // não a do site — ver preload.js. Fora dele (navegador normal), continua a
 // versão do deploy de sempre.
@@ -3580,20 +3580,61 @@ if('serviceWorker' in navigator){
         if(!newWorker) return;
         newWorker.addEventListener('statechange', () => {
           // 'installed' + já existia um controller = isso é uma atualização, não a primeira instalação.
-          // Dentro do Electron esse banner é redundante — o app já tem seu próprio
-          // fluxo de update de verdade (troca o instalador inteiro, não só a página).
-          if(newWorker.state === 'installed' && navigator.serviceWorker.controller
-            && !(window.sinalElectron && window.sinalElectron.isElectron)){
-            document.getElementById('updateBar').style.display = 'flex';
+          if(newWorker.state === 'installed' && navigator.serviceWorker.controller){
+            siteUpdateReady = true;
+            renderUpdateBar();
           }
         });
       });
     }).catch(() => {});
   });
 }
+
+// ---- Aviso de atualização (um só por vez) ----
+// O site novo (service worker) e o instalador novo do app são duas atualizações diferentes. Dentro do app
+// as duas podem existir ao mesmo tempo; mostrar os dois botões confundiria. Regra: se o app tem uma versão
+// nova pronta, o aviso é o dela (reiniciar já abre o site novo, então o do site fica de fora); se o app
+// está baixando, espera; senão, só o do site. Sem nada novo, a barra some. No navegador comum não há app.
+let siteUpdateReady = false;
+let appUpdateStatus = null;
+
+function pickUpdateBar(siteReady, appStatus){
+  if(appStatus === 'ready') return 'app';
+  if(appStatus === 'downloading') return null;
+  return siteReady ? 'site' : null;
+}
+
+function renderUpdateBar(){
+  const mode = pickUpdateBar(siteUpdateReady, appUpdateStatus);
+  const bar = document.getElementById('updateBar');
+  bar.dataset.mode = mode || '';
+  bar.style.display = mode ? 'flex' : 'none';
+  if(!mode) return;
+  document.getElementById('updateBarText').textContent = mode === 'app' ? 'Nova versão do app pronta' : 'Nova versão disponível';
+  document.getElementById('updateBtn').textContent = mode === 'app' ? 'Reiniciar e instalar' : 'Atualizar';
+}
+
+// Atualizar (recarregar o site ou reiniciar o app) derruba a chamada: dentro de uma sala pede confirmação.
+function updateLeaveWarning(inRoom, isSharing){
+  if(!inRoom) return null;
+  return 'Atualizar agora vai fazer você sair da sala' + (isSharing ? ' e parar a sua transmissão' : '') + '. Continuar?';
+}
+
 document.getElementById('updateBtn').addEventListener('click', () => {
-  window.location.reload();
+  const isSharing = document.getElementById('shareBtn').classList.contains('active-share')
+    || document.getElementById('cameraBtn').classList.contains('active-share');
+  const warning = updateLeaveWarning(document.body.classList.contains('in-room'), isSharing);
+  if(warning && !window.confirm(warning)) return;
+  if(document.getElementById('updateBar').dataset.mode === 'app') window.sinalElectron.installUpdate();
+  else window.location.reload();
 });
+
+// Instalador 0.3.11+ avisa o estado da atualização do app; os mais antigos só mostram o aviso do site.
+if(window.sinalElectron && typeof window.sinalElectron.onUpdateState === 'function' && typeof window.sinalElectron.getUpdateState === 'function'){
+  const onAppUpdate = (st) => { appUpdateStatus = st && st.status; renderUpdateBar(); };
+  window.sinalElectron.onUpdateState(onAppUpdate);
+  window.sinalElectron.getUpdateState().then(onAppUpdate).catch(() => {});
+}
 
 let deferredInstallPrompt = null;
 window.addEventListener('beforeinstallprompt', (e) => {
