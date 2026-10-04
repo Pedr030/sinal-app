@@ -11,7 +11,7 @@
 //
 // Se o Discord ID bater com ADMIN_DISCORD_IDS, só aqui (via OAuth real) é
 // possível confirmar isso — a assinatura leva essa informação adiante.
-import { buildSession } from '../lib/session.js';
+import { buildSession, isBlockedUser } from '../lib/session.js';
 
 // Cookie do login pelo navegador (ver api/discord-login.js): lê o valor e o apaga no retorno.
 function readCookie(request, name){
@@ -96,6 +96,9 @@ export async function GET(request){
     }catch(e){
       console.error('Lista de servers do Discord falhou:', e && e.message);
     }
+
+    // Bloqueado pelo dono (BLOCKED_DISCORD_IDS): nem sessão nova ele recebe.
+    if(isBlockedUser(profile.id)) return fail();
 
     const adminIds = (process.env.ADMIN_DISCORD_IDS || '').split(',').map((s) => s.trim()).filter(Boolean);
     const session = buildSession({ profile, guilds, adminIds, secret: clientSecret });
