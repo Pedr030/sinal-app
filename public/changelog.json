@@ -1,12 +1,14 @@
 [
   {
     "id": "2026-10-04-tiles-maiores",
+    "destaque": true,
     "date": "2026-10-04",
     "title": "Transmissões maiores",
     "site": "0.8.58",
     "items": [
       "As transmissões em destaque agora aproveitam melhor a tela: ficam bem maiores e se ajustam sozinhas ao tamanho da janela.",
-      "Dentro da sala, o topo da tela ficou mais compacto para dar mais espaço ao vídeo."
+      "Dentro da sala, o topo da tela ficou mais compacto para dar mais espaço ao vídeo.",
+      "Nas Novidades, as atualizações maiores agora aparecem em destaque."
     ]
   },
   {
@@ -30,6 +32,7 @@
   },
   {
     "id": "2026-10-03-moderacao-servidores",
+    "destaque": true,
     "date": "2026-10-03",
     "title": "Moderação nos servidores",
     "site": "0.8.55",
@@ -59,6 +62,7 @@
   },
   {
     "id": "2026-10-03-servidores",
+    "destaque": true,
     "date": "2026-10-03",
     "title": "Servidores do Discord no Sinal",
     "site": "0.8.52",
@@ -87,6 +91,7 @@
   },
   {
     "id": "2026-10-02-troca-qualidade",
+    "destaque": true,
     "date": "2026-10-02",
     "title": "Qualidade ajustável durante a transmissão",
     "site": "0.8.50",
@@ -113,6 +118,7 @@
   },
   {
     "id": "2026-09-29-qualidades",
+    "destaque": true,
     "date": "2026-09-29",
     "title": "Leve, Nítido e Fluido",
     "site": "0.8.48",
@@ -127,6 +133,7 @@
   },
   {
     "id": "2026-09-29-janela-flutuante",
+    "destaque": true,
     "date": "2026-09-29",
     "title": "Janela flutuante e quem está assistindo",
     "site": "0.8.47",
@@ -149,6 +156,7 @@
   },
   {
     "id": "2026-09-28-imagem",
+    "destaque": true,
     "date": "2026-09-28",
     "title": "Imagem nítida de verdade",
     "site": "0.8.45",
@@ -172,6 +180,7 @@
   },
   {
     "id": "2026-09-22-cara-de-app",
+    "destaque": true,
     "date": "2026-09-22",
     "title": "App desktop com cara de app",
     "app": "0.3.5",

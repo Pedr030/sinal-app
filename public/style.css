@@ -666,12 +666,24 @@ footer .version{margin-top:12px; font-size:10.5px; letter-spacing:1.5px; color:#
 }
 .changelog-chip{ border:1px solid var(--line); border-radius:4px; padding:2px 6px; }
 .changelog-new{ background:var(--tune); color:#1a1200; border-radius:4px; padding:2px 7px; font-weight:700; }
-.changelog-entry h3{ margin:8px 0 8px; font-size:15.5px; font-weight:600; }
-.changelog-entry.latest h3{ color:var(--tune); font-size:17px; }
-.changelog-entry ul{ margin:0; padding-left:18px; display:flex; flex-direction:column; gap:5px; }
-.changelog-entry li{ color:#c9cdcc; font-size:13.5px; line-height:1.5; }
-.changelog-entry li::marker{ color:var(--tune); }
-.changelog-entry:not(.latest) li{ color:var(--fog); }
+/* Entradas comuns: compactas e discretas. As marcadas com "destaque" (.major) ganham moldura e título maior. */
+.changelog-entry{ padding:12px 0; }
+.changelog-entry h3{ margin:6px 0 6px; font-size:14px; font-weight:600; color:#d8dcdb; }
+.changelog-entry ul{ margin:0; padding-left:18px; display:flex; flex-direction:column; gap:4px; }
+.changelog-entry li{ color:var(--fog); font-size:13px; line-height:1.5; }
+.changelog-entry li::marker{ color:#5a5f63; }
+.changelog-entry.latest li{ color:#c9cdcc; }
+.changelog-entry.major{
+  margin:10px 0; padding:16px 16px 16px 15px; border:1px solid var(--line); border-left:3px solid var(--tune);
+  border-radius:8px; background:linear-gradient(90deg, rgba(255,176,32,.08), transparent 70%);
+}
+.changelog-entry.major:last-child{ border-bottom:1px solid var(--line); }
+.changelog-entry.major h3{ color:var(--tune); font-size:17px; margin:8px 0 8px; }
+.changelog-entry.major li{ color:#c9cdcc; font-size:13.5px; }
+.changelog-entry.major li::marker{ color:var(--tune); }
+.changelog-major{
+  border:1px solid var(--tune); color:var(--tune); border-radius:4px; padding:2px 7px; font-weight:700;
+}
 
 /* Selo de qualidade no rótulo do tile (1080p60 / 720p…), vindo das estatísticas reais */
 .tile .label .res-badge{

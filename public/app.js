@@ -3117,9 +3117,17 @@ function renderChangelog(){
   list.innerHTML = '';
   (changelogEntries || []).forEach((entry, i) => {
     const art = document.createElement('article');
-    art.className = 'changelog-entry' + (i === 0 ? ' latest' : '');
+    // "destaque": true no changelog.json = mudança grande (ganha moldura e selo); o resto fica mais discreto
+    const major = entry.destaque === true;
+    art.className = 'changelog-entry' + (i === 0 ? ' latest' : '') + (major ? ' major' : '');
     const meta = document.createElement('div');
     meta.className = 'changelog-meta mono';
+    if(major){
+      const big = document.createElement('span');
+      big.className = 'changelog-major';
+      big.textContent = 'Grande novidade';
+      meta.appendChild(big);
+    }
     if(i === 0){
       const isNew = document.createElement('span');
       isNew.className = 'changelog-new';
