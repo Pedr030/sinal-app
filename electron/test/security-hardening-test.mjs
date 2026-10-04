@@ -49,6 +49,7 @@ async function cdp(target, method, params = {}){
 }
 const evalIn = async (target, expr, userGesture = false) =>
   (await cdp(target, 'Runtime.evaluate', { expression: expr, returnByValue: true, awaitPromise: true, userGesture }))?.result?.value;
+const hostOf = (raw) => { try{ return new URL(raw).hostname; }catch{ return ''; } };
 const externalUrls = () => (existsSync(EXT_FILE) ? readFileSync(EXT_FILE, 'utf8').split(String.fromCharCode(10)).filter(Boolean) : []);
 
 function launchSecondInstance(url){
@@ -98,15 +99,16 @@ try{
   const after = await pageTargets();
   check(after.length === before, `window.open / target=_blank não abrem janela do app (páginas antes=${before}, depois=${after.length})`);
   const ext = externalUrls();
-  check(ext.includes('https://example.com/pelo-window-open') && ext.includes('https://example.com/link-target-blank'), 'links https vão pro navegador do sistema: ' + JSON.stringify(ext));
-  check(!ext.some((u) => u.startsWith('http://') || u.startsWith('file:')), 'http: e file: NUNCA são abertos');
+  const extSet = new Set(ext);
+  check(extSet.has('https://example.com/pelo-window-open') && extSet.has('https://example.com/link-target-blank'), 'links https vão pro navegador do sistema: ' + JSON.stringify(ext));
+  check(ext.every((u) => new URL(u).protocol === 'https:'), 'http: e file: NUNCA são abertos');
 
   // ---- (2) navegar a janela pra fora do site ----
   await evalIn(page, "location.href = 'https://example.org/navegacao'; 1", true);
   await sleep(1500);
   const stillHere = await findPage(ORIGIN);
-  check(!!stillHere && !(await pageTargets()).some((t) => t.url.includes('example.org')), 'a janela não saiu do site ao tentar navegar pra https://example.org');
-  check(externalUrls().includes('https://example.org/navegacao'), 'a navegação bloqueada foi encaminhada ao navegador do sistema');
+  check(!!stillHere && !(await pageTargets()).some((t) => hostOf(t.url) === 'example.org'), 'a janela não saiu do site ao tentar navegar pra https://example.org');
+  check(new Set(externalUrls()).has('https://example.org/navegacao'), 'a navegação bloqueada foi encaminhada ao navegador do sistema');
   page = stillHere;
 
   // ---- (4) configurações válidas ----
