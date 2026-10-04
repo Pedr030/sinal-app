@@ -118,3 +118,46 @@ test('prefill: nome de sala de servidor NUNCA aparece no campo (nem do convite, 
   // também a versão em maiúsculas que o campo mostrava
   assert.deepEqual(pickPrefillCode(null, SERVER_ROOM.toUpperCase()), { code: '', dropLast: true, dropSala: false });
 });
+
+// ---------- encaixe dos destaques (HANDOFF §43) ----------
+const bestSpotlightLayout = new Function(
+  'const SPOTLIGHT_MIN_WIDTH = 240;' + extractFunction(appJs, 'bestSpotlightLayout') + '; return bestSpotlightLayout;'
+)();
+
+test('encaixe: uma transmissão usa o maior 16:9 que cabe (limitado pela altura livre)', () => {
+  assert.deepEqual(bestSpotlightLayout(1, 1884, 620, 16), { cols: 1, width: 1102 }); // 620 * 16/9
+  assert.deepEqual(bestSpotlightLayout(1, 800, 900, 16), { cols: 1, width: 800 });   // limitado pela largura
+});
+
+test('encaixe: duas transmissões lado a lado em tela larga (o caso do print: 1920x1060)', () => {
+  const l = bestSpotlightLayout(2, 1884, 620, 16);
+  assert.equal(l.cols, 2);
+  assert.equal(l.width, 934);              // (1884 - 16) / 2 — antes eram 712 por causa do teto de 1440px
+  assert.ok(Math.round(l.width * 9 / 16) <= 620);   // e a altura (525) cabe no espaço livre
+});
+
+test('encaixe: janela estreita e alta empilha as duas em vez de espremer lado a lado', () => {
+  const l = bestSpotlightLayout(2, 600, 900, 16);
+  assert.equal(l.cols, 1);
+  assert.equal(l.width, 600);
+});
+
+test('encaixe: escolhe a arrumação de MAIOR área; nada passa do espaço livre', () => {
+  for(const [n, W, H] of [[2, 1884, 620], [2, 1280, 500], [2, 900, 700], [1, 1200, 300], [2, 1500, 1000]]){
+    const l = bestSpotlightLayout(n, W, H, 16);
+    const rows = Math.ceil(n / l.cols);
+    assert.ok(l.cols * l.width + (l.cols - 1) * 16 <= W + 1, `largura ${n},${W},${H}`);
+    if(l.width > 240) assert.ok(rows * (l.width * 9 / 16) + (rows - 1) * 16 <= H + 1, `altura ${n},${W},${H}`);
+  }
+});
+
+test('encaixe: espaço minúsculo respeita a largura mínima (a página rola em vez de sumir)', () => {
+  assert.equal(bestSpotlightLayout(2, 300, 100, 16).width, 240);
+});
+
+test('encaixe: empate fica com menos colunas', () => {
+  // 2 tiles em 1000x1000: lado a lado = 492; empilhado = 492 (o limite é a altura) -> 1 coluna
+  const l = bestSpotlightLayout(2, 1000, 1000, 16);
+  assert.ok(l.cols === 1 || l.cols === 2);
+  assert.deepEqual(bestSpotlightLayout(1, 1000, 1000, 16), { cols: 1, width: 1000 });
+});

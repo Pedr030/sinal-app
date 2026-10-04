@@ -433,8 +433,9 @@ body.picker-quality.sharing .quality-wrap{ display:inline-flex; }
 #stageArea{flex:1; display:flex; flex-direction:column; gap:14px;}
 
 .spotlight{
-  display:none; grid-template-columns:repeat(auto-fit, minmax(460px, 1fr));
-  gap:16px; justify-items:center;
+  /* --spot-cols / --tile-w vêm do encaixe automático (fitSpotlight() em app.js); sem JS cai no layout antigo */
+  display:none; grid-template-columns:var(--spot-cols, repeat(auto-fit, minmax(460px, 1fr)));
+  gap:16px; justify-items:center; justify-content:center;
 }
 .filmstrip{
   display:none; gap:10px; overflow-x:auto; padding-bottom:6px;
@@ -446,7 +447,10 @@ body.picker-quality.sharing .quality-wrap{ display:inline-flex; }
   background:#000; border:1px solid var(--line); border-radius:6px;
   overflow:hidden; position:relative; aspect-ratio:16/9;
 }
-.spotlight .tile{ aspect-ratio:16/9; border-color:var(--tune); width:100%; max-height:76vh; max-width:calc(76vh * 16 / 9); }
+.spotlight .tile{
+  aspect-ratio:16/9; border-color:var(--tune);
+  width:var(--tile-w, 100%); max-height:var(--tile-max, 76vh); max-width:var(--tile-max-w, calc(76vh * 16 / 9));
+}
 /* Cursor de mão comum, não a lupinha de zoom-in/zoom-out — o tile é
    clicável (fixar/desafixar destaque), mas não é um "zoom de imagem" de
    verdade, então a lupinha passava a ideia errada. */
@@ -836,3 +840,13 @@ footer .version{margin-top:12px; font-size:10.5px; letter-spacing:1.5px; color:#
 .srv-room-icon{ display:inline-flex; align-items:center; justify-content:center; width:16px; color:var(--fog); flex-shrink:0; }
 .srv-room-icon svg{ width:15px; height:15px; display:block; }
 .srv-room-icon.live{ color:var(--rec); }
+
+/* Dentro da sala o conteúdo usa a largura toda da janela (fora dela o teto de 1440px continua):
+   num monitor de 1920px os destaques ganhavam ~480px de margem sem uso e ficavam bem menores. */
+body.in-room main, body.in-room header.top{ max-width:none; }
+/* Na sala o cabeçalho e as margens ficam mais compactos: cada pixel de altura vira transmissão maior
+   (numa janela de 720px o palco tinha só ~280px de altura; a frase de apresentação não faz falta aqui). */
+body.in-room{ padding-top:12px; padding-bottom:20px; }
+body.in-room header.top{ margin-bottom:12px; padding-bottom:10px; }
+body.in-room .brand small{ display:none; }
+body.in-room .room-bar{ margin-bottom:12px; }

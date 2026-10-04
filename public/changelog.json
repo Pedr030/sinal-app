@@ -1,5 +1,15 @@
 [
   {
+    "id": "2026-10-04-tiles-maiores",
+    "date": "2026-10-04",
+    "title": "Transmissões maiores",
+    "site": "0.8.58",
+    "items": [
+      "As transmissões em destaque agora aproveitam melhor a tela: ficam bem maiores e se ajustam sozinhas ao tamanho da janela.",
+      "Dentro da sala, o topo da tela ficou mais compacto para dar mais espaço ao vídeo."
+    ]
+  },
+  {
     "id": "2026-10-04-correcao-recarregar",
     "date": "2026-10-04",
     "title": "Correções",
