@@ -260,7 +260,7 @@
 </main>
 
 <div class="update-bar" id="updateBar">
-  <span class="mono">Nova versão disponível</span>
+  <span class="mono" id="updateBarText">Nova versão disponível</span>
   <button class="primary" id="updateBtn">Atualizar</button>
 </div>
 
@@ -367,6 +367,18 @@
     <div class="report-actions">
       <span id="reportStatus" class="settings-note"></span>
       <button type="button" id="reportSendBtn" class="report-send">Enviar</button>
+    </div>
+  </div>
+</div>
+
+<!-- Confirmação (no lugar do confirm() do navegador) — ver askConfirm() em app.js -->
+<div id="confirmOverlay" class="settings-overlay confirm-overlay" hidden>
+  <div class="settings-panel confirm-panel" role="alertdialog" aria-modal="true" aria-labelledby="confirmTitle" aria-describedby="confirmMessage">
+    <div class="confirm-title" id="confirmTitle"></div>
+    <div class="confirm-message" id="confirmMessage"></div>
+    <div class="confirm-actions">
+      <button type="button" id="confirmCancelBtn" class="confirm-cancel">Cancelar</button>
+      <button type="button" id="confirmOkBtn" class="primary confirm-ok">Continuar</button>
     </div>
   </div>
 </div>

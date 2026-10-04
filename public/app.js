@@ -2198,7 +2198,8 @@ function renderRosterPanel(){
       kickBtn.title = 'Expulsar da sala';
       kickBtn.innerHTML = ICON_KICK; // SVG constante do próprio código, não vem de ninguém de fora
       kickBtn.addEventListener('click', () => {
-        if(confirm(`Expulsar ${displayName} da sala?`)) moderateAction('kick', p.identity);
+        askConfirm({ title: 'Expulsar da sala', message: `Expulsar ${displayName} da sala?`, okText: 'Expulsar', danger: true })
+          .then((yes) => { if(yes) moderateAction('kick', p.identity); });
       });
       rowEl.appendChild(kickBtn);
     }
@@ -2874,11 +2875,11 @@ function toggleCallSide(){
 
 // Pular de sala sem passar pela tela inicial. Trocar de sala encerra a
 // transmissão/câmera de quem está transmitindo — pergunta antes.
-function hopToRoom(name){
+async function hopToRoom(name){
   if(!name || name === roomCode) return;
   const sharing = document.getElementById('shareBtn').classList.contains('active-share')
     || document.getElementById('cameraBtn').classList.contains('active-share');
-  if(sharing && !window.confirm('Você está transmitindo. Trocar de sala vai parar a transmissão. Continuar?')) return;
+  if(sharing && !(await askConfirm({ title: 'Trocar de sala?', message: 'Você está transmitindo. Trocar de sala vai parar a transmissão.', okText: 'Trocar de sala' }))) return;
   leaveRoom();
   joinServerRoom(name);
 }
@@ -3559,7 +3560,7 @@ window.addEventListener('beforeunload', () => {
 });
 
 // PWA: versão, registro do service worker, detecção de atualização e botão de instalação
-const APP_VERSION = '0.8.58'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
+const APP_VERSION = '0.8.59'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
 // Dentro do Electron, mostra a versão do INSTALADOR (electron/package.json),
 // não a do site — ver preload.js. Fora dele (navegador normal), continua a
 // versão do deploy de sempre.
@@ -3580,20 +3581,102 @@ if('serviceWorker' in navigator){
         if(!newWorker) return;
         newWorker.addEventListener('statechange', () => {
           // 'installed' + já existia um controller = isso é uma atualização, não a primeira instalação.
-          // Dentro do Electron esse banner é redundante — o app já tem seu próprio
-          // fluxo de update de verdade (troca o instalador inteiro, não só a página).
-          if(newWorker.state === 'installed' && navigator.serviceWorker.controller
-            && !(window.sinalElectron && window.sinalElectron.isElectron)){
-            document.getElementById('updateBar').style.display = 'flex';
+          if(newWorker.state === 'installed' && navigator.serviceWorker.controller){
+            siteUpdateReady = true;
+            renderUpdateBar();
           }
         });
       });
     }).catch(() => {});
   });
 }
-document.getElementById('updateBtn').addEventListener('click', () => {
-  window.location.reload();
+
+// ---- Janela de confirmação do Sinal (no lugar do confirm() do navegador, que não aceita estilo) ----
+// Devolve uma Promise<boolean>: true = confirmou; false = cancelou, apertou Esc ou clicou fora.
+// Em ações destrutivas (danger) o foco começa no "Cancelar", pra um Enter sem querer não confirmar.
+let confirmFinish = null;
+function askConfirm({ title, message, okText = 'Continuar', cancelText = 'Cancelar', danger = false }){
+  const overlay = document.getElementById('confirmOverlay');
+  const okBtn = document.getElementById('confirmOkBtn');
+  const cancelBtn = document.getElementById('confirmCancelBtn');
+  if(confirmFinish) confirmFinish(false); // já havia uma aberta: fecha como cancelada
+  document.getElementById('confirmTitle').textContent = title || '';
+  document.getElementById('confirmMessage').textContent = message || '';
+  okBtn.textContent = okText;
+  cancelBtn.textContent = cancelText;
+  okBtn.classList.toggle('danger-fill', !!danger);
+  const previousFocus = document.activeElement;
+  return new Promise((resolve) => {
+    const onKey = (e) => {
+      if(e.key === 'Escape'){ e.preventDefault(); e.stopPropagation(); finish(false); }
+      else if(e.key === 'Tab'){ // o foco fica preso nos dois botões enquanto a janela está aberta
+        e.preventDefault();
+        (document.activeElement === okBtn ? cancelBtn : okBtn).focus();
+      }
+    };
+    const finish = (value) => {
+      confirmFinish = null;
+      overlay.hidden = true;
+      document.removeEventListener('keydown', onKey, true);
+      okBtn.onclick = cancelBtn.onclick = overlay.onclick = null;
+      try{ if(previousFocus && previousFocus.focus) previousFocus.focus(); }catch(e){ /* elemento sumiu */ }
+      resolve(value);
+    };
+    confirmFinish = finish;
+    okBtn.onclick = () => finish(true);
+    cancelBtn.onclick = () => finish(false);
+    overlay.onclick = (e) => { if(e.target === overlay) finish(false); };
+    document.addEventListener('keydown', onKey, true);
+    overlay.hidden = false;
+    (danger ? cancelBtn : okBtn).focus();
+  });
+}
+
+// ---- Aviso de atualização (um só por vez) ----
+// O site novo (service worker) e o instalador novo do app são duas atualizações diferentes. Dentro do app
+// as duas podem existir ao mesmo tempo; mostrar os dois botões confundiria. Regra: se o app tem uma versão
+// nova pronta, o aviso é o dela (reiniciar já abre o site novo, então o do site fica de fora); se o app
+// está baixando, espera; senão, só o do site. Sem nada novo, a barra some. No navegador comum não há app.
+let siteUpdateReady = false;
+let appUpdateStatus = null;
+
+function pickUpdateBar(siteReady, appStatus){
+  if(appStatus === 'ready') return 'app';
+  if(appStatus === 'downloading') return null;
+  return siteReady ? 'site' : null;
+}
+
+function renderUpdateBar(){
+  const mode = pickUpdateBar(siteUpdateReady, appUpdateStatus);
+  const bar = document.getElementById('updateBar');
+  bar.dataset.mode = mode || '';
+  bar.style.display = mode ? 'flex' : 'none';
+  if(!mode) return;
+  document.getElementById('updateBarText').textContent = mode === 'app' ? 'Nova versão do app pronta' : 'Nova versão disponível';
+  document.getElementById('updateBtn').textContent = mode === 'app' ? 'Reiniciar e instalar' : 'Atualizar';
+}
+
+// Atualizar (recarregar o site ou reiniciar o app) derruba a chamada: dentro de uma sala pede confirmação.
+function updateLeaveWarning(inRoom, isSharing){
+  if(!inRoom) return null;
+  return 'Atualizar agora vai fazer você sair da sala' + (isSharing ? ' e parar a sua transmissão' : '') + '.';
+}
+
+document.getElementById('updateBtn').addEventListener('click', async () => {
+  const isSharing = document.getElementById('shareBtn').classList.contains('active-share')
+    || document.getElementById('cameraBtn').classList.contains('active-share');
+  const warning = updateLeaveWarning(document.body.classList.contains('in-room'), isSharing);
+  if(warning && !(await askConfirm({ title: 'Atualizar agora?', message: warning, okText: 'Atualizar' }))) return;
+  if(document.getElementById('updateBar').dataset.mode === 'app') window.sinalElectron.installUpdate();
+  else window.location.reload();
 });
+
+// Instalador 0.3.11+ avisa o estado da atualização do app; os mais antigos só mostram o aviso do site.
+if(window.sinalElectron && typeof window.sinalElectron.onUpdateState === 'function' && typeof window.sinalElectron.getUpdateState === 'function'){
+  const onAppUpdate = (st) => { appUpdateStatus = st && st.status; renderUpdateBar(); };
+  window.sinalElectron.onUpdateState(onAppUpdate);
+  window.sinalElectron.getUpdateState().then(onAppUpdate).catch(() => {});
+}
 
 let deferredInstallPrompt = null;
 window.addEventListener('beforeinstallprompt', (e) => {

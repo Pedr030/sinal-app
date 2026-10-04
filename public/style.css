@@ -138,7 +138,6 @@ body.electron-app #downloadDesktopBtn{display:none !important;}
 #settingsBtn{display:none;}
 #settingsBtn svg{width:18px; height:18px;}
 body.electron-app #settingsBtn{display:inline-flex;}
-body.electron-app #updateBar{display:none !important;}
 
 .settings-overlay{
   display:none; /* [hidden] e classe têm a mesma especificidade — sem isso,
@@ -712,6 +711,19 @@ footer .version{margin-top:12px; font-size:10.5px; letter-spacing:1.5px; color:#
 .report-actions{ display:flex; align-items:center; justify-content:space-between; gap:12px; }
 .report-send{ background:var(--tune); border-color:var(--tune); color:#1a1200; font-weight:600; padding:8px 18px; height:auto; }
 .report-send:disabled{ opacity:.6; }
+
+/* ---------- Janela de confirmação (askConfirm em app.js) ---------- */
+.confirm-overlay{ z-index:300; } /* acima das outras janelas (servidores, relatório, Novidades) */
+.confirm-panel{ width:400px; gap:10px; box-shadow:0 20px 60px rgba(0,0,0,.5); }
+.confirm-title{ font-weight:700; font-size:16px; }
+.confirm-message{ color:#c9cdcc; font-size:13.5px; line-height:1.55; }
+.confirm-actions{ display:flex; justify-content:flex-end; gap:10px; margin-top:10px; }
+.confirm-actions button{ height:auto; padding:9px 18px; font-size:13px; }
+.confirm-cancel{ background:transparent; color:var(--fog); border:1px solid var(--line); }
+.confirm-cancel:hover{ color:var(--ink); border-color:var(--fog); }
+button.confirm-ok.danger-fill{ background:var(--rec); border-color:var(--rec); color:#fff; }
+button.confirm-ok.danger-fill:hover{ background:#ff5c52; }
+.confirm-actions button:focus-visible{ outline:2px solid var(--tune); outline-offset:2px; }
 
 /* ---------- SERVERS NO SINAL (HANDOFF §39) ---------- */
 .srv-layout{ display:flex; width:100%; align-items:flex-start; }
