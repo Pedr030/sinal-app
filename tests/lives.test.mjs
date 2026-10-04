@@ -88,3 +88,25 @@ test('sala privada aparece (com cadeado) mas sem nenhum segredo', async () => {
   assert.match(text, /"access":"password"/);
   assert.doesNotMatch(text, /hash-secreto/);
 });
+
+// ---------- varredura de segurança (HANDOFF §42) ----------
+
+test('corpo JSON que não é objeto (null, lista, número): 400, sem exceção', async () => {
+  for(const body of ['null', '[]', '1', '"x"']){
+    const res = await POST(new Request('http://localhost/api/lives', { method: 'POST', body }));
+    assert.equal(res.status, 400, body);
+  }
+});
+
+test('limite por pessoa: a 121ª consulta em um minuto leva 429; outra pessoa não é afetada', async () => {
+  // id próprio: as chamadas dos testes anteriores (id 9) já contaram no limite deste arquivo
+  const eu = signSession({ v: 1, id: '55', name: 'Eu', admin: false, guilds: [[G1, 'Um', '', 'x']], exp: Date.now() + 1e6 }, TEST_SECRET);
+  const outra = signSession({ v: 1, id: '77', name: 'Outra', admin: false, guilds: [[G1, 'Um', '', 'x']], exp: Date.now() + 1e6 }, TEST_SECRET);
+  let status;
+  for(let i = 0; i < 120; i++) status = (await call({ session: eu, guilds: [G1] })).status;
+  assert.equal(status, 200);
+  const bloqueada = await call({ session: eu, guilds: [G1] });
+  assert.equal(bloqueada.status, 429);
+  assert.equal((await bloqueada.json()).error, 'muitos-pedidos');
+  assert.equal((await call({ session: outra, guilds: [G1] })).status, 200);
+});

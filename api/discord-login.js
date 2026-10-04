@@ -8,6 +8,8 @@
 // Escopos: `identify` (nome + avatar) e `guilds` (lista de servers do Discord
 // da pessoa, com as permissões dela em cada um — é o que alimenta os "servers
 // no Sinal", HANDOFF §38). Nada além disso: não lê mensagens, não vê membros.
+import { randomBytes } from 'node:crypto';
+
 export async function GET(request){
   const clientId = process.env.DISCORD_CLIENT_ID;
   if(!clientId){
@@ -41,11 +43,24 @@ export async function GET(request){
   authorizeUrl.searchParams.set('redirect_uri', redirectUri);
   authorizeUrl.searchParams.set('response_type', 'code');
   authorizeUrl.searchParams.set('scope', 'identify guilds');
-  if(fromApp) authorizeUrl.searchParams.set('state', 'app.' + nonce);
-  else if(sala) authorizeUrl.searchParams.set('state', sala);
+  // Login pelo navegador (não o do app): o `state` leva um nonce aleatório que TAMBÉM vai num
+  // cookie (HttpOnly, SameSite=Lax) e o callback exige que os dois batam. Sem isso, um atacante
+  // poderia iniciar o login na conta DELE e mandar o link do callback pra vítima, que ficaria
+  // logada como o atacante sem perceber ("login CSRF"). O login do app já é protegido pelo
+  // nonce guardado no próprio app.
+  let setCookie = null;
+  if(fromApp){
+    authorizeUrl.searchParams.set('state', 'app.' + nonce);
+  } else {
+    const csrf = randomBytes(16).toString('hex');
+    authorizeUrl.searchParams.set('state', csrf + (sala ? '.' + sala : ''));
+    setCookie = `sinal_oauth=${csrf}; Max-Age=600; Path=/api/discord-callback; HttpOnly; SameSite=Lax${url.protocol === 'https:' ? '; Secure' : ''}`;
+  }
   // "Atualizar meus servidores": renova o login sem tela de consentimento
   // (se a pessoa já autorizou, o Discord devolve o code direto).
   if(url.searchParams.get('refresh') === '1') authorizeUrl.searchParams.set('prompt', 'none');
 
-  return Response.redirect(authorizeUrl.toString(), 302);
+  const headers = { location: authorizeUrl.toString() };
+  if(setCookie) headers['set-cookie'] = setCookie;
+  return new Response(null, { status: 302, headers });
 }

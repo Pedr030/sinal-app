@@ -16,10 +16,12 @@ before(async () => {
 after(() => cleanup && cleanup());
 beforeEach(() => { fake = resetFake(); });
 
-const post = (body) => POST(new Request('http://localhost/api/get-token', {
+// Cada chamada sai de um IP diferente por padrão (o limite de pedidos é por IP e os testes são muitos).
+let ipCounter = 0;
+const post = (body, ip) => POST(new Request('http://localhost/api/get-token', {
   method: 'POST',
-  headers: { 'content-type': 'application/json' },
-  body: JSON.stringify(body)
+  headers: { 'content-type': 'application/json', 'x-forwarded-for': ip || ('10.9.0.' + (++ipCounter)) },
+  body: typeof body === 'string' ? body : JSON.stringify(body)
 }));
 const grantOf = async (res) => JSON.parse((await res.json()).token.split('FAKE_JWT.')[1]);
 
@@ -194,14 +196,21 @@ test('server-join numa sala aberta do server: token, sem roomAdmin pra membro co
   assert.equal(payload.grant.roomAdmin, undefined);
 });
 
-test('server-join: dono, Administrador e Gerenciar Servidor moderam (roomAdmin)', async () => {
+test('server-join: staff do servidor (dono/admin/gerencia) NÃO recebe roomAdmin — o nível vai assinado no metadata; só o admin do Sinal tem o grant', async () => {
   fake.rooms = [openRoom()];
   for(const tier of ['o', 'a', 'm']){
-    const res = await post({ mode: 'server-join', room: serverRoom, session: sessionFor({ tier }) });
-    assert.equal((await grantOf(res)).grant.roomAdmin, true, `tier ${tier}`);
+    const payload = await grantOf(await post({ mode: 'server-join', room: serverRoom, session: sessionFor({ tier }) }));
+    assert.equal(payload.grant.roomAdmin, undefined, `tier ${tier} não pode ter roomAdmin (daria acesso à API admin do LiveKit)`);
+    const meta = JSON.parse(payload.metadata);
+    assert.equal(meta.tier, tier);
+    assert.equal(meta.guild, GUILD);
   }
+  const sinalAdmin = await grantOf(await post({ mode: 'server-join', room: serverRoom, session: sessionFor({ tier: 'x', admin: true }) }));
+  assert.equal(sinalAdmin.grant.roomAdmin, true);
+  assert.equal(JSON.parse(sinalAdmin.metadata).isAdmin, true);
 });
 
+
 test('server-join: sala inexistente 404; nome fora do formato 400; server alheio 403', async () => {
   assert.equal((await post({ mode: 'server-join', room: serverRoom, session: sessionFor() })).status, 404);
   assert.equal((await post({ mode: 'server-join', room: 'ABC123', session: sessionFor() })).status, 400);
@@ -267,4 +276,59 @@ test('presence: não dá pra pedir servers a mais — o atributo vem da sessão,
   const res = await post({ mode: 'presence', guilds: [GUILD, OTHER_GUILD, '333333333333333333'], session: s });
   const payload = JSON.parse((await res.json()).token.split('FAKE_JWT.')[1]);
   assert.deepEqual(payload.attributes.guilds.split(',').sort(), [GUILD, OTHER_GUILD].sort());
+});
+
+// ---------- varredura de segurança (HANDOFF §42) ----------
+
+test('presence: o participante é OCULTO — ninguém enxerga os outros conectados (nomes, IDs do Discord, servidores)', async () => {
+  const payload = await grantOf(await post({ mode: 'presence', guilds: [GUILD], session: sessionFor() }));
+  assert.equal(payload.grant.hidden, true);
+});
+
+test('corpo JSON válido mas que não é objeto (null, lista, número, texto): 400, sem exceção', async () => {
+  for(const body of ['null', '[]', '[1,2]', '1', '"texto"', 'true']){
+    const res = await post(body);
+    assert.equal(res.status, 400, body);
+    assert.equal((await res.json()).error, 'corpo-invalido');
+  }
+});
+
+test('nome de exibição: sem caracteres de controle, direção invertida (RLO), espaço invisível nem a coroa; espaços normalizados', async () => {
+  fake.rooms = [{ name: 'EXISTE1', numParticipants: 1 }];
+  const sujo = 'Ad' + String.fromCodePoint(0x202e) + 'min' + String.fromCodePoint(0x200b, 0x1f451, 0x7) + '   Real ';
+  const payload = await grantOf(await post({ room: 'existe1', name: sujo, mode: 'join' }));
+  assert.equal(payload.name, 'Admin Real');
+});
+
+test('limite de pedidos por IP: o 61º em um minuto leva 429; outro IP não é afetado', async () => {
+  fake.rooms = [{ name: 'EXISTE1', numParticipants: 1 }];
+  const ip = '203.0.113.50';
+  let ultimo;
+  for(let i = 0; i < 60; i++){ ultimo = await post({ room: 'existe1', name: 'x', mode: 'join' }, ip); assert.equal(ultimo.status, 200); }
+  const bloqueado = await post({ room: 'existe1', name: 'x', mode: 'join' }, ip);
+  assert.equal(bloqueado.status, 429);
+  assert.equal((await bloqueado.json()).error, 'muitos-pedidos');
+  assert.equal((await post({ room: 'existe1', name: 'x', mode: 'join' }, '203.0.113.51')).status, 200);
+});
+
+test('sala por código nasce com teto de participantes (anti abuso da VM)', async () => {
+  await post({ room: 'novasala', name: 'Pedro', mode: 'create' });
+  assert.equal(fake.created.maxParticipants, 25);
+});
+
+test('erro interno não vaza detalhe pro cliente (mensagem genérica; detalhe só no log)', async () => {
+  fake.rooms = [{ name: 'EXISTE1', numParticipants: 1 }];
+  globalThis.__failToken = true;
+  const original = console.error;
+  console.error = () => {};
+  try{
+    const res = await post({ room: 'existe1', name: 'x', mode: 'join' });
+    const text = await res.text();
+    assert.equal(res.status, 500);
+    assert.deepEqual(JSON.parse(text), { error: 'falha-ao-gerar-token' });
+    assert.ok(!/SECRETO|interno\.invalid/.test(text));
+  } finally {
+    console.error = original;
+    delete globalThis.__failToken;
+  }
 });

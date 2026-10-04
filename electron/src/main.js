@@ -74,6 +74,63 @@ function readLogTail(maxBytes = 60 * 1024){
 // endereço local desligado/ligado. O app instalado ignora.
 const SINAL_URL = (!app.isPackaged && process.env.SINAL_DEV_URL) || 'https://sinal-app-stream.vercel.app';
 
+// ---- Segurança (HANDOFF §42): quem pode falar com o processo principal ----
+// O preload expõe `window.sinalElectron` a QUALQUER página carregada na janela. Se alguma outra
+// página aparecesse ali (um link, um redirecionamento, uma falha no site), ela herdaria esse
+// poder — inclusive o de iniciar uma captura de tela sem seletor. Por isso: (1) a janela só
+// navega pro próprio site (links externos abrem no navegador), (2) janelas novas são negadas,
+// (3) permissões (câmera, captura…) só valem pro site do Sinal e (4) cada IPC confere de onde
+// veio a mensagem.
+const SINAL_ORIGIN = new URL(SINAL_URL).origin;
+const OFFLINE_PAGE_URL = require('url').pathToFileURL(path.join(__dirname, 'offline.html')).href;
+
+function isSinalUrl(raw){
+  try{ return new URL(raw).origin === SINAL_ORIGIN; }catch(e){ return false; }
+}
+
+// Quem enviou a mensagem IPC: o site do Sinal ou a tela local de "sem conexão" (offline.html).
+function fromSinal(event){
+  try{
+    const url = (event.senderFrame && event.senderFrame.url) || '';
+    return isSinalUrl(url) || url.startsWith(OFFLINE_PAGE_URL);
+  }catch(e){
+    return false;
+  }
+}
+
+// Só https abre no navegador — nunca file:, javascript:, protocolos do sistema etc.
+const LF_TEST = String.fromCharCode(10);
+function openExternalSafe(raw){
+  try{
+    const parsed = new URL(raw);
+    if(parsed.protocol !== 'https:') return;
+    // Só nos testes em modo dev (app não empacotado): anota a URL em vez de abrir o navegador.
+    if(!app.isPackaged && process.env.SINAL_TEST_EXTERNAL_FILE){
+      fs.appendFileSync(process.env.SINAL_TEST_EXTERNAL_FILE, parsed.toString() + LF_TEST);
+      return;
+    }
+    shell.openExternal(parsed.toString());
+  }catch(e){ /* URL inválida: ignora */ }
+}
+
+// ipcMain.on/handle que só atendem mensagens vindas do site do Sinal (ver fromSinal).
+const trustedIpc = {
+  on(channel, listener){
+    ipcMain.on(channel, (event, ...args) => {
+      if(fromSinal(event)) return listener(event, ...args);
+      console.warn('[sinal] mensagem IPC recusada (origem não confiável):', channel);
+      if(channel === 'sinal:get-app-version') event.returnValue = ''; // o preload espera resposta síncrona
+    });
+  },
+  handle(channel, listener){
+    ipcMain.handle(channel, (event, ...args) => {
+      if(fromSinal(event)) return listener(event, ...args);
+      console.warn('[sinal] mensagem IPC recusada (origem não confiável):', channel);
+      return undefined;
+    });
+  }
+};
+
 // Protocolo customizado (sinal://) pra links de convite abrirem o app
 // instalado em vez de só o navegador — ver "Abrir no app" em public/app.js
 // (o botão que gera esse link) e HANDOFF.md. Formato: sinal://join?sala=CODIGO.
@@ -92,7 +149,13 @@ app.setAsDefaultProtocolClient('sinal');
 
 function extractRoomCodeFromProtocolUrl(url){
   const m = /[?&]sala=([^&]+)/.exec(url || '');
-  return m ? decodeURIComponent(m[1]) : null;
+  if(!m) return null;
+  let code;
+  // %-sequência malformada (ex: "%") faria o decode lançar e derrubar o processo principal —
+  // qualquer página da internet pode abrir um sinal:// assim. Ignora em vez de quebrar.
+  try{ code = decodeURIComponent(m[1]); }catch(e){ return null; }
+  // Só o formato de uma sala de verdade (código ou nome interno de sala de servidor).
+  return /^[A-Za-z0-9_-]{1,64}$/.test(code) ? code : null;
 }
 
 // Addon nativo de áudio isolado por processo (ver HANDOFF §15.2) — carregado
@@ -181,6 +244,7 @@ function applyLoginItemSetting(){
 // tiro só — consumido (e resetado) na próxima chamada de getDisplayMedia,
 // não fica "grudado" afetando um compartilhamento manual depois.
 let skipPickerOnce = false;
+let lastShortcutAt = 0; // quando o atalho global disparou de verdade (só o processo principal sabe)
 
 let mainWindow = null;
 let splashWindow = null;
@@ -296,7 +360,7 @@ function showOfflinePage(failedUrl){
   if(!offlineRetryTimer) scheduleOfflineRetry();
 }
 
-ipcMain.on('sinal:retry-connection', () => { tryReconnect({ manual: true }); });
+trustedIpc.on('sinal:retry-connection', () => { tryReconnect({ manual: true }); });
 
 function createMainWindow(initialRoomCode, startHidden){
   mainWindow = new BrowserWindow({
@@ -456,7 +520,11 @@ function showSourcePicker(sources){
       pickerWindow.webContents.send('sources', { sources: serializable, quality: appSettings.shareQuality });
     });
 
-    ipcMain.once('picker:choose', (event, choice) => {
+    const onPickerChoose = (event, choice) => {
+      // Só o seletor desta janela responde (antes era `once` no canal inteiro: qualquer mensagem
+      // consumia o ouvinte, e ele ficava pendurado se a janela fosse fechada sem escolher).
+      if(!pickerWindow || event.sender !== pickerWindow.webContents) return;
+      ipcMain.removeListener('picker:choose', onPickerChoose);
       const { sourceId, quality } = choice || {};
       const chosen = sources.find((s) => s.id === sourceId) || null;
       // Grava ANTES de devolver a fonte: o site lê getSettings() logo que a
@@ -466,8 +534,9 @@ function showSourcePicker(sources){
         saveSettings(appSettings);
       }
       finish(chosen);
-    });
-    pickerWindow.on('closed', () => finish(null)); // fechou sem escolher = cancelou
+    };
+    ipcMain.on('picker:choose', onPickerChoose);
+    pickerWindow.on('closed', () => { ipcMain.removeListener('picker:choose', onPickerChoose); finish(null); }); // fechou sem escolher = cancelou
   });
 }
 
@@ -528,8 +597,13 @@ async function showUpdateDialog(info){
       updateWindow.webContents.send('update-info', { version: info.version, notes });
     });
 
-    ipcMain.once('update:choice', (event, restartNow) => finish(restartNow));
-    updateWindow.on('closed', () => finish(false)); // fechou sem escolher = "depois"
+    const onUpdateChoice = (event, restartNow) => {
+      if(!updateWindow || event.sender !== updateWindow.webContents) return;
+      ipcMain.removeListener('update:choice', onUpdateChoice);
+      finish(restartNow === true);
+    };
+    ipcMain.on('update:choice', onUpdateChoice);
+    updateWindow.on('closed', () => { ipcMain.removeListener('update:choice', onUpdateChoice); finish(false); }); // fechou sem escolher = "depois"
   });
 }
 
@@ -685,24 +759,25 @@ function stopMultiSourceAudio(){
 // Renderer avisa quando o usuário marca/desmarca um app na lista de fontes
 // (checkbox por app, só existe no modo multi — ver public/app.js).
 // Fica lembrado (settings.json) pros próximos compartilhamentos.
-ipcMain.on('sinal:audio-toggle-source', (event, { pid, exeName, enabled }) => {
-  const exe = (exeName || '').toLowerCase();
+trustedIpc.on('sinal:audio-toggle-source', (event, payload) => {
+  const { pid, exeName, enabled } = payload && typeof payload === 'object' ? payload : {};
+  const exe = typeof exeName === 'string' ? exeName.toLowerCase().slice(0, 80) : '';
   if(!exe) return;
   const others = excludedAudioApps().filter((e) => e !== exe);
-  appSettings = { ...appSettings, excludedAudioApps: enabled ? others : [...others, exe] };
+  appSettings = { ...appSettings, excludedAudioApps: (enabled ? others : [...others, exe]).slice(0, 100) };
   saveSettings(appSettings);
-  if(!enabled && multiSources.has(pid)) stopSourceCapture(pid);
+  if(!enabled && typeof pid === 'number' && multiSources.has(pid)) stopSourceCapture(pid);
 });
 
 // Renderer avisa quando parou de compartilhar (ver public/app.js toggleShare)
 // — sem isso a(s) captura(s) nativa(s) ficariam rodando pra sempre em segundo plano.
-ipcMain.on('sinal:audio-stop', stopIsolatedAudio);
+trustedIpc.on('sinal:audio-stop', stopIsolatedAudio);
 
 // Versão do instalador (não a do site) pro rodapé mostrar dentro do app
 // desktop — ver preload.js/app.js. Síncrono (sendSync/returnValue) porque o
 // preload precisa do valor pronto antes da página rodar, sem virar Promise
 // espalhada pelo app.js só pra isso.
-ipcMain.on('sinal:get-app-version', (event) => { event.returnValue = app.getVersion(); });
+trustedIpc.on('sinal:get-app-version', (event) => { event.returnValue = app.getVersion(); });
 
 // Auto-update via GitHub Releases (tag "desktop-vX.Y.Z", ver build.publish em
 // package.json). Só funciona em build empacotado — em dev não existe
@@ -845,7 +920,7 @@ function setupAutoUpdater(){
   });
 }
 
-ipcMain.on('sinal:set-in-room', (event, value, roomCode) => {
+trustedIpc.on('sinal:set-in-room', (event, value, roomCode) => {
   inRoom = !!value;
   lastRoomCode = inRoom && typeof roomCode === 'string' ? roomCode.slice(0, 64) : null;
   if(!inRoom) promptAfterFreshCheck();
@@ -866,7 +941,7 @@ function deliverAuth(auth){
   mainWindow.webContents.send('sinal:auth', auth);
 }
 
-ipcMain.handle('sinal:open-login', async (event, nonce, options) => {
+trustedIpc.handle('sinal:open-login', async (event, nonce, options) => {
   const target = buildLoginUrl(SINAL_URL, nonce, { refresh: !!(options && options.refresh) });
   if(!target) return false;
   // Só nos testes em modo dev (app não empacotado): grava a URL em vez de abrir o navegador de verdade.
@@ -880,17 +955,17 @@ ipcMain.handle('sinal:open-login', async (event, nonce, options) => {
   }
 });
 
-ipcMain.handle('sinal:take-pending-auth', () => {
+trustedIpc.handle('sinal:take-pending-auth', () => {
   const auth = pendingAuth;
   pendingAuth = null;
   return auth;
 });
 
 // Avisos do site pro registro (início/fim/troca de transmissão etc).
-ipcMain.on('sinal:log', (event, message) => {
-  if(typeof message === 'string') writeLog('site', [message.slice(0, 600)]);
+trustedIpc.on('sinal:log', (event, message) => {
+  if(typeof message === 'string') writeLog('site', [message.slice(0, 600).replace(/[\r\n]+/g, ' ')]);
 });
-ipcMain.handle('sinal:get-log-tail', () => {
+trustedIpc.handle('sinal:get-log-tail', () => {
   const header = [
     `Sinal ${app.getVersion()} · Electron ${process.versions.electron} · Chrome ${process.versions.chrome}`,
     `Windows ${os.release()} · ${os.arch()} · ${Math.round(os.totalmem() / 1073741824)} GB RAM`,
@@ -927,9 +1002,9 @@ app.on('render-process-gone', (event, webContents, details) => {
 app.on('child-process-gone', (event, details) => {
   console.error('[sinal] processo do Chromium caiu:', details);
 });
-ipcMain.handle('sinal:get-update-state', () => updateState);
-ipcMain.handle('sinal:check-for-updates', () => { checkForUpdates({ manual: true }); return updateState; });
-ipcMain.on('sinal:install-update', () => {
+trustedIpc.handle('sinal:get-update-state', () => updateState);
+trustedIpc.handle('sinal:check-for-updates', () => { checkForUpdates({ manual: true }); return updateState; });
+trustedIpc.on('sinal:install-update', () => {
   if(updateState.status !== 'ready') return;
   isQuitting = true;
   autoUpdater.quitAndInstall();
@@ -950,7 +1025,19 @@ app.whenReady().then(() => {
   // nível superior do módulo (fora do whenReady) derruba o processo inteiro
   // com "Session can only be received when app is ready" antes mesmo de
   // abrir qualquer janela. Pegou essa em teste real (ver HANDOFF).
+  // Permissões em lista de permitidas, só pro site do Sinal. O padrão do Electron é liberar TUDO
+  // pra qualquer página sem perguntar (câmera, microfone, localização…).
+  const ALLOWED_PERMISSIONS = new Set(['media', 'display-capture', 'fullscreen', 'clipboard-sanitized-write']);
+  session.defaultSession.setPermissionRequestHandler((webContents, permission, callback, details) => {
+    callback(ALLOWED_PERMISSIONS.has(permission) && isSinalUrl((details && details.requestingUrl) || webContents.getURL()));
+  });
+  session.defaultSession.setPermissionCheckHandler((webContents, permission, requestingOrigin) => {
+    return ALLOWED_PERMISSIONS.has(permission) && isSinalUrl(requestingOrigin);
+  });
+
   session.defaultSession.setDisplayMediaRequestHandler(async (request, callback) => {
+    // Captura de tela só pro site do Sinal (nenhuma outra página que algum dia apareça aqui).
+    if(!isSinalUrl(request.securityOrigin || '')){ callback({}); return; }
     try{
       const sources = await desktopCapturer.getSources({
         types: ['screen', 'window'],
@@ -1024,13 +1111,14 @@ app.whenReady().then(() => {
 // alt-tab é o cenário que mais importa aqui.
 //
 // Reutilizável: chamada no início E toda vez que a aba de settings muda o
-// atalho ou liga/desliga ele (ver ipcMain.handle('sinal:set-settings')
+// atalho ou liga/desliga ele (ver trustedIpc.handle('sinal:set-settings')
 // abaixo) — sempre desregistra o anterior antes, senão um rebind ficaria
 // com os dois atalhos (o velho E o novo) registrados ao mesmo tempo.
 function registerShareShortcut(){
   globalShortcut.unregisterAll();
   if(!appSettings.shortcutEnabled) return true;
   const ok = globalShortcut.register(appSettings.shortcut, () => {
+    lastShortcutAt = Date.now();
     if(mainWindow && !mainWindow.isDestroyed()){
       mainWindow.webContents.send('sinal:toggle-share-shortcut');
     }
@@ -1043,12 +1131,61 @@ function registerShareShortcut(){
 
 app.on('will-quit', () => { globalShortcut.unregisterAll(); });
 
+// Nenhuma janela do app abre outra janela nem sai do site: link externo vai pro navegador (só
+// https) e o resto é negado. Vale pra principal, seletor, aviso de atualização e splash.
+app.on('web-contents-created', (event, contents) => {
+  contents.setWindowOpenHandler(({ url }) => { openExternalSafe(url); return { action: 'deny' }; });
+  contents.on('will-attach-webview', (e) => e.preventDefault());
+  contents.on('will-navigate', (e, url) => {
+    if(isSinalUrl(url) || url.startsWith(OFFLINE_PAGE_URL)) return;
+    e.preventDefault();
+    openExternalSafe(url);
+  });
+  contents.on('will-redirect', (e, url) => {
+    if(!isSinalUrl(url)) e.preventDefault();
+  });
+});
+
 // Settings da aba de configurações (ver public/app.js) — só o necessário
 // pra essa feature, nada pessoal (ver comentário em SETTINGS_PATH).
-ipcMain.handle('sinal:get-settings', () => appSettings);
+trustedIpc.handle('sinal:get-settings', () => appSettings);
 
-ipcMain.handle('sinal:set-settings', (event, partial) => {
-  appSettings = { ...appSettings, ...partial };
+// Valida o que o site manda: só as chaves conhecidas, com o tipo certo. Antes qualquer chave era
+// gravada em settings.json e o atalho aceitava qualquer combinação — um site comprometido poderia
+// registrar, por exemplo, Ctrl+C como atalho GLOBAL e quebrar o copiar/colar do Windows inteiro.
+const ACCELERATOR_MODIFIERS = ['Control', 'Alt', 'Shift', 'Super'];
+function isSafeAccelerator(value){
+  if(typeof value !== 'string' || value.length > 40) return false;
+  const parts = value.split('+');
+  const key = parts.pop();
+  if(!/^([A-Z0-9]|F([1-9]|1[0-9]|2[0-4]))$/.test(key)) return false;
+  if(!parts.length || new Set(parts).size !== parts.length) return false;
+  if(!parts.every((m) => ACCELERATOR_MODIFIERS.includes(m))) return false;
+  // Só Ctrl ou só Shift + tecla é copiar/colar/digitar: pega por cima de todos os programas.
+  if(parts.length === 1 && (parts[0] === 'Control' || parts[0] === 'Shift')) return false;
+  if(key === 'F4' && parts.length === 1 && parts[0] === 'Alt') return false; // Alt+F4 fecha janelas
+  return true;
+}
+
+function sanitizeSettingsPatch(patch){
+  const out = {};
+  if(!patch || typeof patch !== 'object' || Array.isArray(patch)) return out;
+  for(const key of ['shortcutEnabled', 'quickShareWholeScreen', 'startWithWindows', 'startMinimized']){
+    if(typeof patch[key] === 'boolean') out[key] = patch[key];
+  }
+  if(isSafeAccelerator(patch.shortcut)) out.shortcut = patch.shortcut;
+  if(SHARE_QUALITIES.includes(patch.shareQuality)) out.shareQuality = patch.shareQuality;
+  if(Array.isArray(patch.excludedAudioApps)){
+    out.excludedAudioApps = [...new Set(patch.excludedAudioApps
+      .filter((x) => typeof x === 'string')
+      .map((x) => x.toLowerCase().slice(0, 80))
+      .filter(Boolean))].slice(0, 100);
+  }
+  return out;
+}
+
+trustedIpc.handle('sinal:set-settings', (event, partial) => {
+  appSettings = { ...appSettings, ...sanitizeSettingsPatch(partial) };
   saveSettings(appSettings);
   const shortcutRegistered = registerShareShortcut();
   applyLoginItemSetting();
@@ -1058,7 +1195,15 @@ ipcMain.handle('sinal:set-settings', (event, partial) => {
 // Chamado pelo renderer bem antes de toggleShare() quando o atalho disparou
 // COMEÇANDO um compartilhamento (não parando) com "tela inteira direto"
 // ligado — ver setupGlobalShareShortcut() em app.js.
-ipcMain.on('sinal:request-quick-share', () => { skipPickerOnce = true; });
+trustedIpc.on('sinal:request-quick-share', () => {
+  // Pular o seletor entrega a tela inteira SEM nenhuma pergunta — então só vale se o atalho
+  // global acabou de ser apertado de verdade (o renderer pode pedir isso a qualquer hora, o
+  // processo principal é quem sabe se houve atalho) e com a opção ligada. Um tiro só, que
+  // expira sozinho se a captura não vier.
+  if(!appSettings.quickShareWholeScreen || Date.now() - lastShortcutAt > 3000) return;
+  skipPickerOnce = true;
+  setTimeout(() => { skipPickerOnce = false; }, 5000);
+});
 
 // Abrir via link sinal:// com o app JÁ rodando: o Windows lança um processo
 // novo (que perde o lock lá em cima e sai na hora), mas antes disso emite
