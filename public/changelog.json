@@ -1,5 +1,14 @@
 [
   {
+    "id": "2026-10-04-correcao-recarregar",
+    "date": "2026-10-04",
+    "title": "Correções",
+    "site": "0.8.57",
+    "items": [
+      "Correção de um problema que, depois de recarregar a página, deixava o site e o app sem fontes e imagens e sem conseguir entrar nas salas."
+    ]
+  },
+  {
     "id": "2026-10-03-seguranca",
     "date": "2026-10-03",
     "title": "Melhorias de segurança",
