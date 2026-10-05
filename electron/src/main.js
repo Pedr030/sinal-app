@@ -401,7 +401,7 @@ function createMainWindow(initialRoomCode, startHidden){
   // offline.html e tenta de novo sozinho até o site responder.
   mainWindow.webContents.on('did-fail-load', (event, errorCode, errorDesc, validatedURL, isMainFrame) => {
     // -3 = navegação cancelada (ex: trocou de página no meio) — não é falta de rede.
-    if(!isMainFrame || errorCode === -3 || !String(validatedURL).startsWith(SINAL_URL)) return;
+    if(!isMainFrame || errorCode === -3 || !isSinalUrl(validatedURL)) return;
     console.error(`[sinal] site não carregou (${errorCode} ${errorDesc}) — mostrando a tela de sem conexão`);
     showOfflinePage(validatedURL);
   });
