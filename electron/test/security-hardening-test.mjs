@@ -1,7 +1,6 @@
 // Teste do endurecimento de segurança do Electron (HANDOFF §42) no app de verdade (modo dev),
-// pela porta de depuração (CDP). Abre uma janela do app por ~45s — feche o app instalado antes
-// (ele só deixa uma cópia rodando; o perfil de dev é o mesmo do instalado, então o teste
-// guarda e RESTAURA as suas configurações no final).
+// pela porta de depuração (CDP). Abre uma janela do app por ~45s, num perfil temporário
+// (não precisa fechar o app instalado nem mexe nas suas configurações).
 //
 // Uso (na raiz do repo):
 //   ELECTRON_DIR=electron PUBLIC_DIR=public NOCACHE_SERVER=electron/test/nocache-server.mjs \
@@ -15,7 +14,7 @@
 // (5) pedir "captura sem seletor" fora do atalho global de verdade não entrega a tela;
 // (6) link sinal:// malformado não derruba o app e código estranho é ignorado.
 import { spawn } from 'node:child_process';
-import { readFileSync, existsSync, rmSync, writeFileSync } from 'node:fs';
+import { readFileSync, existsSync, rmSync, writeFileSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -24,6 +23,9 @@ const PUBLIC_DIR = process.env.PUBLIC_DIR;
 const PORT = Number(process.env.TEST_PORT || 3096), FOREIGN_PORT = PORT + 1, DBG = 9333;
 const ORIGIN = `http://127.0.0.1:${PORT}`;
 const FOREIGN = `http://127.0.0.1:${FOREIGN_PORT}`;
+// Perfil só do teste (pasta temporária): não precisa fechar o app instalado e não mexe nas suas configurações.
+const PROFILE = process.env.TEST_PROFILE || mkdtempSync(join(tmpdir(), 'sinal-test-profile-'));
+const PROFILE_ARG = `--user-data-dir="${PROFILE}"`;
 const EXT_FILE = join(tmpdir(), 'sinal-test-external-urls.txt');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const t0 = Date.now();
@@ -54,14 +56,14 @@ const externalUrls = () => (existsSync(EXT_FILE) ? readFileSync(EXT_FILE, 'utf8'
 
 function launchSecondInstance(url){
   // Igual ao Windows ao abrir um sinal://… com o app já rodando (aspas por causa do "&" no cmd).
-  return spawn('npx', ['electron', '.', `"${url}"`], { cwd: ELECTRON_DIR, shell: true, stdio: 'ignore' });
+  return spawn('npx', ['electron', '.', PROFILE_ARG, `"${url}"`], { cwd: ELECTRON_DIR, shell: true, stdio: 'ignore' });
 }
 
 if(existsSync(EXT_FILE)) rmSync(EXT_FILE);
 writeFileSync(EXT_FILE, '');
 const servers = [PORT, FOREIGN_PORT].map((p) => spawn('node', [process.env.NOCACHE_SERVER, PUBLIC_DIR, String(p)]));
 await sleep(900);
-const app = spawn('npx', ['electron', '.', `--remote-debugging-port=${DBG}`], {
+const app = spawn('npx', ['electron', '.', `--remote-debugging-port=${DBG}`, PROFILE_ARG], {
   cwd: ELECTRON_DIR, shell: true,
   env: { ...process.env, SINAL_DEV_URL: ORIGIN, SINAL_TEST_EXTERNAL_FILE: EXT_FILE }
 });
@@ -80,6 +82,7 @@ const cleanup = async () => {
   servers.forEach((srv) => spawn('taskkill', ['/F', '/T', '/PID', String(srv.pid)], { shell: true }));
   spawn('taskkill', ['/F', '/T', '/PID', String(app.pid)], { shell: true });
   try{ rmSync(EXT_FILE, { force: true }); }catch{}
+  setTimeout(() => { try{ rmSync(PROFILE, { recursive: true, force: true }); }catch{} }, 2500);
 };
 
 try{

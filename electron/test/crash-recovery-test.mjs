@@ -1,6 +1,6 @@
 // Teste da recuperação automática + registro do app no Electron de verdade
 // (modo dev), observando pela porta de depuração (CDP). Abre uma janela do app
-// por ~20s — feche o app instalado antes. Ver HANDOFF §37.
+// por ~20s, num perfil temporário (não precisa fechar o app instalado). Ver HANDOFF §37.
 //
 // Uso (na raiz do repo):
 //   ELECTRON_DIR=electron PUBLIC_DIR=public NOCACHE_SERVER=electron/test/nocache-server.mjs \
@@ -11,7 +11,7 @@
 // sozinha (com ?sala=TESTE1), que o registro tem a falha e que getLogTail()
 // entrega o texto sem o nome de usuário do Windows.
 import { spawn } from 'node:child_process';
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import os from 'node:os';
 
@@ -21,7 +21,10 @@ const PORT = Number(process.env.TEST_PORT || 3094), DBG = 9333;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const t0 = Date.now();
 const log = (...a) => console.log(`[${((Date.now() - t0) / 1000).toFixed(1)}s]`, ...a);
-const LOG_FILE = join(process.env.APPDATA || '', 'sinal-desktop', 'logs', 'sinal.log');
+// Perfil só do teste (pasta temporária): não precisa fechar o app instalado e não mexe nas suas configurações.
+const PROFILE = process.env.TEST_PROFILE || mkdtempSync(join(os.tmpdir(), 'sinal-test-profile-'));
+const PROFILE_ARG = `--user-data-dir="${PROFILE}"`;
+const LOG_FILE = join(PROFILE, 'logs', 'sinal.log');
 let failures = 0;
 const check = (ok, what) => { log(ok ? 'OK  ' : 'FALHOU', what); if(!ok) failures++; };
 
@@ -46,12 +49,13 @@ const evalIn = async (page, expr) => (await cdp(page, 'Runtime.evaluate', { expr
 
 const server = spawn('node', [process.env.NOCACHE_SERVER, PUBLIC_DIR, String(PORT)]);
 await sleep(800);
-const app = spawn('npx', ['electron', '.', `--remote-debugging-port=${DBG}`], {
+const app = spawn('npx', ['electron', '.', `--remote-debugging-port=${DBG}`, PROFILE_ARG], {
   cwd: ELECTRON_DIR, shell: true, env: { ...process.env, SINAL_DEV_URL: `http://127.0.0.1:${PORT}` }
 });
 const cleanup = () => {
   spawn('taskkill', ['/F', '/T', '/PID', String(server.pid)], { shell: true });
   spawn('taskkill', ['/F', '/T', '/PID', String(app.pid)], { shell: true });
+  setTimeout(() => { try{ rmSync(PROFILE, { recursive: true, force: true }); }catch{} }, 2500);
 };
 process.on('exit', cleanup);
 

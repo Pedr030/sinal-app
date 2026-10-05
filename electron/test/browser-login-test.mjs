@@ -1,6 +1,6 @@
 // Teste do login pelo navegador padrão no Electron de verdade (modo dev), pela
-// porta de depuração (CDP). Abre uma janela do app por ~25s — feche o app
-// instalado antes (ele só deixa uma cópia rodando). Ver HANDOFF §39 (fase 2c).
+// porta de depuração (CDP). Abre uma janela do app por ~25s, num perfil
+// temporário (não precisa fechar o app instalado). Ver HANDOFF §39 (fase 2c).
 //
 // NÃO abre navegador nenhum: em modo dev o main grava a URL de login num arquivo
 // (SINAL_TEST_LOGIN_FILE) em vez de chamar shell.openExternal. O retorno do
@@ -18,7 +18,7 @@
 // é aceita (login aparece, sessão salva); (4) o nonce é de uso único (repetir o
 // mesmo link não loga de novo).
 import { spawn } from 'node:child_process';
-import { readFileSync, existsSync, rmSync } from 'node:fs';
+import { readFileSync, existsSync, rmSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -27,6 +27,9 @@ const PUBLIC_DIR = process.env.PUBLIC_DIR;
 const PORT = Number(process.env.TEST_PORT || 3095), DBG = 9333;
 const ORIGIN = `http://127.0.0.1:${PORT}`;
 const LOGIN_FILE = join(tmpdir(), 'sinal-test-login-url.txt');
+// Perfil só do teste (pasta temporária): não precisa fechar o app instalado e não mexe nas suas configurações.
+const PROFILE = process.env.TEST_PROFILE || mkdtempSync(join(tmpdir(), 'sinal-test-profile-'));
+const PROFILE_ARG = `--user-data-dir="${PROFILE}"`;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const t0 = Date.now();
 const log = (...a) => console.log(`[${((Date.now() - t0) / 1000).toFixed(1)}s]`, ...a);
@@ -63,13 +66,13 @@ function fakeSession(name){
 function launchSecondInstance(url){
   // Igual ao Windows ao clicar num sinal://… com o app já aberto: processo novo com a URL no argv.
   // Aspas: com shell:true o cmd do Windows trata o "&" da URL como separador de comandos e cortaria o nonce.
-  return spawn('npx', ['electron', '.', `"${url}"`], { cwd: ELECTRON_DIR, shell: true, stdio: 'ignore' });
+  return spawn('npx', ['electron', '.', PROFILE_ARG, `"${url}"`], { cwd: ELECTRON_DIR, shell: true, stdio: 'ignore' });
 }
 
 if(existsSync(LOGIN_FILE)) rmSync(LOGIN_FILE);
 const server = spawn('node', [process.env.NOCACHE_SERVER, PUBLIC_DIR, String(PORT)]);
 await sleep(800);
-const app = spawn('npx', ['electron', '.', `--remote-debugging-port=${DBG}`], {
+const app = spawn('npx', ['electron', '.', `--remote-debugging-port=${DBG}`, PROFILE_ARG], {
   cwd: ELECTRON_DIR, shell: true,
   env: { ...process.env, SINAL_DEV_URL: ORIGIN, SINAL_TEST_LOGIN_FILE: LOGIN_FILE }
 });
@@ -79,6 +82,7 @@ const cleanup = async () => {
   spawn('taskkill', ['/F', '/T', '/PID', String(server.pid)], { shell: true });
   spawn('taskkill', ['/F', '/T', '/PID', String(app.pid)], { shell: true });
   try{ rmSync(LOGIN_FILE, { force: true }); }catch{}
+  setTimeout(() => { try{ rmSync(PROFILE, { recursive: true, force: true }); }catch{} }, 2500);
 };
 
 try{
