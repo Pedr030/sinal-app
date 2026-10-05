@@ -412,6 +412,7 @@ function createMainWindow(initialRoomCode, startHidden){
   // URL do Sinal e também dispara did-finish-load. Era isso que desligava as
   // tentativas e deixava a tela presa (bug real da v0.3.12, 2026-10-02).
   mainWindow.webContents.on('did-finish-load', () => {
+    rendererGone = false; // a página recarregou (depois de uma queda): pode voltar a receber mensagens
     if(offlineActive && isOfflinePageShown()) sendOfflineCountdown();
   });
 
@@ -635,6 +636,17 @@ function stopIsolatedAudio(){
   stopMultiSourceAudio();
 }
 
+// Manda algo pra página só se ela estiver viva. Depois que o renderer cai (ou enquanto recarrega) a captura
+// nativa de áudio continuaria despejando pedaços (dezenas por segundo, por fonte) num frame que não existe
+// mais — o registro de 2026-10-04 às 16:53:53 ficou cheio de "Render frame was disposed".
+let rendererGone = false;
+function sendToPage(channel, payload){
+  if(rendererGone || !mainWindow || mainWindow.isDestroyed()) return;
+  const wc = mainWindow.webContents;
+  if(wc.isDestroyed()) return;
+  try{ wc.send(channel, payload); }catch(e){ /* o frame sumiu entre a checagem e o envio */ }
+}
+
 // ---- Modo single (compartilhar uma janela específica) ----
 function stopSingleSourceAudio(){
   if(audioLoopback){
@@ -649,9 +661,7 @@ function startIsolatedAudio(target){
   try{
     audioLoopback.start(target.pid, target.exclude, (err, buf) => {
       if(err){ console.error('[sinal-audio] erro no callback de captura:', err); return; }
-      if(mainWindow && !mainWindow.isDestroyed()){
-        mainWindow.webContents.send('sinal:audio-chunk', { pid: target.pid, buf });
-      }
+      sendToPage('sinal:audio-chunk', { pid: target.pid, buf });
     });
     console.log(`[sinal-audio] captura iniciada (single) — pid=${target.pid} exclude=${target.exclude}`);
   }catch(e){
@@ -692,9 +702,7 @@ function startSourceCapture(pid, exeName){
   try{
     loopback.start(pid, false, (err, buf) => {
       if(err){ console.error(`[sinal-audio] erro na captura multi-fonte (pid=${pid}):`, err); return; }
-      if(mainWindow && !mainWindow.isDestroyed()){
-        mainWindow.webContents.send('sinal:audio-chunk', { pid, buf });
-      }
+      sendToPage('sinal:audio-chunk', { pid, buf });
     });
     multiSources.set(pid, { loopback, exeName });
     console.log(`[sinal-audio] fonte adicionada — pid=${pid} exe=${exeName}`);
@@ -709,7 +717,7 @@ function stopSourceCapture(pid){
   if(!source) return;
   try{ source.loopback.stop(); }catch(e){ console.error('[sinal-audio] stop() de fonte falhou:', e); }
   multiSources.delete(pid);
-  if(mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('sinal:audio-source-removed', pid);
+  sendToPage('sinal:audio-source-removed', pid);
   console.log(`[sinal-audio] fonte removida — pid=${pid}`);
 }
 
@@ -739,9 +747,7 @@ function scanAudioSources(){
     if(!seenPids.has(pid)) stopSourceCapture(pid);
   }
 
-  if(mainWindow && !mainWindow.isDestroyed()){
-    mainWindow.webContents.send('sinal:audio-sources', candidates);
-  }
+  sendToPage('sinal:audio-sources', candidates);
 }
 
 function startMultiSourceAudio(){
@@ -995,7 +1001,15 @@ function recoverMainWindow(details){
 }
 app.on('render-process-gone', (event, webContents, details) => {
   console.error('[sinal] a página caiu:', details);
-  if(mainWindow && !mainWindow.isDestroyed() && webContents === mainWindow.webContents) recoverMainWindow(details);
+  if(mainWindow && !mainWindow.isDestroyed() && webContents === mainWindow.webContents){
+    if(details && details.reason !== 'clean-exit'){
+      // Pista pro próximo diagnóstico: a queda de 2026-10-04 aconteceu com o áudio isolado ligado.
+      console.error(`[sinal] áudio isolado no momento da queda: janela única=${!!audioLoopback}, fontes (tela inteira)=${multiSources.size}`);
+      rendererGone = true;
+      stopIsolatedAudio(); // ninguém mais escuta; volta quando a pessoa transmitir de novo
+    }
+    recoverMainWindow(details);
+  }
 });
 // GPU/áudio/rede do Chromium: ele mesmo reinicia, mas anotar é o que conta
 // pra achar padrão (ex: codificador da placa de vídeo quebrando com jogo).
