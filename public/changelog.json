@@ -1,5 +1,14 @@
 [
   {
+    "id": "2026-10-05-estabilidade-app",
+    "date": "2026-10-05",
+    "title": "Mais estabilidade no app",
+    "app": "0.3.17",
+    "items": [
+      "A base do app foi atualizada, com várias correções de estabilidade e de segurança."
+    ]
+  },
+  {
     "id": "2026-10-04-ajuste-janelas-pequenas",
     "date": "2026-10-04",
     "title": "Ajustes no tamanho das transmissões",
