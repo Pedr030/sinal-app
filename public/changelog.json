@@ -1,5 +1,15 @@
 [
   {
+    "id": "2026-10-04-ajuste-janelas-pequenas",
+    "date": "2026-10-04",
+    "title": "Ajustes no tamanho das transmissões",
+    "site": "0.8.60",
+    "items": [
+      "Em janelas pequenas, as transmissões ficam bem maiores: os textos de ajuda e a linha da versão saem de cena para dar espaço ao vídeo.",
+      "Em telas grandes, as transmissões ficam centralizadas na vertical, sem todo o espaço sobrando embaixo."
+    ]
+  },
+  {
     "id": "2026-10-04-aviso-atualizacao",
     "date": "2026-10-04",
     "title": "Aviso de atualização no app",

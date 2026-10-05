@@ -430,6 +430,13 @@ body.picker-quality.sharing .quality-wrap{ display:inline-flex; }
 
 /* ---------- STAGE (destaque / minimizados) ---------- */
 #stageArea{flex:1; display:flex; flex-direction:column; gap:14px;}
+/* Os destaques são o maior 16:9 que cabe; a folga que sobra (tela larga e baixa) fica dividida entre cima e baixo
+   em vez de toda embaixo. "safe": se não couber, começa pelo topo em vez de cortar. */
+#stageArea.has-spotlight{ justify-content:center; justify-content:safe center; }
+
+/* Janela baixa: o texto de ajuda de áudio e a linha da versão tomam espaço que os vídeos precisam. */
+@media (max-height:700px){ body.in-room .audio-hint{ display:none; } }
+@media (max-height:620px){ body.in-room footer{ display:none; } }
 
 .spotlight{
   /* --spot-cols / --tile-w vêm do encaixe automático (fitSpotlight() em app.js); sem JS cai no layout antigo */
@@ -613,6 +620,8 @@ footer .version{margin-top:12px; font-size:10.5px; letter-spacing:1.5px; color:#
   z-index:100; font-size:13px;
 }
 .update-bar button{height:auto; padding:9px 16px; font-size:13px;}
+/* Dentro de uma sala os controles ficam embaixo: o aviso vai pro topo, onde o meio do cabeçalho está livre. */
+body.in-room .update-bar{ bottom:auto; top:12px; }
 @media (max-width:480px){
   .update-bar{ width:calc(100% - 32px); left:16px; right:16px; transform:none; justify-content:space-between; }
 }
