@@ -195,6 +195,7 @@ async function connectToRoom(code, name, mode, extra){
         mode,
         guild: extra && extra.guild,
         title: extra && extra.title,
+        access: extra && extra.access,
         session: (discordUser && discordUser.session) || undefined
       })
     });
@@ -215,6 +216,12 @@ async function connectToRoom(code, name, mode, extra){
     }
     if(res.status === 403){
       const why = (await res.json().catch(() => ({}))).error;
+      if(why === 'sala-privada' && mode === 'server-join'){
+        // Sala com aprovação: oferece "pedir para entrar" e, se alguém aprovar, tenta de novo (agora passa).
+        setEntryStatus('');
+        if(await requestToJoinRoom(code)) return connectToRoom(code, name, mode, extra);
+        return;
+      }
       setEntryStatus(why === 'sala-privada' ? 'Essa sala é privada.' : 'Você não faz parte desse servidor do Discord.');
       return;
     }
@@ -372,11 +379,14 @@ function wireRoomEvents(liveRoom){
     const video = tile.querySelector('video');
     if(video) video.play().catch(() => {});
   });
-  liveRoom.on(RoomEvent.DataReceived, (payload, participant) => {
+  liveRoom.on(RoomEvent.DataReceived, (payload, participant, kind, topic) => {
     if(!isCurrent()) return;
     try{
       const msg = JSON.parse(new TextDecoder().decode(payload));
-      if(msg && msg.type === 'chat'){
+      const knock = parseKnockMessage(msg, participant, topic, roomCode);
+      if(knock){
+        handleKnock(knock);
+      } else if(msg && msg.type === 'chat'){
         // O maxlength="500" do input é validação só de interface — quem manda
         // é outro navegador, e um cliente modificado pode publicar o que
         // quiser aqui. Truncar na entrada, que é a fronteira de confiança.
@@ -483,10 +493,24 @@ function enterRoomUI(){
   fetchLives(); // a foto da tela inicial pode estar velha
   // Sala de server: o chip mostra o NOME da sala (do metadata no LiveKit), não o id interno.
   let chipText = roomCode;
+  let chipPrivate = false;
   if(isServerRoomName(roomCode)){
-    try{ chipText = JSON.parse(room.metadata || '{}').title || 'Sala'; }catch(e){ chipText = 'Sala'; }
+    try{
+      const meta = JSON.parse(room.metadata || '{}');
+      chipText = meta.title || 'Sala';
+      chipPrivate = !!(meta.access && meta.access !== 'open');
+    }catch(e){ chipText = 'Sala'; }
   }
-  document.getElementById('roomCodeChip').textContent = chipText;
+  const chip = document.getElementById('roomCodeChip');
+  chip.textContent = '';
+  if(chipPrivate){
+    const lock = mk('span', 'chip-lock');
+    lock.innerHTML = ICON_LOCK_SVG; // constante estática
+    lock.setAttribute('role', 'img');
+    lock.setAttribute('aria-label', 'Sala privada');
+    chip.appendChild(lock);
+  }
+  chip.appendChild(document.createTextNode(chipText));
   document.getElementById('selfName').firstChild.textContent = myName + ' ';
   document.getElementById('chatMessages').innerHTML = '<div class="chat-empty mono">Sem mensagens ainda</div>';
   renderAvatars();
@@ -2249,6 +2273,7 @@ function leaveRoom(){
   }
   myAccessToken = null;
   toggleRosterPanel(false);
+  clearKnockCards();
   tileStreams.clear();
   tileVideoTracks.clear();
   qualityBaseLabel.clear();
@@ -2736,6 +2761,8 @@ function renderServerView(g){
 }
 
 // Ícone de tela (é um app de transmissão de tela, não de voz): vermelho quando alguém da sala está transmitindo.
+// Cadeado das salas privadas (SVG no mesmo traço dos outros ícones; constante estática, nenhum dado de fora entra aqui).
+const ICON_LOCK_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>';
 const ICON_SCREEN_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>';
 
 function renderRoomRow(r, currentRoom){
@@ -2749,7 +2776,12 @@ function renderRoomRow(r, currentRoom){
     icon.innerHTML = ICON_SCREEN_SVG; // constante estática acima — nenhum dado de fora entra aqui
     head.appendChild(icon);
   } else {
-    head.appendChild(mk('span', 'srv-room-icon', '🔒'));
+    const lock = mk('span', 'srv-room-icon srv-room-lock');
+    lock.innerHTML = ICON_LOCK_SVG; // constante estática acima
+    lock.setAttribute('role', 'img');
+    lock.setAttribute('aria-label', 'Sala privada');
+    head.appendChild(lock);
+    row.title = 'Sala privada: pra entrar, alguém da sala precisa aprovar';
   }
   head.appendChild(mk('span', 'srv-room-title', r.title));
   head.appendChild(mk('span', 'srv-room-count mono', String(r.participants.length)));
@@ -2895,6 +2927,179 @@ function renderCallSide(){
   rooms.forEach((r) => list.appendChild(renderRoomRow(r, roomCode)));
 }
 
+// ---- Sala privada (com aprovação) — HANDOFF §49 ----
+// Quem decide: o servidor (api/room-admin.js) recalcula quem pode a cada clique; aqui é só a interface.
+
+// Aviso de "fulano quer entrar". Só vale se veio DO SERVIDOR (participant indefinido: o LiveKit entrega
+// assim o que a API manda) no tópico "knock" e para ESTA sala — um participante comum que publicasse o
+// mesmo texto pelo canal de dados não consegue forjar um pedido.
+function parseKnockMessage(msg, fromParticipant, topic, currentRoom){
+  if(fromParticipant || topic !== 'knock') return null;
+  if(!msg || msg.type !== 'knock' || !currentRoom || msg.room !== currentRoom) return null;
+  if(typeof msg.userId !== 'string' || !/^\d{15,21}$/.test(msg.userId)) return null;
+  const name = (typeof msg.name === 'string' ? msg.name : '').replace(/[\u0000-\u001f\u007f]/g, ' ').trim().slice(0, 40) || 'Alguém';
+  return { userId: msg.userId, name, avatar: typeof msg.avatar === 'string' && isDiscordAvatarUrl(msg.avatar) ? msg.avatar : '' };
+}
+
+// Texto pra cada resposta do servidor ao pedido de entrada.
+function knockFailureText(error){
+  return ({
+    'recusado': 'Seu pedido foi recusado. Você pode tentar de novo em alguns minutos.',
+    'sem-responsavel': 'Não tem ninguém na sala que possa aprovar agora.',
+    'room-not-found': 'Essa sala já fechou.',
+    'fora-do-server': 'Você não faz parte desse servidor do Discord.',
+    'sessao-invalida': 'Sua sessão do Discord expirou. Entre com o Discord de novo.'
+  })[error] || 'Não consegui pedir agora. Tente de novo.';
+}
+
+function findLiveRoom(name){
+  for(const rooms of Object.values(livesData || {})){
+    const found = (rooms || []).find((r) => r.room === name);
+    if(found) return found;
+  }
+  return null;
+}
+
+// Antes de trocar de sala: confere se dá pra entrar (já aprovado, criador, admin) e, se não, abre o pedido.
+// Devolve true se pode seguir. Qualquer outro erro segue em frente: o fluxo normal de entrada mostra o motivo.
+async function ensureRoomAccess(roomName){
+  try{
+    const res = await fetch('/api/get-token', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ mode: 'server-join', room: roomName, name: getName(), session: (discordUser && discordUser.session) || undefined })
+    });
+    if(res.status === 403 && (await res.json().catch(() => ({}))).error === 'sala-privada') return await requestToJoinRoom(roomName);
+  }catch(e){ /* sem rede: deixa o fluxo normal tratar */ }
+  return true;
+}
+
+// Diálogo "pedir para entrar": confirma, avisa quem decide (o servidor repete o aviso a cada ~12 s enquanto
+// a pessoa espera) e consulta a cada 3 s até sair aprovado, recusado ou passar de 5 min. Devolve true se aprovado.
+function requestToJoinRoom(roomName){
+  return new Promise((resolve) => {
+    const overlay = document.getElementById('knockOverlay');
+    const title = document.getElementById('knockTitle');
+    const msg = document.getElementById('knockMsg');
+    const primary = document.getElementById('knockPrimary');
+    const cancel = document.getElementById('knockCancel');
+    let stopped = false, timer = null, startedAt = 0;
+    const show = (t, m, primaryText, cancelText) => {
+      title.textContent = t; msg.textContent = m;
+      primary.hidden = !primaryText; primary.textContent = primaryText || '';
+      cancel.textContent = cancelText;
+    };
+    const onKey = (e) => { if(e.key === 'Escape'){ e.preventDefault(); e.stopPropagation(); finish(false); } };
+    const finish = (ok) => {
+      stopped = true; clearTimeout(timer);
+      overlay.hidden = true;
+      document.removeEventListener('keydown', onKey, true);
+      primary.onclick = cancel.onclick = null;
+      resolve(ok);
+    };
+    const poll = async () => {
+      if(stopped) return;
+      let error = '';
+      try{
+        const res = await fetch('/api/get-token', {
+          method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ mode: 'server-join', room: roomName, name: getName(), session: (discordUser && discordUser.session) || undefined, knock: true })
+        });
+        if(res.status === 200){ finish(true); return; }
+        error = (await res.json().catch(() => ({}))).error || '';
+        if(res.status === 429) error = 'aguardando-aprovacao'; // muitos pedidos seguidos: só espera e tenta de novo
+      }catch(e){ error = 'aguardando-aprovacao'; } // sem rede por um instante: segue tentando
+      if(stopped) return;
+      if(error === 'aguardando-aprovacao'){
+        if(Date.now() - startedAt > 5 * 60 * 1000){
+          show('Ninguém respondeu', 'Seu pedido ficou sem resposta. Tente de novo mais tarde.', '', 'Fechar');
+          return;
+        }
+        timer = setTimeout(poll, 3000);
+        return;
+      }
+      show('Não deu pra entrar', knockFailureText(error), '', 'Fechar');
+    };
+    show('Sala privada', 'Pra entrar nesta sala, alguém que está nela precisa aprovar. Quer pedir para entrar?', 'Pedir para entrar', 'Cancelar');
+    primary.onclick = () => {
+      startedAt = Date.now();
+      show('Pedido enviado', 'Aguardando alguém da sala aprovar. Pode deixar esta janela aberta; você entra assim que aprovarem.', '', 'Cancelar pedido');
+      poll();
+    };
+    cancel.onclick = () => finish(false);
+    document.addEventListener('keydown', onKey, true);
+    overlay.hidden = false;
+    primary.focus();
+  });
+}
+
+// Quem pode decidir vê um cartão por pedido, com Aprovar/Recusar. O pedido se repete enquanto a pessoa
+// espera; sem repetição por 40 s o cartão some sozinho (a pessoa desistiu ou saiu).
+const knockCards = new Map(); // userId -> { el, timer }
+const KNOCK_CARD_TTL_MS = 40000;
+
+function clearKnockCards(){
+  knockCards.forEach((c) => clearTimeout(c.timer));
+  knockCards.clear();
+  const panel = document.getElementById('knockPanel');
+  if(panel) panel.innerHTML = '';
+}
+
+function removeKnockCard(userId){
+  const c = knockCards.get(userId);
+  if(!c) return;
+  clearTimeout(c.timer);
+  c.el.remove();
+  knockCards.delete(userId);
+}
+
+function handleKnock(k){
+  const existing = knockCards.get(k.userId);
+  if(existing){
+    clearTimeout(existing.timer);
+    existing.timer = setTimeout(() => removeKnockCard(k.userId), KNOCK_CARD_TTL_MS);
+    return;
+  }
+  const card = mk('div', 'knock-card');
+  const who = mk('div', 'knock-who');
+  const av = mk('span', 'knock-avatar');
+  if(k.avatar){ const img = document.createElement('img'); img.src = k.avatar; img.alt = ''; av.appendChild(img); }
+  else av.textContent = guildInitials(k.name);
+  const text = mk('span');
+  text.appendChild(mk('strong', '', k.name));
+  text.appendChild(document.createTextNode('quer entrar na sala'));
+  who.append(av, text);
+  const actions = mk('div', 'knock-actions');
+  const ok = mk('button', 'primary', 'Aprovar');
+  const no = mk('button', 'knock-deny', 'Recusar');
+  ok.type = no.type = 'button';
+  const err = mk('div', 'knock-error');
+  ok.addEventListener('click', () => decideKnock(k.userId, 'approve', ok, no, err));
+  no.addEventListener('click', () => decideKnock(k.userId, 'deny', ok, no, err));
+  actions.append(ok, no);
+  card.append(who, actions, err);
+  document.getElementById('knockPanel').appendChild(card);
+  knockCards.set(k.userId, { el: card, timer: setTimeout(() => removeKnockCard(k.userId), KNOCK_CARD_TTL_MS) });
+}
+
+async function decideKnock(userId, action, okBtn, noBtn, errEl){
+  if(!myAccessToken || !roomCode) return;
+  okBtn.disabled = noBtn.disabled = true;
+  errEl.textContent = '';
+  try{
+    const res = await fetch('/api/room-admin', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: 'Bearer ' + myAccessToken },
+      body: JSON.stringify({ action, room: roomCode, userId })
+    });
+    if(res.ok){ removeKnockCard(userId); return; }
+    const why = (await res.json().catch(() => ({}))).error;
+    errEl.textContent = why === 'sem-permissao' ? 'Você não pode decidir esse pedido agora.' : 'Não consegui concluir. Tente de novo.';
+  }catch(e){
+    errEl.textContent = 'Sem conexão com o servidor. Tente de novo.';
+  }
+  okBtn.disabled = noBtn.disabled = false;
+}
+
 // ---- Criar sala sem sair da call ----
 // Espelha MAX_ROOMS_PER_GUILD de lib/rooms.js (o servidor é quem manda; isto só evita sair da sala atual
 // pra descobrir, só depois, que o limite estava cheio).
@@ -2908,6 +3113,7 @@ function openCallNewForm(open){
   const form = document.getElementById('callNewForm');
   form.hidden = !open;
   document.getElementById('callNewMsg').textContent = '';
+  document.getElementById('callNewPrivate').checked = false;
   if(open){ const input = document.getElementById('callNewTitle'); input.value = ''; input.focus(); }
 }
 
@@ -2918,13 +3124,14 @@ async function createRoomFromCall(){
   const blocked = serverRoomsLimitMessage((livesData[guild] || []).length);
   if(blocked){ msg.textContent = blocked; return; }
   const title = document.getElementById('callNewTitle').value;
+  const access = document.getElementById('callNewPrivate').checked ? 'approval' : 'open';
   const sharing = document.getElementById('shareBtn').classList.contains('active-share')
     || document.getElementById('cameraBtn').classList.contains('active-share');
   if(sharing && !(await askConfirm({ title: 'Criar sala e trocar?', message: 'Você está transmitindo. Criar uma sala nova vai tirar você desta e parar a transmissão.', okText: 'Criar sala' }))) return;
   openCallNewForm(false);
   leaveRoom();
   getAudioCtx();
-  connectToRoom(null, getName(), 'server-create', { guild, title });
+  connectToRoom(null, getName(), 'server-create', { guild, title, access });
 }
 
 function toggleCallSide(){
@@ -2939,6 +3146,9 @@ async function hopToRoom(name){
   if(!name || name === roomCode) return;
   const sharing = document.getElementById('shareBtn').classList.contains('active-share')
     || document.getElementById('cameraBtn').classList.contains('active-share');
+  // Sala privada: pede pra entrar ANTES de sair da sala atual (se ninguém aprovar, você continua onde está).
+  const target = findLiveRoom(name);
+  if(target && target.access !== 'open' && !(await ensureRoomAccess(name))) return;
   if(sharing && !(await askConfirm({ title: 'Trocar de sala?', message: 'Você está transmitindo. Trocar de sala vai parar a transmissão.', okText: 'Trocar de sala' }))) return;
   leaveRoom();
   joinServerRoom(name);
@@ -3044,7 +3254,8 @@ function createServerRoom(){
   if(serverView === 'home' || !guildById(serverView)) return;
   getAudioCtx();
   const title = document.getElementById('srvRoomTitle').value;
-  connectToRoom(null, getName(), 'server-create', { guild: serverView, title });
+  const access = document.getElementById('srvRoomPrivate').checked ? 'approval' : 'open';
+  connectToRoom(null, getName(), 'server-create', { guild: serverView, title, access });
 }
 
 // ---- escolher servers ----

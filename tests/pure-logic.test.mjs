@@ -382,3 +382,45 @@ test('criar sala na call: o limite do app é o mesmo do servidor (lib/rooms.js)'
   const lib = readFileSync(join(ROOT, 'lib/rooms.js'), 'utf8');
   assert.equal(Number(lib.match(/MAX_ROOMS_PER_GUILD = (\d+)/)[1]), Number(appJs.match(/const SERVER_ROOMS_LIMIT = (\d+);/)[1]));
 });
+
+// ---------- sala privada: o que o app aceita e mostra (HANDOFF §49) ----------
+const knockFns = new Function(
+  extractFunction(appJs, 'isDiscordAvatarUrl') + extractFunction(appJs, 'parseKnockMessage') + extractFunction(appJs, 'knockFailureText') +
+  '; return { parseKnockMessage, knockFailureText };'
+)();
+const KNOCK = { type: 'knock', room: 's111111111111111111-abc123', userId: '900000000000000002', name: 'Fulano', avatar: 'https://cdn.discordapp.com/avatars/1/a.png' };
+
+test('pedido de entrada: só vale se veio do SERVIDOR (sem participante), no tópico knock e para a sala atual', () => {
+  const ok = knockFns.parseKnockMessage(KNOCK, undefined, 'knock', KNOCK.room);
+  assert.deepEqual(ok, { userId: '900000000000000002', name: 'Fulano', avatar: 'https://cdn.discordapp.com/avatars/1/a.png' });
+  assert.equal(knockFns.parseKnockMessage(KNOCK, { identity: 'malandro' }, 'knock', KNOCK.room), null); // um participante tentando forjar
+  assert.equal(knockFns.parseKnockMessage(KNOCK, undefined, 'chat', KNOCK.room), null);                  // tópico errado
+  assert.equal(knockFns.parseKnockMessage(KNOCK, undefined, undefined, KNOCK.room), null);
+  assert.equal(knockFns.parseKnockMessage(KNOCK, undefined, 'knock', 's111111111111111111-outra1'), null); // outra sala
+  assert.equal(knockFns.parseKnockMessage(KNOCK, undefined, 'knock', ''), null);
+});
+
+test('pedido de entrada: rejeita ID inválido e tipo errado; limpa o nome; avatar só do CDN do Discord', () => {
+  const k = (o) => knockFns.parseKnockMessage({ ...KNOCK, ...o }, undefined, 'knock', KNOCK.room);
+  for(const userId of ['abc', '123', 123456789012345678, null, undefined, '900000000000000002<script>']) assert.equal(k({ userId }), null, String(userId));
+  assert.equal(k({ type: 'chat' }), null);
+  assert.equal(knockFns.parseKnockMessage(null, undefined, 'knock', KNOCK.room), null);
+  assert.equal(k({ name: '' }).name, 'Alguém');
+  assert.equal(k({ name: 'A\u0000B\nC' }).name, 'A B C');
+  assert.equal(k({ name: 'x'.repeat(100) }).name.length, 40);
+  assert.equal(k({ avatar: 'https://evil.com/a.png' }).avatar, '');
+  assert.equal(k({ avatar: 'javascript:alert(1)' }).avatar, '');
+});
+
+test('pedido de entrada: cada resposta do servidor tem um texto claro (e o desconhecido cai num genérico)', () => {
+  for(const e of ['recusado', 'sem-responsavel', 'room-not-found', 'fora-do-server', 'sessao-invalida']) assert.ok(knockFns.knockFailureText(e).length > 10, e);
+  assert.match(knockFns.knockFailureText('recusado'), /recusado/);
+  assert.match(knockFns.knockFailureText('algo-novo'), /Tente de novo/);
+});
+
+test('cadeado das salas privadas é um ícone SVG: nenhum emoji de cadeado no app', () => {
+  assert.doesNotMatch(appJs, /\u{1F512}|\u{1F510}|\u{1F513}|\u{1F50F}/u);
+  assert.match(appJs, /const ICON_LOCK_SVG = '<svg /);
+  const html = readFileSync(join(ROOT, 'public/index.html'), 'utf8');
+  assert.doesNotMatch(html, /\u{1F512}|\u{1F510}|\u{1F513}|\u{1F50F}/u);
+});

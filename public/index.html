@@ -123,6 +123,7 @@
         <label for="srvRoomTitle">Criar uma sala neste servidor</label>
         <input type="text" id="srvRoomTitle" maxlength="40" placeholder="Nome da sala (ex: Ranqueada, Treino)" autocomplete="off">
       </div>
+      <label class="private-toggle"><input type="checkbox" id="srvRoomPrivate"><span>Sala privada <small>— quem quiser entrar precisa da sua aprovação</small></span></label>
       <button type="button" class="primary" id="srvCreateBtn">Criar sala</button>
       <p class="hint">Ou clique numa sala ao lado pra entrar. Só quem está neste servidor do Discord vê e entra nas salas dele.</p>
       <div id="srvStatus" class="entry-status"></div>
@@ -154,6 +155,7 @@
         <button type="button" class="call-new-btn" id="callNewBtn">+ Criar sala</button>
         <div class="call-new-form" id="callNewForm" hidden>
           <input type="text" id="callNewTitle" maxlength="40" placeholder="Nome da sala (opcional)" autocomplete="off">
+          <label class="private-toggle"><input type="checkbox" id="callNewPrivate"><span>Sala privada <small>— entra só quem você aprovar</small></span></label>
           <div class="call-new-actions">
             <button type="button" class="primary" id="callNewOk">Criar</button>
             <button type="button" class="call-new-cancel" id="callNewCancel">Cancelar</button>
@@ -192,6 +194,9 @@
         </button>
       </div>
     </div>
+
+    <!-- Pedidos de entrada numa sala privada (só aparece pra quem pode decidir) — ver handleKnock() em app.js -->
+    <div class="knock-panel" id="knockPanel" aria-live="polite"></div>
 
     <div id="stageArea">
       <div class="empty-state" id="emptyState">
@@ -379,6 +384,18 @@
     <div class="report-actions">
       <span id="reportStatus" class="settings-note"></span>
       <button type="button" id="reportSendBtn" class="report-send">Enviar</button>
+    </div>
+  </div>
+</div>
+
+<!-- Pedir para entrar numa sala privada (com aprovação) — ver requestToJoinRoom() em app.js -->
+<div id="knockOverlay" class="settings-overlay confirm-overlay" hidden>
+  <div class="settings-panel confirm-panel" role="alertdialog" aria-modal="true" aria-labelledby="knockTitle" aria-describedby="knockMsg">
+    <div class="confirm-title" id="knockTitle"></div>
+    <div class="confirm-message" id="knockMsg"></div>
+    <div class="confirm-actions">
+      <button type="button" id="knockCancel" class="confirm-cancel">Cancelar</button>
+      <button type="button" id="knockPrimary" class="primary confirm-ok">Pedir para entrar</button>
     </div>
   </div>
 </div>

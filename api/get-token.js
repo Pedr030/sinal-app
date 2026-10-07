@@ -27,13 +27,13 @@
 //                                 atributo do participante assinado AQUI (o
 //                                 cliente não consegue mudar), que o webhook usa
 //                                 pra entregar só o que a pessoa pode ver.
-import { AccessToken, RoomServiceClient } from 'livekit-server-sdk';
+import { AccessToken, RoomServiceClient, DataPacket_Kind } from 'livekit-server-sdk';
 import { verifySession, guildTier } from '../lib/session.js';
 import { createLimiter, clientIp } from '../lib/ratelimit.js';
 import {
   MAX_ROOMS_PER_GUILD, MAX_PARTICIPANTS_PER_ROOM, PRESENCE_ROOM, MAX_PRESENCE_GUILDS,
   parseServerRoom, newServerRoomName, cleanTitle, cleanDisplayName,
-  buildRoomMetadata, parseRoomMetadata, canEnterPrivate
+  buildRoomMetadata, parseRoomMetadata, cleanAccess, canEnterRoom, approvalDeciders, participantInfo
 } from '../lib/rooms.js';
 
 const MODES = ['join', 'create', 'server-join', 'server-create', 'presence'];
@@ -41,6 +41,9 @@ const MODES = ['join', 'create', 'server-join', 'server-create', 'presence'];
 // Pedidos de token por IP (melhor esforço, ver lib/ratelimit.js): sem isso qualquer um com um
 // loop gasta a cota da Vercel e cria salas/conexões em massa na VM.
 const tokenLimiter = createLimiter({ max: 60, windowMs: 60 * 1000 });
+// "Bater na porta" de sala com aprovação: no máximo um aviso ao responsável a cada 12 s por pessoa e sala
+// (o pedido repete enquanto a pessoa espera; sem isso o responsável seria inundado).
+const knockLimiter = createLimiter({ max: 1, windowMs: 12 * 1000, maxKeys: 2000 });
 
 function json(status, data){
   return new Response(JSON.stringify(data), { status, headers: { 'content-type': 'application/json' } });
@@ -173,7 +176,7 @@ export async function POST(request){
           emptyTimeout: 60,
           departureTimeout: 60,
           maxParticipants: MAX_PARTICIPANTS_PER_ROOM,
-          metadata: buildRoomMetadata({ guildId, title, creator: { id: session.id, name } })
+          metadata: buildRoomMetadata({ guildId, title, creator: { id: session.id, name }, access: cleanAccess(str(body.access)) })
         });
       }catch(e){
         console.error('createRoom (server) falhou:', e && e.message, e);
@@ -199,12 +202,33 @@ export async function POST(request){
         checked = false;
       }
       if(checked && !found) return json(404, { error: 'room-not-found' });
-      // Regra de acesso da sala de server (nesta fase só existem salas
-      // abertas; a regra já fica no lugar pras privadas da fase 3).
+      // Regra de acesso da sala de server (HANDOFF §49). Sala com aprovação: entra direto o admin do
+      // Sinal, dono/Administrador do servidor, o criador e quem já foi aprovado. Os outros recebem 403
+      // "sala-privada"; se mandarem knock:true (a pessoa confirmou que quer pedir), o responsável da sala
+      // é avisado e a resposta é "aguardando-aprovacao" (o cliente repete o pedido até sair a decisão).
       if(found && isServerMode){
         const meta = parseRoomMetadata(found.metadata);
-        if(meta && meta.access !== 'open' && !canEnterPrivate(session, guildId)){
-          return json(403, { error: 'sala-privada' });
+        const gate = canEnterRoom({ meta, session, guildId, userId: session.id });
+        if(!gate.allowed){
+          // Só sala com aprovação aceita pedido de entrada; qualquer outro tipo trancado só abre pra quem já pode.
+          if(meta.access !== 'approval' || body.knock !== true) return json(403, { error: 'sala-privada', access: meta.access });
+          if(gate.denied) return json(403, { error: 'recusado' });
+          const people = (await roomService.listParticipants(room)).map(participantInfo);
+          const deciders = approvalDeciders(meta, people);
+          if(deciders.length === 0) return json(403, { error: 'sem-responsavel' });
+          if(knockLimiter.allow(`${room}|${session.id}`)){
+            try{
+              await roomService.sendData(
+                room,
+                new TextEncoder().encode(JSON.stringify({ type: 'knock', room, userId: session.id, name, avatar: session.avatar || '' })),
+                DataPacket_Kind.RELIABLE,
+                { destinationIdentities: deciders, topic: 'knock' }
+              );
+            }catch(e){
+              console.error('aviso de pedido de entrada falhou:', e && e.message, e);
+            }
+          }
+          return json(403, { error: 'aguardando-aprovacao' });
         }
       }
     } else {
