@@ -1,5 +1,14 @@
 [
   {
+    "id": "2026-10-07-atualiza-sozinho",
+    "date": "2026-10-07",
+    "title": "Atualização automática",
+    "site": "0.8.63",
+    "items": [
+      "Quando sai uma versão nova, o Sinal se atualiza sozinho se você não estiver numa sala. Dentro de uma sala nada muda: o aviso continua e você escolhe a hora."
+    ]
+  },
+  {
     "id": "2026-10-07-audio-estavel",
     "date": "2026-10-07",
     "title": "Som da transmissão mais estável",
