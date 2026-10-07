@@ -105,6 +105,10 @@ contextBridge.exposeInMainWorld('sinalElectron', {
     ipcRenderer.on('sinal:offline-next-retry', (_event, seconds) => callback(seconds));
   },
 
+  // Botão "expandir" da janela flutuante (picture-in-picture): o Chromium do Electron
+  // fecha a janelinha mas não traz o app de volta — o site pede aqui (HANDOFF §52).
+  focusWindow: () => ipcRenderer.send('sinal:focus-window'),
+
   // Item "Procurar atualização" da bandeja abre as configurações nessa seção.
   onOpenSettings: (callback) => {
     ipcRenderer.on('sinal:open-settings', (_event, section) => callback(section));

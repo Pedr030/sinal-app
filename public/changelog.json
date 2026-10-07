@@ -1,5 +1,24 @@
 [
   {
+    "id": "2026-10-07-controle-das-salas",
+    "date": "2026-10-07",
+    "title": "Mais controle sobre as salas",
+    "site": "0.8.66",
+    "items": [
+      "Quem cria uma sala pode renomeá-la, mudar quem entra (aberta, com aprovação ou com senha), passar a sala para outra pessoa e encerrá-la.",
+      "No app, se a transmissão for interrompida por um erro, você pode retomá-la com um clique quando ele voltar."
+    ]
+  },
+  {
+    "id": "2026-10-07-janela-flutuante",
+    "date": "2026-10-07",
+    "title": "Janela flutuante",
+    "app": "0.3.18",
+    "items": [
+      "O botão de expandir da janela flutuante agora traz o Sinal de volta para a frente."
+    ]
+  },
+  {
     "id": "2026-10-07-salas-privadas",
     "date": "2026-10-07",
     "title": "Salas privadas nos servidores",

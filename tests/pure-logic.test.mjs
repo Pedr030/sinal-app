@@ -528,3 +528,120 @@ test('botão escondido (atributo hidden) some DE VERDADE: .icon-btn[hidden] tem 
   const html = readFileSync(join(ROOT, 'public/index.html'), 'utf8');
   for(const id of ['knockBtn', 'passwordBtn', 'sideToggleBtn']) assert.match(html, new RegExp('id="' + id + '"[^>]*hidden'), id);
 });
+
+// ---------- retomar transmissão depois de uma queda do app + sair da janela flutuante (HANDOFF §52) ----------
+const shouldOfferResumeShare = new Function(extractFunction(appJs, 'shouldOfferResumeShare') + '; return shouldOfferResumeShare;')();
+const pipLeaveKind = new Function(extractFunction(appJs, 'pipLeaveKind') + '; return pipLeaveKind;')();
+
+test('retomar transmissão: só oferece pra MESMA sala, sem limite de idade (a transmissão pode ter horas)', () => {
+  const marker = { room: 's810000000000000001-abc123', at: Date.now() - 7 * 3600 * 1000 };
+  assert.equal(shouldOfferResumeShare(marker, 's810000000000000001-abc123'), true);
+  assert.equal(shouldOfferResumeShare(marker, 's810000000000000001-outra1'), false);
+  assert.equal(shouldOfferResumeShare(marker, ''), false);
+  assert.equal(shouldOfferResumeShare(marker, null), false);
+  assert.equal(shouldOfferResumeShare(null, 'ABC123'), false);
+  assert.equal(shouldOfferResumeShare({ room: 123 }, 'ABC123'), false);
+  assert.equal(shouldOfferResumeShare({}, 'ABC123'), false);
+});
+
+test('janela flutuante: expandir = não pausou e não foi por código; X = pausou; código = nunca traz o app', () => {
+  assert.equal(pipLeaveKind(false, false, 60000), 'expanded');
+  assert.equal(pipLeaveKind(false, true, 60000), 'closed');          // vídeo pausado
+  assert.equal(pipLeaveKind(false, false, 200), 'closed');           // pause recente (chegou antes de o vídeo voltar)
+  assert.equal(pipLeaveKind(false, false, Infinity), 'expanded');    // nunca pausou
+  assert.equal(pipLeaveKind(true, false, 60000), 'code');            // trocar de sala, tile removido, botão do tile
+  assert.equal(pipLeaveKind(true, true, 10), 'code');
+});
+
+test('retomar transmissão e janela flutuante: ligações no código (marcador, botões, foco, regra do hidden)', () => {
+  const html = readFileSync(join(ROOT, 'public/index.html'), 'utf8');
+  const css = readFileSync(join(ROOT, 'public/style.css'), 'utf8');
+  const main = readFileSync(join(ROOT, 'electron/src/main.js'), 'utf8');
+  const preload = readFileSync(join(ROOT, 'electron/src/preload.js'), 'utf8');
+  for(const id of ['resumeShare', 'resumeShareBtn', 'resumeShareDismiss']) assert.match(html, new RegExp(`id="${id}"`));
+  assert.match(css, /\.resume-share\[hidden\]\{display:none;\}/);       // display:flex não pode vencer o hidden
+  assert.match(appJs, /setSharingMarker\(true\)/);                        // marca ao começar a transmitir
+  assert.match(appJs, /function resetShareButton\(\)\{[\s\S]*?setSharingMarker\(false\)/); // apaga quando termina por vontade
+  assert.match(appJs, /takeSharingMarker\(\);[\s\S]*?params\.get\('retomar'\) !== '1'/);    // lê (e apaga) antes de decidir
+  assert.match(preload, /focusWindow: \(\) => ipcRenderer\.send\('sinal:focus-window'\)/);
+  assert.match(main, /trustedIpc\.on\('sinal:focus-window'/);
+  // nenhum exitPictureInPicture solto: tudo passa por exitPip() (que avisa que foi por código)
+  assert.equal((appJs.match(/document\.exitPictureInPicture\(\)/g) || []).length, 1);
+});
+
+// ---------- gerenciar sala privada (HANDOFF §53): regra do botão e ligações no código ----------
+const manageFns = new Function(extractFunction(appJs, 'isRoomCaretaker') + extractFunction(appJs, 'canManageRoomUI') + extractFunction(appJs, 'manageFailureText') + '; return { canManageRoomUI, manageFailureText };')();
+
+test('gerenciar sala: botão só pra dono de sala de servidor (criador, admin, dono/administrador/gerência); comum e sala sem servidor não', () => {
+  const can = manageFns.canManageRoomUI;
+  for(const access of ['open', 'approval', 'password', 'tipo-futuro']){
+    const meta = { guild: 'G1', access, creator: { id: '111' } };
+    assert.equal(can(meta, { userId: '111' }, 'G1'), true, access + ' criador');
+    assert.equal(can(meta, { userId: '9', isAdmin: true }, 'G1'), true, access + ' admin');
+    for(const tier of ['o', 'a', 'm']) assert.equal(can(meta, { userId: '9', tier, guild: 'G1' }, 'G1'), true, access + ' ' + tier);
+    assert.equal(can(meta, { userId: '9', tier: 'm', guild: 'OUTRO' }, 'G1'), false, access + ' cargo de outro servidor');
+    assert.equal(can(meta, { userId: '9', tier: 'x', guild: 'G1' }, 'G1'), false, access + ' comum');
+  }
+  assert.equal(can({ creator: { id: '111' } }, { userId: '111' }, 'G1'), false);   // sem `guild`: não é sala de servidor
+  assert.equal(can(null, { userId: '111' }, 'G1'), false);
+  assert.equal(can({ guild: 'G1', access: 'password' }, null, 'G1'), false);
+});
+
+test('gerenciar sala: texto pra cada erro do servidor (e um padrão pro desconhecido)', () => {
+  const t = manageFns.manageFailureText;
+  for(const e of ['sem-permissao', 'titulo-invalido', 'senha-invalida', 'sala-nao-encontrada', 'sala-sem-dados', 'acesso-invalido', 'mesmo-acesso', 'pessoa-nao-esta-na-sala', 'ja-e-dono', 'muitos-pedidos']){
+    assert.notEqual(t(e), t('qualquer-outro'), e);
+  }
+  assert.match(t(undefined), /Tente de novo/);
+});
+
+test('gerenciar sala: ligações no código (botão, janela, ações, evento de metadata, aviso de sala encerrada, regra do hidden)', () => {
+  const html = readFileSync(join(ROOT, 'public/index.html'), 'utf8');
+  for(const id of ['manageBtn', 'manageOverlay', 'manageName', 'manageRename', 'managePwSection', 'managePassword', 'manageSetPw', 'manageStatus', 'manageEnd', 'manageClose']){
+    assert.match(html, new RegExp(`id="${id}"`), id);
+  }
+  assert.match(html, /id="manageBtn"[^>]*hidden/);                                   // nasce escondido
+  for(const action of ['rename', 'set-password', 'close']) assert.match(appJs, new RegExp(`action: '${action}'`), action);
+  assert.match(appJs, /RoomEvent\.RoomMetadataChanged[\s\S]*?refreshRoomChip\(\);[\s\S]*?updateManageButton\(\)/); // nome e botões acompanham o metadata
+  assert.match(appJs, /DisconnectReason\.ROOM_DELETED[\s\S]*?A sala foi encerrada\./);                          // quem estava dentro entende o que houve
+  assert.match(appJs, /askConfirm\(\{\s*title: 'Encerrar a sala'[\s\S]*?danger: true/);                          // encerrar sempre pede confirmação
+  assert.match(appJs, /function leaveRoom\(\)\{[\s\S]*?manageBtn'\)\.hidden = true;[\s\S]*?closeManage\(\)/);    // sair da sala fecha tudo
+});
+
+// ---------- trocar acesso e passar a sala (HANDOFF §54): lista de candidatos e ligações ----------
+const transferCandidates = new Function(extractFunction(appJs, 'transferCandidates') + '; return transferCandidates;')();
+
+test('passar a sala: candidatos = OUTRAS pessoas na sala com conta do Discord, menos o dono atual, em ordem de nome', () => {
+  const remote = new Map([
+    ['a', { name: 'Zeca', identity: 'a', metadata: JSON.stringify({ userId: '300000000000000001' }) }],
+    ['b', { name: 'Ana', identity: 'b', metadata: JSON.stringify({ userId: '300000000000000002' }) }],
+    ['c', { name: 'Visitante', identity: 'c', metadata: '' }],                                   // sem conta: não pode
+    ['d', { name: 'Quebrado', identity: 'd', metadata: '{ruim' }],
+    ['e', { name: 'Id estranho', identity: 'e', metadata: JSON.stringify({ userId: '12' }) }],
+    ['f', { identity: 'sem-nome', metadata: JSON.stringify({ userId: '300000000000000003' }) }],  // sem nome: usa a identidade
+    ['g', { name: 'Dono atual', identity: 'g', metadata: JSON.stringify({ userId: '300000000000000009' }) }]
+  ]);
+  const liveRoom = { remoteParticipants: { forEach: (fn) => remote.forEach(fn) } };
+  const out = transferCandidates(liveRoom, { creator: { id: '300000000000000009' } });
+  assert.deepEqual(out.map((p) => p.name), ['Ana', 'sem-nome', 'Zeca']);
+  assert.deepEqual(transferCandidates(null, {}), []);
+});
+
+test('trocar acesso e passar a sala: ligações no código (campos, ações, metadata, aviso de sala aberta, sino some)', () => {
+  const html = readFileSync(join(ROOT, 'public/index.html'), 'utf8');
+  for(const id of ['manageAccess', 'manageApplyAccess', 'manageAccessPw', 'manageAccessHint', 'manageTransferSection', 'manageTransfer', 'manageDoTransfer']){
+    assert.match(html, new RegExp(`id="${id}"`), id);
+  }
+  for(const v of ['open', 'approval', 'password']) assert.match(html, new RegExp(`<option value="${v}">`), v);
+  assert.match(html, /id="manageAccessPw"[^>]*hidden/);
+  for(const action of ['set-access', 'transfer']) assert.match(appJs, new RegExp(`action: '${action}'`), action);
+  assert.match(appJs, /askConfirm\(\{ title: 'Abrir a sala'/);                      // abrir a sala (qualquer um entra) pede confirmação
+  assert.match(appJs, /askConfirm\(\{\s*title: 'Passar a sala'/);                   // passar a sala também
+  assert.match(appJs, /RoomMetadataChanged[\s\S]*?clearKnockCards\(\)[\s\S]*?refreshManageDialog\(\)/);   // deixou de ser aprovação: sino some; janela acompanha
+  assert.match(appJs, /ParticipantConnected[\s\S]*?refreshManageDialog\(\)/);       // quem entra/sai atualiza a lista de "passar a sala"
+});
+
+test('pedido de entrada no app: a consulta entra sozinha se a sala virou aberta e troca pra caixa da senha se virou senha', () => {
+  assert.match(appJs, /if\(res\.status === 200\)\{ finish\(true\); return; \} \/\/ inclusive se a sala virou ABERTA/);
+  assert.match(appJs, /error === 'sala-privada' && data\.access === 'password' && !stopped\)\{ cleanup\(\); resolve\(requestToJoinRoom\(roomName, 'password'\)\)/);
+});

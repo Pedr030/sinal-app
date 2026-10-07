@@ -64,6 +64,63 @@ function setEntryStatus(msg){
   document.getElementById('entryStatus').textContent = msg || '';
   document.getElementById('srvStatus').textContent = msg || ''; // painel do servidor (HANDOFF §39)
 }
+// ---------------- RETOMAR TRANSMISSÃO DEPOIS DE UMA QUEDA DO APP ----------------
+// Quando a página do app desktop cai (HANDOFF §37) ele recarrega sozinho e volta pra sala. Se a pessoa estava
+// transmitindo, o site guarda um marcador (sala + hora) enquanto a transmissão existe e apaga quando ela termina
+// por vontade da pessoa; se a página caiu, o marcador sobra e, na volta (?retomar=1), oferecemos o botão
+// "Retomar transmissão". Nunca retoma sozinho: iniciar a captura é decisão da pessoa (e abre o seletor de tela).
+const SHARING_MARKER_KEY = 'sinal:wasSharing';
+function setSharingMarker(on){
+  try{
+    if(on) localStorage.setItem(SHARING_MARKER_KEY, JSON.stringify({ room: roomCode, at: Date.now() }));
+    else localStorage.removeItem(SHARING_MARKER_KEY);
+  }catch(e){ /* localStorage indisponível — só não oferece retomar */ }
+}
+function takeSharingMarker(){
+  let marker = null;
+  try{
+    marker = JSON.parse(localStorage.getItem(SHARING_MARKER_KEY) || 'null');
+    localStorage.removeItem(SHARING_MARKER_KEY); // sempre apaga: vale só pra esta volta
+  }catch(e){ marker = null; }
+  return marker;
+}
+// O marcador só vale pra MESMA sala em que a pessoa estava. Sem limite de idade: ele guarda a hora em que a
+// transmissão COMEÇOU (pode ter horas) e a volta depois da queda é imediata (?retomar=1, e só a primeira em 5 min).
+function shouldOfferResumeShare(marker, code){
+  return !!(marker && typeof marker.room === 'string' && code && marker.room === code);
+}
+// ---------------- JANELA FLUTUANTE (picture-in-picture): sair dela ----------------
+// "Expandir" e o X da janelinha disparam o mesmo leavepictureinpicture; o Chromium pausa o vídeo só no X.
+// Sair por código nosso (trocar de sala, tile removido, clicar no botão do tile) não é nenhum dos dois.
+let pipExitByCode = false;
+function exitPip(){
+  if(!document.pictureInPictureElement) return;
+  pipExitByCode = true;
+  document.exitPictureInPicture().catch(() => { pipExitByCode = false; });
+}
+function pipLeaveKind(byCode, videoPaused, msSincePause){
+  if(byCode) return 'code';
+  if(videoPaused || msSincePause < 1000) return 'closed';
+  return 'expanded';
+}
+// No Electron o "expandir" só fecha a janelinha: pede à janela principal pra voltar (restaura/mostra/foca).
+function focusAppWindow(){
+  if(window.sinalElectron && window.sinalElectron.focusWindow) window.sinalElectron.focusWindow();
+  else window.focus();
+}
+
+function showResumeShare(){ document.getElementById('resumeShare').hidden = false; }
+function hideResumeShare(){ document.getElementById('resumeShare').hidden = true; }
+function setupResumeShare(){
+  document.getElementById('resumeShareDismiss').addEventListener('click', hideResumeShare);
+  document.getElementById('resumeShareBtn').addEventListener('click', () => {
+    hideResumeShare();
+    // Se a pessoa já recomeçou a transmitir por conta própria, não faz nada (toggleShare pararia a transmissão).
+    if(document.getElementById('shareBtn').classList.contains('active-share')) return;
+    toggleShare(); // abre o seletor de tela de sempre: a escolha do que mostrar continua sendo da pessoa
+  });
+}
+
 function setRoomStatus(msg, isError){
   const el = document.getElementById('roomStatus');
   el.textContent = msg || '';
@@ -293,6 +350,7 @@ function wireRoomEvents(liveRoom){
   liveRoom.on(RoomEvent.ParticipantConnected, (participant) => {
     if(!isCurrent()) return;
     renderAvatars();
+    refreshManageDialog(); // a lista de "passar a sala" acompanha quem entra
     // Quem chega agora não sabe quem já tá assistindo o quê — cada um manda
     // o próprio estado só pra essa pessoa (ver "Quem está assistindo").
     sendWatchSync([participant.identity]);
@@ -307,6 +365,7 @@ function wireRoomEvents(liveRoom){
     myWatching.delete(participant.identity);
     myWatching.delete(participant.identity + ':cam');
     renderAvatars();
+    refreshManageDialog(); // ...e quem sai
   });
   // Depois de uma queda e volta, mensagens podem ter se perdido no meio —
   // reenvia o estado completo pra sala toda.
@@ -406,7 +465,18 @@ function wireRoomEvents(liveRoom){
     if(!isCurrent()) return;
     if(participant) updateQualityDot(participant.identity, quality);
   });
-  liveRoom.on(RoomEvent.Disconnected, () => {
+  // Metadata da sala mudou (aprovados, nome, senha...): o nome no chip e os botões de quem cuida da sala acompanham.
+  liveRoom.on(RoomEvent.RoomMetadataChanged, () => {
+    if(!isCurrent()) return;
+    if(refreshRoomChip()) fetchLives(); // renomeou ou mudou o acesso: a lista de salas do servidor não espera o próximo ciclo
+    // Deixou de ser sala com aprovação: os pedidos pendentes e o sino saem (quem estava esperando entra sozinho no próximo aviso).
+    if(currentRoomMeta().access !== 'approval') clearKnockCards();
+    updatePasswordButton();
+    updateKnockButton();
+    updateManageButton();
+    refreshManageDialog();
+  });
+  liveRoom.on(RoomEvent.Disconnected, (reason) => {
     if(!isCurrent()) return;
     // Chega aqui em qualquer desconexão que NÃO foi a gente mesmo chamando
     // leaveRoom() (isso já limpa `room` antes, então isCurrent() dá false e
@@ -415,7 +485,9 @@ function wireRoomEvents(liveRoom){
     // sala sem conseguir fazer nada (bug real, achado em teste); agora volta
     // pra tela inicial de verdade, igual sair por conta própria.
     leaveRoom();
-    setEntryStatus('Você foi desconectado da sala.');
+    setEntryStatus(LivekitClient.DisconnectReason && reason === LivekitClient.DisconnectReason.ROOM_DELETED
+      ? 'A sala foi encerrada.'
+      : 'Você foi desconectado da sala.');
   });
 }
 
@@ -476,6 +548,30 @@ function handleTrackRemoved(track, publication, participant){
   }
 }
 
+// Sala de server: o chip mostra o NOME da sala (do metadata no LiveKit), não o id interno. Roda na entrada e
+// toda vez que o metadata da sala muda (renomear, trocar a senha...).
+let lastChipText = null;
+function refreshRoomChip(){
+  if(!room) return;
+  let chipText = roomCode;
+  let chipAccess = '';
+  if(isServerRoomName(roomCode)){
+    try{
+      const meta = JSON.parse(room.metadata || '{}');
+      chipText = meta.title || 'Sala';
+      chipAccess = meta.access && meta.access !== 'open' ? meta.access : '';
+    }catch(e){ chipText = 'Sala'; }
+  }
+  const chip = document.getElementById('roomCodeChip');
+  chip.textContent = '';
+  if(chipAccess) chip.appendChild(accessIcon(chipAccess, 'chip-lock'));
+  chip.appendChild(document.createTextNode(chipText));
+  const key = chipText + '|' + chipAccess;
+  const changed = lastChipText !== null && lastChipText !== key;
+  lastChipText = key;
+  return changed;
+}
+
 function enterRoomUI(){
   // App desktop (v0.3.11+): main.js espera sair da sala pra perguntar se
   // reinicia pra atualizar — nunca interrompe a call.
@@ -493,22 +589,11 @@ function enterRoomUI(){
   renderCallSide();
   startLivesPolling();
   fetchLives(); // a foto da tela inicial pode estar velha
-  // Sala de server: o chip mostra o NOME da sala (do metadata no LiveKit), não o id interno.
-  let chipText = roomCode;
-  let chipAccess = '';
-  if(isServerRoomName(roomCode)){
-    try{
-      const meta = JSON.parse(room.metadata || '{}');
-      chipText = meta.title || 'Sala';
-      chipAccess = meta.access && meta.access !== 'open' ? meta.access : '';
-    }catch(e){ chipText = 'Sala'; }
-  }
-  const chip = document.getElementById('roomCodeChip');
-  chip.textContent = '';
-  if(chipAccess) chip.appendChild(accessIcon(chipAccess, 'chip-lock'));
-  chip.appendChild(document.createTextNode(chipText));
+  lastChipText = null; // sala nova: o primeiro desenho não conta como "renomeou"
+  refreshRoomChip();
   updatePasswordButton();
   updateKnockButton();
+  updateManageButton();
   document.getElementById('selfName').firstChild.textContent = myName + ' ';
   document.getElementById('chatMessages').innerHTML = '<div class="chat-empty mono">Sem mensagens ainda</div>';
   renderAvatars();
@@ -1203,6 +1288,8 @@ async function toggleShare(){
   setBtnLabel(btn, 'Parar compartilhamento');
   btn.classList.add('active-share');
   appLog(`[sinal] transmissão iniciada: ${activeShareQuality} · ${activeShareCodec} · ${describeCaptureSurface(videoTrack)}`);
+  setSharingMarker(true);
+  hideResumeShare();
   // Botão de qualidade fica ativo: dá pra trocar no meio (changeActiveShareQuality).
   // body.sharing: no app, o botão (escondido fora da transmissão, já que lá
   // a escolha é no seletor) aparece enquanto transmite.
@@ -1258,6 +1345,7 @@ function resetShareButton(){
   document.getElementById('selfPreview').style.display = 'none';
   document.getElementById('selfStatus').textContent = 'Assistindo';
   if(activeShareQuality) appLog('[sinal] transmissão encerrada');
+  setSharingMarker(false);
   sendStatsPrev = null; senderDetailPrev = null;
   activeShareQuality = null;
   activeShareCodec = null;
@@ -1859,17 +1947,28 @@ function addTile(id, name, stream){
     pipBtn.addEventListener('click', (e) => {
       e.stopPropagation();
       if(document.pictureInPictureElement === video){
-        document.exitPictureInPicture().catch(() => {});
+        exitPip();
       } else {
         video.requestPictureInPicture().catch((err) => console.warn('[sinal] janela flutuante falhou:', err));
       }
     });
+    // Fechar no X da janelinha PAUSA o vídeo (Chromium); "expandir" não pausa. É a diferença que usamos pra
+    // saber qual dos dois foi (os dois disparam leavepictureinpicture).
+    let lastPauseAt = -Infinity;
+    video.addEventListener('pause', () => { lastPauseAt = performance.now(); });
     video.addEventListener('enterpictureinpicture', () => tile.classList.add('in-pip'));
     video.addEventListener('leavepictureinpicture', () => {
       tile.classList.remove('in-pip');
-      // Fechar no X da janelinha pausa o vídeo (comportamento do Chromium) —
-      // de volta no tile, tem que continuar ao vivo.
-      if(!tile.classList.contains('render-off')) video.play().catch(() => {});
+      const byCode = pipExitByCode;
+      pipExitByCode = false;
+      // O pause do X pode chegar um instante depois do evento de saída: espera um pouco antes de decidir.
+      setTimeout(() => {
+        const kind = pipLeaveKind(byCode, video.paused, performance.now() - lastPauseAt);
+        // De volta no tile, tem que continuar ao vivo (o X pausou).
+        if(!tile.classList.contains('render-off')) video.play().catch(() => {});
+        // "Expandir" tem que trazer o app de volta (o Electron só fecha a janelinha).
+        if(kind === 'expanded') focusAppWindow();
+      }, 250);
     });
   }
   tile.addEventListener('click', () => togglePin(id));
@@ -1948,7 +2047,7 @@ function removeTile(id){
   // Transmissão acabou ou parei de assistir — a janela flutuante não pode
   // ficar pra trás congelada no último quadro.
   if(el && document.pictureInPictureElement && el.contains(document.pictureInPictureElement)){
-    document.exitPictureInPicture().catch(() => {});
+    exitPip();
   }
   if(el) el.remove();
   tiles.delete(id);
@@ -2282,8 +2381,11 @@ function leaveRoom(){
   myAccessToken = null;
   toggleRosterPanel(false);
   clearKnockCards();
+  hideResumeShare();
   document.getElementById('passwordBtn').hidden = true;
+  document.getElementById('manageBtn').hidden = true;
   closeRoomPassword();
+  closeManage();
   tileStreams.clear();
   tileVideoTracks.clear();
   qualityBaseLabel.clear();
@@ -2291,7 +2393,7 @@ function leaveRoom(){
   qualityStatsPrev.clear();
   tileViewers.clear();
   myWatching.clear();
-  if(document.pictureInPictureElement) document.exitPictureInPicture().catch(() => {});
+  exitPip();
   tiles.forEach(el => el.remove());
   tiles.clear();
   pinnedOrder = [];
@@ -2342,6 +2444,7 @@ function leaveRoom(){
 // continua só preenchendo o código.
 function resumeAfterAppRecovery(){
   const params = new URLSearchParams(window.location.search);
+  const wasSharing = takeSharingMarker(); // apaga sempre; só vale numa volta de queda (?retomar=1)
   if(params.get('retomar') !== '1') return;
   params.delete('retomar');
   const clean = window.location.pathname + (params.toString() ? '?' + params.toString() : '');
@@ -2353,7 +2456,13 @@ function resumeAfterAppRecovery(){
   // Direto, sem passar pelo campo de código: sala de servidor não aparece mais ali (pickPrefillCode).
   getAudioCtx();
   const server = isServerRoomName(code);
-  connectToRoom(server ? code : code.toUpperCase(), getName(), server ? 'server-join' : 'join');
+  const target = server ? code : code.toUpperCase();
+  connectToRoom(target, getName(), server ? 'server-join' : 'join').then(() => {
+    if(room && shouldOfferResumeShare(wasSharing, roomCode)){
+      appLog('[sinal] oferecendo retomar a transmissão depois da recuperação');
+      showResumeShare();
+    }
+  });
 }
 
 // Qual código mostrar no campo "entrar em sala existente": SÓ código de sala por
@@ -3002,6 +3111,200 @@ function canDecideKnocks(meta, myMeta, guild){
   return !!meta && meta.access === 'approval' && isRoomCaretaker(meta, myMeta, guild);
 }
 
+// Gerenciar a sala (nome, tipo de acesso, senha, passar a sala, encerrar — HANDOFF §53/§54): qualquer sala de servidor
+// (o metadata de servidor tem `guild`; sala por código não tem) e só quem é dono dela (mesma regra do servidor,
+// canManageRoom em lib/rooms.js). O "responsável por ter entrado primeiro" não gerencia.
+function canManageRoomUI(meta, myMeta, guild){
+  return !!meta && !!meta.guild && isRoomCaretaker(meta, myMeta, guild);
+}
+function updateManageButton(){
+  const btn = document.getElementById('manageBtn');
+  let show = false;
+  try{
+    const claims = myTokenClaims();
+    show = !!room && !!claims && canManageRoomUI(JSON.parse(room.metadata || '{}'), JSON.parse(claims.metadata || '{}'), currentRoomGuild());
+  }catch(e){ /* sem metadata: sem botão */ }
+  btn.hidden = !show;
+  if(!show) closeManage(); // perdeu o direito (ou a sala mudou): a janela não fica aberta
+}
+
+function manageStatus(text, isError){
+  const el = document.getElementById('manageStatus');
+  el.textContent = text || '';
+  el.classList.toggle('error', !!isError);
+}
+function closeManage(){
+  document.getElementById('manageOverlay').hidden = true;
+  document.getElementById('managePassword').value = '';
+  document.getElementById('manageAccessPw').value = '';
+  manageStatus('');
+}
+const ACCESS_HINTS = {
+  open: 'Qualquer pessoa do servidor entra sozinha.',
+  approval: 'Quem quiser entrar pede, e alguém que cuida da sala aprova. Quem está na sala agora continua.',
+  password: 'Entra quem souber a senha. Quem está na sala agora continua.'
+};
+let manageSyncedAccess = null;
+function currentRoomMeta(){
+  try{ return JSON.parse((room && room.metadata) || '{}'); }catch(e){ return {}; }
+}
+// Mostra/esconde o campo da senha do "Quem pode entrar" e a dica conforme a escolha. A senha só é pedida ao mudar PARA
+// senha; se a sala já é de senha, trocar a senha tem a seção própria.
+function syncManageAccessFields(){
+  const sel = document.getElementById('manageAccess');
+  const current = currentRoomMeta().access || 'open';
+  document.getElementById('manageAccessPw').hidden = !(sel.value === 'password' && current !== 'password');
+  document.getElementById('manageApplyAccess').disabled = sel.value === current;
+  document.getElementById('manageAccessHint').textContent = sel.value === current ? '' : (ACCESS_HINTS[sel.value] || '');
+}
+// Quem pode receber a sala: as OUTRAS pessoas na sala (com conta do Discord) que ainda não são o dono.
+function transferCandidates(liveRoom, meta){
+  const out = [];
+  if(!liveRoom) return out;
+  liveRoom.remoteParticipants.forEach((p) => {
+    let info = {};
+    try{ info = JSON.parse(p.metadata || '{}'); }catch(e){ /* visitante sem metadata */ }
+    if(typeof info.userId === 'string' && /^\d{15,21}$/.test(info.userId) && !(meta.creator && meta.creator.id === info.userId)){
+      out.push({ userId: info.userId, name: p.name || p.identity });
+    }
+  });
+  return out.sort((a, b) => a.name.localeCompare(b.name));
+}
+function fillManageTransfer(){
+  const sel = document.getElementById('manageTransfer');
+  const keep = sel.value;
+  const people = transferCandidates(room, currentRoomMeta());
+  sel.innerHTML = '';
+  people.forEach((p) => { const o = document.createElement('option'); o.value = p.userId; o.textContent = p.name; sel.appendChild(o); });
+  if(people.some((p) => p.userId === keep)) sel.value = keep;
+  document.getElementById('manageDoTransfer').disabled = !people.length;
+  sel.disabled = !people.length;
+  document.getElementById('manageTransferHint').textContent = people.length
+    ? 'A pessoa vira dona da sala e você deixa de ser (a não ser que seja admin ou cuide do servidor).'
+    : 'Ninguém mais está na sala pra receber.';
+}
+// A janela acompanha o que muda na sala enquanto está aberta (alguém entra/sai, outro dono mexeu no acesso...).
+function refreshManageDialog(){
+  if(document.getElementById('manageOverlay').hidden) return;
+  const meta = currentRoomMeta();
+  const access = meta.access || 'open';
+  document.getElementById('managePwSection').hidden = access !== 'password';
+  if(manageSyncedAccess !== access){ document.getElementById('manageAccess').value = access; manageSyncedAccess = access; }
+  syncManageAccessFields();
+  fillManageTransfer();
+}
+function openManage(){
+  const meta = currentRoomMeta();
+  document.getElementById('manageName').value = meta.title || '';
+  document.getElementById('managePassword').value = '';
+  document.getElementById('manageAccessPw').value = '';
+  manageSyncedAccess = null;
+  manageStatus('');
+  document.getElementById('manageOverlay').hidden = false;
+  refreshManageDialog();
+  document.getElementById('manageName').focus();
+}
+
+// Texto pra cada resposta do servidor nas ações de gerenciar.
+function manageFailureText(error){
+  return ({
+    'sem-permissao': 'Só quem cuida da sala pode fazer isso.',
+    'titulo-invalido': 'Escreva um nome pra sala.',
+    'senha-invalida': 'A senha precisa ter de 4 a 32 caracteres.',
+    'sala-nao-encontrada': 'Essa sala já fechou.',
+    'sala-sem-dados': 'Essa sala não pode ser gerenciada.',
+    'acesso-invalido': 'Escolha como as pessoas entram na sala.',
+    'mesmo-acesso': 'A sala já é assim.',
+    'pessoa-nao-esta-na-sala': 'Essa pessoa saiu da sala.',
+    'ja-e-dono': 'Essa pessoa já é dona da sala.',
+    'muitos-pedidos': 'Muitos pedidos seguidos. Espere um instante.'
+  })[error] || 'Não consegui agora. Tente de novo.';
+}
+
+// Manda uma ação de gerenciar pro servidor. Devolve true se deu certo; senão mostra o motivo na própria janela.
+async function manageCall(body){
+  if(!myAccessToken || !roomCode) return false;
+  try{
+    const res = await fetch('/api/room-admin', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: 'Bearer ' + myAccessToken },
+      body: JSON.stringify({ room: roomCode, ...body })
+    });
+    const data = await res.json().catch(() => ({}));
+    if(res.ok) return true;
+    manageStatus(manageFailureText(data.error), true);
+  }catch(e){
+    manageStatus('Sem conexão com o servidor. Tente de novo.', true);
+  }
+  return false;
+}
+
+async function manageRename(){
+  const title = document.getElementById('manageName').value.trim();
+  if(!title){ manageStatus(manageFailureText('titulo-invalido'), true); return; }
+  manageStatus('Salvando...');
+  if(await manageCall({ action: 'rename', title })) manageStatus('Nome salvo.');
+}
+
+async function manageSetPassword(){
+  const input = document.getElementById('managePassword');
+  const choice = accessChoice('password', input.value);
+  if(choice.error){ manageStatus(choice.error, true); return; }
+  manageStatus('Trocando...');
+  if(await manageCall({ action: 'set-password', password: choice.password })){
+    input.value = '';
+    manageStatus('Senha trocada. Quem entrou com a antiga vai precisar da nova.');
+  }
+}
+
+async function manageApplyAccess(){
+  const sel = document.getElementById('manageAccess');
+  const current = currentRoomMeta().access || 'open';
+  if(sel.value === current){ manageStatus(manageFailureText('mesmo-acesso'), true); return; }
+  let password;
+  if(sel.value === 'password'){
+    const choice = accessChoice('password', document.getElementById('manageAccessPw').value);
+    if(choice.error){ manageStatus(choice.error, true); return; }
+    password = choice.password;
+  }
+  if(sel.value === 'open'){
+    const yes = await askConfirm({ title: 'Abrir a sala', message: 'Qualquer pessoa do servidor vai poder entrar sozinha, sem aprovação nem senha.', okText: 'Abrir sala' });
+    if(!yes) return;
+  }
+  manageStatus('Aplicando...');
+  if(await manageCall({ action: 'set-access', access: sel.value, password })){
+    document.getElementById('manageAccessPw').value = '';
+    manageStatus('Acesso alterado.');
+  }
+}
+
+async function manageTransfer(){
+  const sel = document.getElementById('manageTransfer');
+  const userId = sel.value;
+  const name = sel.options[sel.selectedIndex] ? sel.options[sel.selectedIndex].textContent : '';
+  if(!userId) return;
+  const yes = await askConfirm({
+    title: 'Passar a sala',
+    message: `Passar a sala para ${name}? Ela vira dona e você deixa de ser (a não ser que seja admin ou cuide do servidor).`,
+    okText: 'Passar a sala'
+  });
+  if(!yes) return;
+  manageStatus('Passando...');
+  if(await manageCall({ action: 'transfer', userId })) manageStatus('Pronto: ' + name + ' é a dona da sala agora.');
+}
+
+async function manageEnd(){
+  const yes = await askConfirm({
+    title: 'Encerrar a sala',
+    message: 'Todo mundo será desconectado e a sala deixa de existir. Isso não dá pra desfazer.',
+    okText: 'Encerrar sala', danger: true
+  });
+  if(!yes) return;
+  manageStatus('Encerrando...');
+  // Dá certo => o LiveKit desconecta todo mundo (inclusive a gente) e o handler de Disconnected volta pra tela inicial.
+  if(await manageCall({ action: 'close' })) closeManage();
+}
+
 function updatePasswordButton(){
   const btn = document.getElementById('passwordBtn');
   let show = false;
@@ -3100,15 +3403,15 @@ function requestToJoinRoom(roomName, access){
       cancel.textContent = cancelText;
     };
     const onKey = (e) => { if(e.key === 'Escape'){ e.preventDefault(); e.stopPropagation(); finish(false); } };
-    const finish = (ok) => {
+    const cleanup = () => {
       stopped = true; clearTimeout(timer);
       overlay.hidden = true;
       pwInput.hidden = true; pwInput.value = '';
       primary.disabled = false;
       document.removeEventListener('keydown', onKey, true);
       primary.onclick = cancel.onclick = pwInput.onkeydown = null;
-      resolve(ok);
     };
+    const finish = (ok) => { cleanup(); resolve(ok); };
     const post = (extra) => fetch('/api/get-token', {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ mode: 'server-join', room: roomName, name: getName(), session: (discordUser && discordUser.session) || undefined, ...extra })
@@ -3148,9 +3451,12 @@ function requestToJoinRoom(roomName, access){
       let error = '';
       try{
         const res = await post({ knock: true });
-        if(res.status === 200){ finish(true); return; }
-        error = (await res.json().catch(() => ({}))).error || '';
+        if(res.status === 200){ finish(true); return; } // inclusive se a sala virou ABERTA enquanto esperava: entra sozinho
+        const data = await res.json().catch(() => ({}));
+        error = data.error || '';
         if(res.status === 429) error = 'aguardando-aprovacao'; // muitos pedidos seguidos: só espera e tenta de novo
+        // A sala trocou de aprovação pra SENHA enquanto esperava: troca pra caixa da senha, sem a pessoa precisar refazer nada.
+        if(error === 'sala-privada' && data.access === 'password' && !stopped){ cleanup(); resolve(requestToJoinRoom(roomName, 'password')); return; }
       }catch(e){ error = 'aguardando-aprovacao'; } // sem rede por um instante: segue tentando
       if(stopped) return;
       if(error === 'aguardando-aprovacao'){
@@ -3536,6 +3842,25 @@ function setupServersUI(){
   });
   document.getElementById('knockBtn').addEventListener('click', () => setKnockPanel(document.getElementById('knockPanel').hidden, true));
   document.getElementById('knockPanelClose').addEventListener('click', () => setKnockPanel(false, false));
+  document.getElementById('manageBtn').addEventListener('click', openManage);
+  document.getElementById('manageClose').addEventListener('click', closeManage);
+  document.getElementById('manageRename').addEventListener('click', manageRename);
+  document.getElementById('manageSetPw').addEventListener('click', manageSetPassword);
+  document.getElementById('manageEnd').addEventListener('click', manageEnd);
+  document.getElementById('manageAccess').addEventListener('change', () => {
+    syncManageAccessFields();
+    if(!document.getElementById('manageAccessPw').hidden) document.getElementById('manageAccessPw').focus();
+  });
+  document.getElementById('manageApplyAccess').addEventListener('click', manageApplyAccess);
+  document.getElementById('manageDoTransfer').addEventListener('click', manageTransfer);
+  document.getElementById('manageAccessPw').addEventListener('keydown', (e) => { if(e.key === 'Enter'){ e.preventDefault(); manageApplyAccess(); } });
+  document.getElementById('manageName').addEventListener('keydown', (e) => { if(e.key === 'Enter'){ e.preventDefault(); manageRename(); } });
+  document.getElementById('managePassword').addEventListener('keydown', (e) => { if(e.key === 'Enter'){ e.preventDefault(); manageSetPassword(); } });
+  document.getElementById('manageOverlay').addEventListener('click', (e) => { if(e.target.id === 'manageOverlay') closeManage(); });
+  document.addEventListener('keydown', (e) => {
+    // Escape fecha esta janela, a não ser que a confirmação (por cima dela) esteja aberta: ela trata o próprio Escape.
+    if(e.key === 'Escape' && !document.getElementById('manageOverlay').hidden && document.getElementById('confirmOverlay').hidden) closeManage();
+  });
   document.getElementById('passwordBtn').addEventListener('click', showRoomPassword);
   document.getElementById('passwordClose').addEventListener('click', closeRoomPassword);
   document.getElementById('passwordCopy').addEventListener('click', async () => {
@@ -4039,6 +4364,7 @@ window.addEventListener('DOMContentLoaded', () => {
   setupServersUI();
   setupAppLogin();
   setupStageFit();
+  setupResumeShare();
   resumeAfterAppRecovery();
 });
 
@@ -4049,7 +4375,7 @@ window.addEventListener('beforeunload', () => {
 });
 
 // PWA: versão, registro do service worker, detecção de atualização e botão de instalação
-const APP_VERSION = '0.8.65'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
+const APP_VERSION = '0.8.66'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
 // Dentro do Electron, mostra a versão do INSTALADOR (electron/package.json),
 // não a do site — ver preload.js. Fora dele (navegador normal), continua a
 // versão do deploy de sempre.

@@ -613,6 +613,17 @@ body.picker-quality.sharing .quality-wrap{ display:inline-flex; }
 }
 .audio-hint b{ color:var(--ink); font-weight:600; }
 
+/* Depois de uma queda do app durante uma transmissão: oferece retomar (nunca retoma sozinho). */
+.resume-share{
+  display:flex; align-items:center; gap:12px; flex-wrap:wrap; justify-content:center;
+  margin:0 0 14px; padding:10px 14px; background:var(--panel);
+  border:1px solid var(--tune); border-radius:10px; font-size:13px;
+}
+.resume-share[hidden]{display:none;}
+.resume-share button{height:auto; padding:8px 14px; font-size:13px;}
+.resume-share-dismiss{background:transparent; border:1px solid var(--line); color:var(--fog); border-radius:8px; cursor:pointer;}
+.resume-share-dismiss:hover{color:var(--ink);}
+
 #roomStatus{font-size:13px; color:var(--fog); margin-top:10px; text-align:center; font-family:'JetBrains Mono';}
 #roomStatus.error{color:var(--rec);}
 
@@ -746,6 +757,19 @@ body.in-room .update-bar{ bottom:auto; top:12px; }
   font-size:18px; letter-spacing:1px; color:var(--tune); word-break:break-all; user-select:all;
 }
 #passwordBtn.active, #passwordBtn:hover{ border-color:var(--tune); color:var(--tune); }
+/* Gerenciar sala (dono da sala) */
+.manage-panel{ max-height:92vh; overflow-y:auto; scrollbar-width:thin; scrollbar-color:var(--line) transparent; }
+.manage-select{ flex:1; min-width:0; height:40px; font-size:13px; }
+#manageAccessPw{ margin-top:8px; }
+#manageBtn:hover{ border-color:var(--tune); color:var(--tune); }
+.manage-label{ display:block; margin-top:6px; font-size:12px; color:var(--fog); font-family:'JetBrains Mono'; letter-spacing:.5px; text-transform:uppercase; }
+.manage-row{ display:flex; gap:8px; align-items:center; }
+.manage-row input{ flex:1; min-width:0; height:40px; }
+.manage-row button{ height:40px; padding:0 16px; font-size:13px; flex-shrink:0; }
+.manage-hint{ color:var(--fog); font-size:12px; line-height:1.5; margin-top:6px; }
+.manage-status{ min-height:18px; font-size:12.5px; color:var(--tune); }
+.manage-status.error{ color:var(--rec); }
+.manage-actions{ justify-content:space-between; }
 .private-toggle{ display:flex; align-items:flex-start; gap:8px; font-size:13px; color:var(--ink); cursor:pointer; margin:6px 0 16px; line-height:1.4; }
 .private-toggle input{ accent-color:var(--tune); margin-top:3px; cursor:pointer; }
 .private-toggle small{ color:var(--fog); font-size:11.5px; }
