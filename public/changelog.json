@@ -1,5 +1,17 @@
 [
   {
+    "id": "2026-10-07-salas-privadas",
+    "date": "2026-10-07",
+    "title": "Salas privadas nos servidores",
+    "destaque": true,
+    "site": "0.8.64",
+    "items": [
+      "Agora dá para criar uma sala privada: entra só quem você aprovar ou quem souber a senha. Elas aparecem na lista do servidor com um símbolo, e quem cuida da sala vê os pedidos de entrada e pode consultar a senha.",
+      "Dá para criar uma sala sem sair da chamada, pelo botão \"Criar sala\" na coluna ao lado.",
+      "A coroa dos admins e o botão de tela cheia ganharam novos ícones."
+    ]
+  },
+  {
     "id": "2026-10-07-atualiza-sozinho",
     "date": "2026-10-07",
     "title": "Atualização automática",
