@@ -286,6 +286,9 @@ body.electron-app #settingsBtn{display:inline-flex;}
   width:46px; padding:0; display:inline-flex; align-items:center; justify-content:center;
   position:relative;
 }
+/* .icon-btn define display e, sem esta regra, VENCE o atributo hidden: o botão fica "escondido" na marcação e continua na tela
+   (foi assim que a chave da senha apareceu em sala de aprovação). */
+.icon-btn[hidden]{ display:none; }
 .icon-btn .icon{ width:18px; height:18px; }
 .icon-btn .icon-check{ display:none; color:var(--tune); }
 .icon-btn.copied .icon-copy{ display:none; }
@@ -727,18 +730,42 @@ body.in-room .update-bar{ bottom:auto; top:12px; }
 .report-send:disabled{ opacity:.6; }
 
 /* ---------- Sala privada (HANDOFF §49) ---------- */
+.access-select{
+  width:100%; font-family:'Inter'; font-weight:600; font-size:14px; height:46px; cursor:pointer;
+  background:var(--panel-2); border:1px solid var(--line); border-radius:var(--radius); padding:0 12px; color:var(--ink);
+}
+.access-select:focus-visible{ outline:2px solid var(--tune); outline-offset:2px; }
+.access-select option{ background:var(--panel-2); color:var(--ink); }
+.access-password, .knock-password{ width:100%; margin-top:10px; }
+.access-password[hidden], .knock-password[hidden]{ display:none; }
+.call-new-form .access-select{ height:38px; font-size:13px; }
+.call-new-form .access-password{ height:38px; font-size:13px; margin-top:0; }
+.access-field{ margin-bottom:16px; }
+.password-box{
+  background:var(--panel-2); border:1px solid var(--line); border-radius:8px; padding:12px 14px; min-height:44px;
+  font-size:18px; letter-spacing:1px; color:var(--tune); word-break:break-all; user-select:all;
+}
+#passwordBtn.active, #passwordBtn:hover{ border-color:var(--tune); color:var(--tune); }
 .private-toggle{ display:flex; align-items:flex-start; gap:8px; font-size:13px; color:var(--ink); cursor:pointer; margin:6px 0 16px; line-height:1.4; }
 .private-toggle input{ accent-color:var(--tune); margin-top:3px; cursor:pointer; }
 .private-toggle small{ color:var(--fog); font-size:11.5px; }
 .call-new-form .private-toggle{ margin:0; font-size:12.5px; }
+/* Lista de pedidos de entrada (sala com aprovação): abre sozinha quando chega pedido novo e pelo sino da barra. */
 .knock-panel{
-  position:fixed; top:168px; right:16px; z-index:160; display:flex; flex-direction:column; gap:10px; /* abaixo da barra da sala: não cobre os botões */
-  width:300px; max-width:calc(100vw - 32px); pointer-events:none;
+  position:fixed; top:168px; right:16px; z-index:160; display:flex; flex-direction:column; /* abaixo da barra da sala: não cobre os botões */
+  width:320px; max-width:calc(100vw - 32px); max-height:60vh;
+  background:var(--panel); border:1px solid var(--line); border-radius:12px; box-shadow:0 12px 40px rgba(0,0,0,.55);
 }
-.knock-panel:empty{ display:none; }
+.knock-panel[hidden]{ display:none; }
+.knock-head{ display:flex; align-items:center; justify-content:space-between; padding:10px 8px 10px 14px; font-weight:700; font-size:14px; border-bottom:1px solid var(--line); }
+.knock-list{ display:flex; flex-direction:column; gap:10px; padding:12px; overflow-y:auto; scrollbar-width:thin; scrollbar-color:var(--line) transparent; }
+.knock-list:empty{ display:none; }
+.knock-empty{ padding:16px 14px; font-size:13px; color:var(--fog); line-height:1.5; }
+.knock-list:not(:empty) + .knock-empty{ display:none; }
+#knockBtn.active{ border-color:var(--tune); color:var(--tune); }
 .knock-card{
-  pointer-events:auto; background:var(--panel); border:1px solid var(--tune); border-radius:10px; padding:12px;
-  display:flex; flex-direction:column; gap:10px; box-shadow:0 10px 30px rgba(0,0,0,.5);
+  background:var(--panel-2); border:1px solid var(--tune); border-radius:10px; padding:12px;
+  display:flex; flex-direction:column; gap:10px;
 }
 .knock-who{ display:flex; align-items:center; gap:10px; font-size:13.5px; line-height:1.35; min-width:0; }
 .knock-who strong{ display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }

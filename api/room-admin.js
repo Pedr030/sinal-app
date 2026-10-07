@@ -9,13 +9,13 @@
 // O resultado fica no metadata da sala (allowed/denied, ver lib/rooms.js): o get-token consulta isso
 // quando a pessoa que pediu volta pra entrar.
 import { RoomServiceClient, TokenVerifier } from 'livekit-server-sdk';
-import { parseServerRoom, parseRoomMetadata, approvalDeciders, participantInfo, withApproved, withDenied } from '../lib/rooms.js';
+import { parseServerRoom, parseRoomMetadata, approvalDeciders, participantInfo, withApproved, withDenied, decryptRoomPassword } from '../lib/rooms.js';
 import { createLimiter, clientIp } from '../lib/ratelimit.js';
 
 const adminLimiter = createLimiter({ max: 60, windowMs: 60 * 1000 });
 
 function json(status, data){
-  return new Response(JSON.stringify(data), { status, headers: { 'content-type': 'application/json' } });
+  return new Response(JSON.stringify(data), { status, headers: { 'content-type': 'application/json', 'cache-control': 'no-store' } });
 }
 
 export async function POST(request){
@@ -34,8 +34,8 @@ export async function POST(request){
   try{ body = await request.json(); }catch(e){ return json(400, { error: 'corpo-invalido' }); }
   const { action, room, userId } = body && typeof body === 'object' ? body : {};
   if(typeof room !== 'string' || !parseServerRoom(room)) return json(400, { error: 'sala-invalida' });
-  if(action !== 'approve' && action !== 'deny') return json(400, { error: 'acao-desconhecida' });
-  if(typeof userId !== 'string' || !/^\d{15,21}$/.test(userId)) return json(400, { error: 'usuario-invalido' });
+  if(action !== 'approve' && action !== 'deny' && action !== 'reveal') return json(400, { error: 'acao-desconhecida' });
+  if(action !== 'reveal' && (typeof userId !== 'string' || !/^\d{15,21}$/.test(userId))) return json(400, { error: 'usuario-invalido' });
 
   let claims;
   try{
@@ -56,10 +56,19 @@ export async function POST(request){
     const found = rooms.find((r) => r.name === room);
     if(!found) return json(404, { error: 'sala-nao-encontrada' });
     const meta = parseRoomMetadata(found.metadata);
-    if(!meta || meta.access !== 'approval') return json(400, { error: 'sala-nao-tem-aprovacao' });
+    if(action === 'reveal'){
+      if(!meta || meta.access !== 'password') return json(400, { error: 'sala-nao-tem-senha' });
+    } else if(!meta || meta.access !== 'approval') return json(400, { error: 'sala-nao-tem-aprovacao' });
 
     const people = (await roomService.listParticipants(room)).map(participantInfo);
     if(!approvalDeciders(meta, people).includes(callerIdentity)) return json(403, { error: 'sem-permissao' });
+
+    // Ver a senha da sala: só entre quem pode cuidar dela (mesma regra de quem decide pedidos de entrada).
+    if(action === 'reveal'){
+      const password = decryptRoomPassword(apiSecret, room, meta.pwEnc);
+      if(!password) return json(404, { error: 'senha-indisponivel' }); // sala criada antes de a senha poder ser vista
+      return json(200, { password });
+    }
 
     const next = action === 'approve' ? withApproved(meta, userId) : withDenied(meta, userId);
     await roomService.updateRoomMetadata(room, JSON.stringify(next));

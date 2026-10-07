@@ -438,3 +438,93 @@ test('nenhum emoji na interface nem nas mensagens: só símbolos SVG (cadeado, c
   assert.match(appJs, /const ICON_CROWN_SVG = '<svg /);
   assert.match(appJs, /const ICON_FULLSCREEN_SVG = '<svg /);
 });
+
+// ---------- sala com senha: o que o formulário aceita e mostra (HANDOFF §50) ----------
+const pwFns = new Function(
+  extractFunction(appJs, 'accessChoice') + extractFunction(appJs, 'accessHint') + extractFunction(appJs, 'knockFailureText') +
+  '; return { accessChoice, accessHint, knockFailureText };'
+)();
+
+test('formulário de criar sala: tipo de acesso e validação da senha (mesma regra do servidor)', () => {
+  assert.deepEqual(pwFns.accessChoice('open', 'ignorada'), { access: 'open', password: '' });
+  assert.deepEqual(pwFns.accessChoice('approval', 'ignorada'), { access: 'approval', password: '' });
+  assert.deepEqual(pwFns.accessChoice('password', '  segredo123  '), { access: 'password', password: 'segredo123' });
+  assert.equal(pwFns.accessChoice('qualquer-coisa', 'x').access, 'open');           // valor estranho vira aberta
+  for(const pw of ['', 'abc', '   ', 'x'.repeat(33), null, undefined]){
+    const r = pwFns.accessChoice('password', pw);
+    assert.equal(r.access, 'password', String(pw));
+    assert.match(r.error, /de 4 a 32 caracteres/);
+    assert.equal(r.password, '');
+  }
+  assert.equal(pwFns.accessChoice('password', 'a'.repeat(32)).error, undefined);
+  assert.equal(pwFns.accessChoice('password', 'ab\u0000cd').password, 'abcd');       // tira controle, como o servidor
+});
+
+test('cadeado: a dica diz se a sala é de aprovação ou de senha', () => {
+  assert.match(pwFns.accessHint('password'), /senha/);
+  assert.match(pwFns.accessHint('approval'), /aprovar/);
+});
+
+test('senha: textos claros para senha errada e muitas tentativas', () => {
+  assert.match(pwFns.knockFailureText('senha-incorreta'), /Senha incorreta/);
+  assert.match(pwFns.knockFailureText('muitas-tentativas'), /Muitas tentativas/);
+});
+
+// ---------- ver a senha da sala: quem enxerga o botão (HANDOFF §50) ----------
+const caretakerFns = new Function(extractFunction(appJs, 'isRoomCaretaker') + extractFunction(appJs, 'canSeeRoomPassword') + extractFunction(appJs, 'canDecideKnocks') + '; return { canSeeRoomPassword, canDecideKnocks };')();
+const canSeePw = caretakerFns.canSeeRoomPassword;
+const SALA_PW = { access: 'password', creator: { id: '111' } };
+
+test('botão "ver a senha": criador, admin do Sinal e staff DAQUELE servidor; comum e sala sem senha não', () => {
+  assert.equal(canSeePw(SALA_PW, { userId: '111' }, 'G1'), true);                       // criador
+  assert.equal(canSeePw(SALA_PW, { userId: '9', isAdmin: true }, 'G1'), true);           // admin do Sinal
+  for(const tier of ['o', 'a', 'm']) assert.equal(canSeePw(SALA_PW, { userId: '9', tier, guild: 'G1' }, 'G1'), true, tier);
+  assert.equal(canSeePw(SALA_PW, { userId: '9', tier: 'o', guild: 'G2' }, 'G1'), false); // staff de OUTRO servidor
+  assert.equal(canSeePw(SALA_PW, { userId: '9', tier: 'x', guild: 'G1' }, 'G1'), false); // membro comum
+  assert.equal(canSeePw({ access: 'approval', creator: { id: '111' } }, { userId: '111' }, 'G1'), false); // sem senha
+  assert.equal(canSeePw({ access: 'open' }, { userId: '111', isAdmin: true }, 'G1'), false);
+  assert.equal(canSeePw(null, { userId: '111' }, 'G1'), false);
+  assert.equal(canSeePw(SALA_PW, null, 'G1'), false);
+  assert.equal(canSeePw(SALA_PW, { tier: 'o', guild: 'G1' }, ''), false);                // sem servidor conhecido
+});
+
+// ---------- símbolo de cada tipo de sala privada (cadeado só pra SENHA) ----------
+const iconFns = new Function(extractFunction(appJs, 'accessIconKind') + extractFunction(appJs, 'accessLabel') + '; return { accessIconKind, accessLabel };')();
+
+test('símbolo da sala: cadeado só pra senha; aprovação tem símbolo próprio; tipo desconhecido trancado mostra cadeado', () => {
+  assert.equal(iconFns.accessIconKind('password'), 'password');
+  assert.equal(iconFns.accessIconKind('approval'), 'approval');
+  assert.equal(iconFns.accessIconKind('futuro'), 'password');
+  assert.equal(iconFns.accessLabel('password'), 'Sala com senha');
+  assert.equal(iconFns.accessLabel('approval'), 'Sala com aprovação');
+  assert.equal(iconFns.accessLabel('futuro'), 'Sala privada');
+  assert.match(appJs, /const ICON_APPROVAL_SVG = '<svg /);
+  assert.notEqual(appJs.match(/const ICON_APPROVAL_SVG = '([^']+)'/)[1], appJs.match(/const ICON_LOCK_SVG = '([^']+)'/)[1]);
+});
+
+test('sino dos pedidos de entrada: só em sala de APROVAÇÃO e só pra quem cuida dela (criador, admin do Sinal, staff do servidor)', () => {
+  const SALA = { access: 'approval', creator: { id: '111' } };
+  const sino = caretakerFns.canDecideKnocks;
+  assert.equal(sino(SALA, { userId: '111' }, 'G1'), true);
+  assert.equal(sino(SALA, { userId: '9', isAdmin: true }, 'G1'), true);
+  for(const tier of ['o', 'a', 'm']) assert.equal(sino(SALA, { userId: '9', tier, guild: 'G1' }, 'G1'), true, tier);
+  assert.equal(sino(SALA, { userId: '9', tier: 'o', guild: 'G2' }, 'G1'), false);   // staff de OUTRO servidor
+  assert.equal(sino(SALA, { userId: '9', tier: 'x', guild: 'G1' }, 'G1'), false);   // membro comum
+  assert.equal(sino({ access: 'password', creator: { id: '111' } }, { userId: '111' }, 'G1'), false); // sala com senha não tem pedidos
+  assert.equal(sino({ access: 'open', creator: { id: '111' } }, { userId: '111', isAdmin: true }, 'G1'), false);
+  assert.equal(sino(null, { userId: '111' }, 'G1'), false);
+  assert.equal(sino(SALA, null, 'G1'), false);
+  // a chave da senha e o sino nunca aparecem juntos na mesma sala
+  for(const access of ['open', 'approval', 'password']){
+    const meta = { access, creator: { id: '111' } };
+    assert.equal(caretakerFns.canSeeRoomPassword(meta, { userId: '111' }, 'G1') && sino(meta, { userId: '111' }, 'G1'), false, access);
+  }
+});
+
+test('botão escondido (atributo hidden) some DE VERDADE: .icon-btn[hidden] tem display:none (senão a chave/sino aparecem onde não devem)', () => {
+  const css = readFileSync(join(ROOT, 'public/style.css'), 'utf8');
+  assert.match(css, /\.icon-btn\[hidden\]\s*\{\s*display:\s*none/);
+  // e o HTML usa hidden nesses botões
+  const html = readFileSync(join(ROOT, 'public/index.html'), 'utf8');
+  for(const id of ['knockBtn', 'passwordBtn', 'sideToggleBtn']) assert.match(html, new RegExp('id="' + id + '"[^>]*hidden'), id);
+});

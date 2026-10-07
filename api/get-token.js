@@ -33,7 +33,8 @@ import { createLimiter, clientIp } from '../lib/ratelimit.js';
 import {
   MAX_ROOMS_PER_GUILD, MAX_PARTICIPANTS_PER_ROOM, PRESENCE_ROOM, MAX_PRESENCE_GUILDS,
   parseServerRoom, newServerRoomName, cleanTitle, cleanDisplayName,
-  buildRoomMetadata, parseRoomMetadata, cleanAccess, canEnterRoom, approvalDeciders, participantInfo
+  buildRoomMetadata, parseRoomMetadata, cleanAccess, cleanPassword, hashRoomPassword, verifyRoomPassword, encryptRoomPassword,
+  canEnterRoom, approvalDeciders, participantInfo, withApproved, recentFailures, withFailedAttempt, MAX_PASSWORD_TRIES
 } from '../lib/rooms.js';
 
 const MODES = ['join', 'create', 'server-join', 'server-create', 'presence'];
@@ -44,6 +45,9 @@ const tokenLimiter = createLimiter({ max: 60, windowMs: 60 * 1000 });
 // "Bater na porta" de sala com aprovação: no máximo um aviso ao responsável a cada 12 s por pessoa e sala
 // (o pedido repete enquanto a pessoa espera; sem isso o responsável seria inundado).
 const knockLimiter = createLimiter({ max: 1, windowMs: 12 * 1000, maxKeys: 2000 });
+// Palpites de senha de sala (HANDOFF §50): este limite em memória só segura rajadas dentro da MESMA instância; o limite de
+// verdade é durável e fica registrado no metadata da sala (lib/rooms.js: recentFailures/withFailedAttempt).
+const passwordLimiter = createLimiter({ max: 5, windowMs: 5 * 60 * 1000, maxKeys: 5000 });
 
 function json(status, data){
   return new Response(JSON.stringify(data), { status, headers: { 'content-type': 'application/json' } });
@@ -94,10 +98,17 @@ export async function POST(request){
   let room = '';
   let guildId = '';
   let title = '';
+  let newAccess = 'open';
+  let newPassword = null;
   if(isServerMode){
     if(mode === 'server-create'){
       guildId = str(body.guild).trim();
       title = cleanTitle(body.title) || 'Sala';
+      newAccess = cleanAccess(str(body.access));
+      if(newAccess === 'password'){
+        newPassword = cleanPassword(body.password);
+        if(!newPassword) return json(400, { error: 'senha-invalida' }); // 4 a 32 caracteres
+      }
     } else {
       room = str(body.room).trim();
       const parsed = parseServerRoom(room);
@@ -176,7 +187,11 @@ export async function POST(request){
           emptyTimeout: 60,
           departureTimeout: 60,
           maxParticipants: MAX_PARTICIPANTS_PER_ROOM,
-          metadata: buildRoomMetadata({ guildId, title, creator: { id: session.id, name }, access: cleanAccess(str(body.access)) })
+          metadata: buildRoomMetadata({
+            guildId, title, creator: { id: session.id, name }, access: newAccess,
+            passwordHash: newAccess === 'password' ? hashRoomPassword(apiSecret, room, newPassword) : undefined,
+            passwordEnc: newAccess === 'password' ? encryptRoomPassword(apiSecret, room, newPassword) : undefined
+          })
         });
       }catch(e){
         console.error('createRoom (server) falhou:', e && e.message, e);
@@ -209,7 +224,27 @@ export async function POST(request){
       if(found && isServerMode){
         const meta = parseRoomMetadata(found.metadata);
         const gate = canEnterRoom({ meta, session, guildId, userId: session.id });
-        if(!gate.allowed){
+        if(!gate.allowed && meta.access === 'password'){
+          // Sala com senha: sem senha no pedido = "sala-privada" (o app abre a caixa de senha). Com senha: confere
+          // (limite de palpites por pessoa e sala); acertou => lembra a pessoa na sala (recarregar não pede de novo).
+          if(typeof body.password !== 'string' || body.password === '') return json(403, { error: 'sala-privada', access: 'password' });
+          if(recentFailures(meta, session.id) >= MAX_PASSWORD_TRIES || !passwordLimiter.allow(`${room}|${session.id}`)){
+            return json(429, { error: 'muitas-tentativas' });
+          }
+          if(!verifyRoomPassword({ secret: apiSecret, meta, room, password: body.password })){
+            try{
+              await roomService.updateRoomMetadata(room, JSON.stringify(withFailedAttempt(meta, session.id)));
+            }catch(e){
+              console.error('registrar palpite errado de senha falhou:', e && e.message, e);
+            }
+            return json(403, { error: 'senha-incorreta' });
+          }
+          try{
+            await roomService.updateRoomMetadata(room, JSON.stringify(withApproved(meta, session.id)));
+          }catch(e){
+            console.error('lembrar quem acertou a senha falhou:', e && e.message, e);
+          }
+        } else if(!gate.allowed){
           // Só sala com aprovação aceita pedido de entrada; qualquer outro tipo trancado só abre pra quem já pode.
           if(meta.access !== 'approval' || body.knock !== true) return json(403, { error: 'sala-privada', access: meta.access });
           if(gate.denied) return json(403, { error: 'recusado' });

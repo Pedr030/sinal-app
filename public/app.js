@@ -196,6 +196,7 @@ async function connectToRoom(code, name, mode, extra){
         guild: extra && extra.guild,
         title: extra && extra.title,
         access: extra && extra.access,
+        password: extra && extra.password,
         session: (discordUser && discordUser.session) || undefined
       })
     });
@@ -215,11 +216,12 @@ async function connectToRoom(code, name, mode, extra){
       return;
     }
     if(res.status === 403){
-      const why = (await res.json().catch(() => ({}))).error;
+      const data403 = await res.json().catch(() => ({}));
+      const why = data403.error;
       if(why === 'sala-privada' && mode === 'server-join'){
-        // Sala com aprovação: oferece "pedir para entrar" e, se alguém aprovar, tenta de novo (agora passa).
+        // Sala privada: oferece "pedir para entrar" (aprovação) ou a caixa de senha e, se der certo, tenta de novo (agora passa).
         setEntryStatus('');
-        if(await requestToJoinRoom(code)) return connectToRoom(code, name, mode, extra);
+        if(await requestToJoinRoom(code, data403.access)) return connectToRoom(code, name, mode, extra);
         return;
       }
       setEntryStatus(why === 'sala-privada' ? 'Essa sala é privada.' : 'Você não faz parte desse servidor do Discord.');
@@ -493,24 +495,20 @@ function enterRoomUI(){
   fetchLives(); // a foto da tela inicial pode estar velha
   // Sala de server: o chip mostra o NOME da sala (do metadata no LiveKit), não o id interno.
   let chipText = roomCode;
-  let chipPrivate = false;
+  let chipAccess = '';
   if(isServerRoomName(roomCode)){
     try{
       const meta = JSON.parse(room.metadata || '{}');
       chipText = meta.title || 'Sala';
-      chipPrivate = !!(meta.access && meta.access !== 'open');
+      chipAccess = meta.access && meta.access !== 'open' ? meta.access : '';
     }catch(e){ chipText = 'Sala'; }
   }
   const chip = document.getElementById('roomCodeChip');
   chip.textContent = '';
-  if(chipPrivate){
-    const lock = mk('span', 'chip-lock');
-    lock.innerHTML = ICON_LOCK_SVG; // constante estática
-    lock.setAttribute('role', 'img');
-    lock.setAttribute('aria-label', 'Sala privada');
-    chip.appendChild(lock);
-  }
+  if(chipAccess) chip.appendChild(accessIcon(chipAccess, 'chip-lock'));
   chip.appendChild(document.createTextNode(chipText));
+  updatePasswordButton();
+  updateKnockButton();
   document.getElementById('selfName').firstChild.textContent = myName + ' ';
   document.getElementById('chatMessages').innerHTML = '<div class="chat-empty mono">Sem mensagens ainda</div>';
   renderAvatars();
@@ -2284,6 +2282,8 @@ function leaveRoom(){
   myAccessToken = null;
   toggleRosterPanel(false);
   clearKnockCards();
+  document.getElementById('passwordBtn').hidden = true;
+  closeRoomPassword();
   tileStreams.clear();
   tileVideoTracks.clear();
   qualityBaseLabel.clear();
@@ -2773,6 +2773,28 @@ function renderServerView(g){
 // Ícone de tela (é um app de transmissão de tela, não de voz): vermelho quando alguém da sala está transmitindo.
 // Cadeado das salas privadas (SVG no mesmo traço dos outros ícones; constante estática, nenhum dado de fora entra aqui).
 const ICON_LOCK_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>';
+// Sala com APROVAÇÃO: pessoa com visto (entra quem for aprovado). O cadeado é só de sala com SENHA.
+const ICON_APPROVAL_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><polyline points="16 11 18 13 22 9"/></svg>';
+
+// Qual símbolo cada tipo de sala usa: senha = cadeado; aprovação = pessoa com visto; qualquer outro tipo trancado
+// (futuro/desconhecido) mostra o cadeado, que é o aviso mais geral de "não é aberta".
+function accessIconKind(access){
+  return access === 'approval' ? 'approval' : 'password';
+}
+function accessLabel(access){
+  return access === 'password' ? 'Sala com senha' : access === 'approval' ? 'Sala com aprovação' : 'Sala privada';
+}
+// Span com o símbolo certo (SVG estático; nenhum dado de fora entra no innerHTML).
+function accessIcon(access, className){
+  const el = document.createElement('span');
+  el.className = className;
+  el.dataset.access = accessIconKind(access);
+  el.setAttribute('role', 'img');
+  el.setAttribute('aria-label', accessLabel(access));
+  el.innerHTML = accessIconKind(access) === 'approval' ? ICON_APPROVAL_SVG : ICON_LOCK_SVG;
+  return el;
+}
+
 const ICON_SCREEN_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>';
 
 function renderRoomRow(r, currentRoom){
@@ -2786,12 +2808,8 @@ function renderRoomRow(r, currentRoom){
     icon.innerHTML = ICON_SCREEN_SVG; // constante estática acima — nenhum dado de fora entra aqui
     head.appendChild(icon);
   } else {
-    const lock = mk('span', 'srv-room-icon srv-room-lock');
-    lock.innerHTML = ICON_LOCK_SVG; // constante estática acima
-    lock.setAttribute('role', 'img');
-    lock.setAttribute('aria-label', 'Sala privada');
-    head.appendChild(lock);
-    row.title = 'Sala privada: pra entrar, alguém da sala precisa aprovar';
+    head.appendChild(accessIcon(r.access, 'srv-room-icon srv-room-lock'));
+    row.title = accessHint(r.access);
   }
   head.appendChild(mk('span', 'srv-room-title', r.title));
   head.appendChild(mk('span', 'srv-room-count mono', String(r.participants.length)));
@@ -2941,6 +2959,21 @@ function renderCallSide(){
 // ---- Sala privada (com aprovação) — HANDOFF §49 ----
 // Quem decide: o servidor (api/room-admin.js) recalcula quem pode a cada clique; aqui é só a interface.
 
+// Tipo de acesso escolhido no formulário de criar sala + validação da senha (mesma regra do servidor:
+// 4 a 32 caracteres, sem caracteres de controle). `error` preenchido = não deixa criar.
+function accessChoice(access, password){
+  const kind = access === 'approval' || access === 'password' ? access : 'open';
+  if(kind !== 'password') return { access: kind, password: '' };
+  const pw = String(password == null ? '' : password).replace(/[\u0000-\u001f\u007f]/g, '').trim();
+  if(pw.length < 4 || pw.length > 32) return { access: kind, password: '', error: 'A senha precisa ter de 4 a 32 caracteres.' };
+  return { access: kind, password: pw };
+}
+
+// Dica do símbolo (cadeado ou aprovação) na lista de salas.
+function accessHint(access){
+  return access === 'password' ? 'Sala com senha: pra entrar, precisa da senha' : 'Sala privada: pra entrar, alguém da sala precisa aprovar';
+}
+
 // Aviso de "fulano quer entrar". Só vale se veio DO SERVIDOR (participant indefinido: o LiveKit entrega
 // assim o que a API manda) no tópico "knock" e para ESTA sala — um participante comum que publicasse o
 // mesmo texto pelo canal de dados não consegue forjar um pedido.
@@ -2952,6 +2985,66 @@ function parseKnockMessage(msg, fromParticipant, topic, currentRoom){
   return { userId: msg.userId, name, avatar: typeof msg.avatar === 'string' && isDiscordAvatarUrl(msg.avatar) ? msg.avatar : '' };
 }
 
+// Quem enxerga o botão "ver a senha": o criador, o admin do Sinal e dono/Administrador/"gerencia" daquele
+// servidor. É só interface: o servidor confere de novo (api/room-admin.js) e entrega a senha só a quem pode.
+function isRoomCaretaker(meta, myMeta, guild){
+  if(!meta || !myMeta) return false;
+  if(myMeta.isAdmin) return true;
+  if(meta.creator && myMeta.userId && meta.creator.id === myMeta.userId) return true;
+  return !!(['o', 'a', 'm'].includes(myMeta.tier) && myMeta.guild && myMeta.guild === guild);
+}
+function canSeeRoomPassword(meta, myMeta, guild){
+  return !!meta && meta.access === 'password' && isRoomCaretaker(meta, myMeta, guild);
+}
+// Sino dos pedidos de entrada: sala com aprovação e quem cuida dela (o responsável "quem entrou primeiro" não dá pra
+// saber aqui; ele passa a ver o sino assim que chega o primeiro pedido — o servidor só avisa quem pode decidir).
+function canDecideKnocks(meta, myMeta, guild){
+  return !!meta && meta.access === 'approval' && isRoomCaretaker(meta, myMeta, guild);
+}
+
+function updatePasswordButton(){
+  const btn = document.getElementById('passwordBtn');
+  let show = false;
+  try{
+    const claims = myTokenClaims();
+    show = !!room && !!claims && canSeeRoomPassword(JSON.parse(room.metadata || '{}'), JSON.parse(claims.metadata || '{}'), currentRoomGuild());
+  }catch(e){ /* sem metadata: sem botão */ }
+  btn.hidden = !show;
+}
+
+function closeRoomPassword(){
+  document.getElementById('passwordValue').textContent = '';
+  document.getElementById('passwordOverlay').hidden = true;
+}
+
+async function showRoomPassword(){
+  if(!myAccessToken || !roomCode) return;
+  const overlay = document.getElementById('passwordOverlay');
+  const value = document.getElementById('passwordValue');
+  const note = document.getElementById('passwordNote');
+  const copy = document.getElementById('passwordCopy');
+  const NOTE = 'Passe esta senha só pra quem você quer na sala.';
+  note.textContent = NOTE; value.textContent = 'Buscando...'; copy.hidden = true; copy.textContent = 'Copiar';
+  overlay.hidden = false;
+  try{
+    const res = await fetch('/api/room-admin', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: 'Bearer ' + myAccessToken },
+      body: JSON.stringify({ action: 'reveal', room: roomCode })
+    });
+    const data = await res.json().catch(() => ({}));
+    if(res.ok && data.password){ value.textContent = data.password; copy.hidden = false; return; }
+    value.textContent = '';
+    note.textContent = ({
+      'sem-permissao': 'Só quem cuida da sala pode ver a senha.',
+      'senha-indisponivel': 'Esta sala foi criada antes de a senha poder ser vista.'
+    })[data.error] || 'Não consegui buscar a senha agora. Tente de novo.';
+  }catch(e){
+    value.textContent = '';
+    note.textContent = 'Sem conexão com o servidor. Tente de novo.';
+  }
+}
+
 // Texto pra cada resposta do servidor ao pedido de entrada.
 function knockFailureText(error){
   return ({
@@ -2959,7 +3052,9 @@ function knockFailureText(error){
     'sem-responsavel': 'Não tem ninguém na sala que possa aprovar agora.',
     'room-not-found': 'Essa sala já fechou.',
     'fora-do-server': 'Você não faz parte desse servidor do Discord.',
-    'sessao-invalida': 'Sua sessão do Discord expirou. Entre com o Discord de novo.'
+    'sessao-invalida': 'Sua sessão do Discord expirou. Entre com o Discord de novo.',
+    'senha-incorreta': 'Senha incorreta. Tente de novo.',
+    'muitas-tentativas': 'Muitas tentativas seguidas. Espere alguns minutos e tente de novo.'
   })[error] || 'Não consegui pedir agora. Tente de novo.';
 }
 
@@ -2979,20 +3074,25 @@ async function ensureRoomAccess(roomName){
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ mode: 'server-join', room: roomName, name: getName(), session: (discordUser && discordUser.session) || undefined })
     });
-    if(res.status === 403 && (await res.json().catch(() => ({}))).error === 'sala-privada') return await requestToJoinRoom(roomName);
+    if(res.status === 403){
+      const data = await res.json().catch(() => ({}));
+      if(data.error === 'sala-privada') return await requestToJoinRoom(roomName, data.access);
+    }
   }catch(e){ /* sem rede: deixa o fluxo normal tratar */ }
   return true;
 }
 
 // Diálogo "pedir para entrar": confirma, avisa quem decide (o servidor repete o aviso a cada ~12 s enquanto
 // a pessoa espera) e consulta a cada 3 s até sair aprovado, recusado ou passar de 5 min. Devolve true se aprovado.
-function requestToJoinRoom(roomName){
+function requestToJoinRoom(roomName, access){
   return new Promise((resolve) => {
     const overlay = document.getElementById('knockOverlay');
     const title = document.getElementById('knockTitle');
     const msg = document.getElementById('knockMsg');
     const primary = document.getElementById('knockPrimary');
     const cancel = document.getElementById('knockCancel');
+    const pwInput = document.getElementById('knockPassword');
+    const byPassword = access === 'password';
     let stopped = false, timer = null, startedAt = 0;
     const show = (t, m, primaryText, cancelText) => {
       title.textContent = t; msg.textContent = m;
@@ -3003,18 +3103,51 @@ function requestToJoinRoom(roomName){
     const finish = (ok) => {
       stopped = true; clearTimeout(timer);
       overlay.hidden = true;
+      pwInput.hidden = true; pwInput.value = '';
+      primary.disabled = false;
       document.removeEventListener('keydown', onKey, true);
-      primary.onclick = cancel.onclick = null;
+      primary.onclick = cancel.onclick = pwInput.onkeydown = null;
       resolve(ok);
     };
+    const post = (extra) => fetch('/api/get-token', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ mode: 'server-join', room: roomName, name: getName(), session: (discordUser && discordUser.session) || undefined, ...extra })
+    });
+
+    if(byPassword){
+      // Sala com senha: a pessoa digita; o servidor confere (e limita os palpites). Acertou => entra.
+      const submit = async () => {
+        const typed = pwInput.value;
+        if(!typed.trim() || primary.disabled) return;
+        primary.disabled = true;
+        msg.textContent = 'Conferindo a senha...';
+        let error = '';
+        try{
+          const res = await post({ password: typed });
+          if(res.status === 200){ finish(true); return; }
+          error = (await res.json().catch(() => ({}))).error || '';
+        }catch(e){ error = 'rede'; }
+        if(stopped) return;
+        primary.disabled = false;
+        msg.textContent = error === 'rede' ? 'Sem conexão com o servidor. Tente de novo.' : knockFailureText(error);
+        if(error === 'senha-incorreta'){ pwInput.select(); pwInput.focus(); }
+      };
+      show('Sala com senha', 'Digite a senha pra entrar nesta sala.', 'Entrar', 'Cancelar');
+      pwInput.hidden = false; pwInput.value = '';
+      primary.onclick = submit;
+      pwInput.onkeydown = (e) => { if(e.key === 'Enter'){ e.preventDefault(); submit(); } };
+      cancel.onclick = () => finish(false);
+      document.addEventListener('keydown', onKey, true);
+      overlay.hidden = false;
+      pwInput.focus();
+      return;
+    }
+
     const poll = async () => {
       if(stopped) return;
       let error = '';
       try{
-        const res = await fetch('/api/get-token', {
-          method: 'POST', headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ mode: 'server-join', room: roomName, name: getName(), session: (discordUser && discordUser.session) || undefined, knock: true })
-        });
+        const res = await post({ knock: true });
         if(res.status === 200){ finish(true); return; }
         error = (await res.json().catch(() => ({}))).error || '';
         if(res.status === 429) error = 'aguardando-aprovacao'; // muitos pedidos seguidos: só espera e tenta de novo
@@ -3047,12 +3180,52 @@ function requestToJoinRoom(roomName){
 // espera; sem repetição por 40 s o cartão some sozinho (a pessoa desistiu ou saiu).
 const knockCards = new Map(); // userId -> { el, timer }
 const KNOCK_CARD_TTL_MS = 40000;
+let knockSeen = false;          // já chegou algum pedido nesta sala (mostra o sino mesmo pra quem eu não prevejo ser responsável)
+let knockOpenedByUser = false;  // aberto pelo sino: não fecha sozinho quando a lista esvazia
+
+function updateKnockButton(){
+  const btn = document.getElementById('knockBtn');
+  let show = knockSeen;
+  try{
+    const claims = myTokenClaims();
+    show = show || (!!room && !!claims && canDecideKnocks(JSON.parse(room.metadata || '{}'), JSON.parse(claims.metadata || '{}'), currentRoomGuild()));
+  }catch(e){ /* sem metadata: só pelo que chegou */ }
+  btn.hidden = !show;
+}
+
+function setKnockPanel(open, byUser){
+  const panel = document.getElementById('knockPanel');
+  panel.hidden = !open;
+  knockOpenedByUser = open && !!byUser;
+  renderKnockUI();
+}
+
+// Contador do sino e estado aberto/fechado; o painel aberto sozinho (pedido novo) fecha quando a lista esvazia.
+function renderKnockUI(){
+  const count = knockCards.size;
+  const badge = document.getElementById('knockBadge');
+  badge.textContent = String(count);
+  badge.classList.toggle('show', count > 0);
+  const panel = document.getElementById('knockPanel');
+  if(!panel.hidden && count === 0 && !knockOpenedByUser) panel.hidden = true;
+  const btn = document.getElementById('knockBtn');
+  btn.classList.toggle('active', !panel.hidden);
+  btn.setAttribute('aria-expanded', String(!panel.hidden));
+  btn.title = count ? `Pedidos para entrar (${count})` : 'Pedidos para entrar';
+}
 
 function clearKnockCards(){
   knockCards.forEach((c) => clearTimeout(c.timer));
   knockCards.clear();
+  knockSeen = false;
+  knockOpenedByUser = false;
+  const list = document.getElementById('knockList');
+  if(list) list.innerHTML = '';
   const panel = document.getElementById('knockPanel');
-  if(panel) panel.innerHTML = '';
+  if(panel) panel.hidden = true;
+  const btn = document.getElementById('knockBtn');
+  if(btn) btn.hidden = true;
+  renderKnockUI();
 }
 
 function removeKnockCard(userId){
@@ -3061,6 +3234,7 @@ function removeKnockCard(userId){
   clearTimeout(c.timer);
   c.el.remove();
   knockCards.delete(userId);
+  renderKnockUI();
 }
 
 function handleKnock(k){
@@ -3088,8 +3262,12 @@ function handleKnock(k){
   no.addEventListener('click', () => decideKnock(k.userId, 'deny', ok, no, err));
   actions.append(ok, no);
   card.append(who, actions, err);
-  document.getElementById('knockPanel').appendChild(card);
+  document.getElementById('knockList').appendChild(card);
   knockCards.set(k.userId, { el: card, timer: setTimeout(() => removeKnockCard(k.userId), KNOCK_CARD_TTL_MS) });
+  // Pedido novo: mostra o sino e abre a lista sozinha (fecha sozinha quando todos forem decididos).
+  knockSeen = true;
+  updateKnockButton();
+  if(document.getElementById('knockPanel').hidden) setKnockPanel(true, false); else renderKnockUI();
 }
 
 async function decideKnock(userId, action, okBtn, noBtn, errEl){
@@ -3124,7 +3302,9 @@ function openCallNewForm(open){
   const form = document.getElementById('callNewForm');
   form.hidden = !open;
   document.getElementById('callNewMsg').textContent = '';
-  document.getElementById('callNewPrivate').checked = false;
+  document.getElementById('callNewAccess').value = 'open';
+  document.getElementById('callNewPassword').value = '';
+  document.getElementById('callNewPassword').hidden = true;
   if(open){ const input = document.getElementById('callNewTitle'); input.value = ''; input.focus(); }
 }
 
@@ -3135,14 +3315,15 @@ async function createRoomFromCall(){
   const blocked = serverRoomsLimitMessage((livesData[guild] || []).length);
   if(blocked){ msg.textContent = blocked; return; }
   const title = document.getElementById('callNewTitle').value;
-  const access = document.getElementById('callNewPrivate').checked ? 'approval' : 'open';
+  const choice = accessChoice(document.getElementById('callNewAccess').value, document.getElementById('callNewPassword').value);
+  if(choice.error){ msg.textContent = choice.error; return; }
   const sharing = document.getElementById('shareBtn').classList.contains('active-share')
     || document.getElementById('cameraBtn').classList.contains('active-share');
   if(sharing && !(await askConfirm({ title: 'Criar sala e trocar?', message: 'Você está transmitindo. Criar uma sala nova vai tirar você desta e parar a transmissão.', okText: 'Criar sala' }))) return;
   openCallNewForm(false);
   leaveRoom();
   getAudioCtx();
-  connectToRoom(null, getName(), 'server-create', { guild, title, access });
+  connectToRoom(null, getName(), 'server-create', { guild, title, access: choice.access, password: choice.password });
 }
 
 function toggleCallSide(){
@@ -3265,8 +3446,9 @@ function createServerRoom(){
   if(serverView === 'home' || !guildById(serverView)) return;
   getAudioCtx();
   const title = document.getElementById('srvRoomTitle').value;
-  const access = document.getElementById('srvRoomPrivate').checked ? 'approval' : 'open';
-  connectToRoom(null, getName(), 'server-create', { guild: serverView, title, access });
+  const choice = accessChoice(document.getElementById('srvRoomAccess').value, document.getElementById('srvRoomPassword').value);
+  if(choice.error){ setEntryStatus(choice.error); return; }
+  connectToRoom(null, getName(), 'server-create', { guild: serverView, title, access: choice.access, password: choice.password });
 }
 
 // ---- escolher servers ----
@@ -3352,6 +3534,24 @@ function setupServersUI(){
     const row = e.target.closest('.srv-room');
     if(row) hopToRoom(row.dataset.room);
   });
+  document.getElementById('knockBtn').addEventListener('click', () => setKnockPanel(document.getElementById('knockPanel').hidden, true));
+  document.getElementById('knockPanelClose').addEventListener('click', () => setKnockPanel(false, false));
+  document.getElementById('passwordBtn').addEventListener('click', showRoomPassword);
+  document.getElementById('passwordClose').addEventListener('click', closeRoomPassword);
+  document.getElementById('passwordCopy').addEventListener('click', async () => {
+    const btn = document.getElementById('passwordCopy');
+    try{ await navigator.clipboard.writeText(document.getElementById('passwordValue').textContent); btn.textContent = 'Copiado'; }
+    catch(e){ btn.textContent = 'Selecione e copie'; }
+    setTimeout(() => { btn.textContent = 'Copiar'; }, 1800);
+  });
+  document.getElementById('passwordOverlay').addEventListener('click', (e) => { if(e.target.id === 'passwordOverlay') closeRoomPassword(); });
+  document.addEventListener('keydown', (e) => { if(e.key === 'Escape' && !document.getElementById('passwordOverlay').hidden) closeRoomPassword(); });
+  const syncAccess = (selectId, inputId) => {
+    const sel = document.getElementById(selectId), input = document.getElementById(inputId);
+    sel.addEventListener('change', () => { input.hidden = sel.value !== 'password'; if(!input.hidden) input.focus(); });
+  };
+  syncAccess('srvRoomAccess', 'srvRoomPassword');
+  syncAccess('callNewAccess', 'callNewPassword');
   document.getElementById('callNewBtn').addEventListener('click', () => openCallNewForm(document.getElementById('callNewForm').hidden));
   document.getElementById('callNewOk').addEventListener('click', createRoomFromCall);
   document.getElementById('callNewCancel').addEventListener('click', () => openCallNewForm(false));

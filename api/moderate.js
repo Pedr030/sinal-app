@@ -98,14 +98,14 @@ export async function POST(request){
       // modificado voltaria na hora com o MESMO token. (Expulsar não é banir: quem tem direito
       // de entrar na sala ainda pode pedir um token novo.)
       await roomService.removeParticipant(room, targetIdentity, { revokeTokenTs: BigInt(Math.floor(Date.now() / 1000)) });
-      // Sala com aprovação (HANDOFF §49): expulsar desfaz a aprovação da pessoa — pra voltar, precisa pedir de
+      // Sala com aprovação ou senha (HANDOFF §49/§50): expulsar desfaz a aprovação da pessoa — pra voltar, precisa pedir de
       // novo. (Sem isso ela reentraria na hora, e a expulsão não serviria de nada.) Falha aqui não desfaz a
       // expulsão, que já aconteceu; só fica registrada.
       try{
         const targetUserId = (parseMeta(target.metadata) || {}).userId;
         const found = (await roomService.listRooms([room])).find((r) => r.name === room);
         const meta = found && parseRoomMetadata(found.metadata);
-        if(meta && meta.access === 'approval' && typeof targetUserId === 'string' && targetUserId){
+        if(meta && meta.access && meta.access !== 'open' && typeof targetUserId === 'string' && targetUserId){
           await roomService.updateRoomMetadata(room, JSON.stringify(withoutAllowed(meta, targetUserId)));
         }
       }catch(e){
