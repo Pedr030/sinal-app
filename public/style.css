@@ -852,6 +852,20 @@ button.confirm-ok.danger-fill:hover{ background:#ff5c52; }
 .call-rail-btn .srv-live-dot{ width:11px; height:11px; }
 .call-side-name{ padding:12px 14px 6px; font-weight:700; font-size:13px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .call-side .srv-rooms{ padding-bottom:10px; }
+.call-new{ padding:0 10px 12px; border-top:1px solid var(--line); padding-top:10px; }
+.call-new-btn{
+  width:100%; height:auto; padding:9px 10px; background:transparent; border:1px dashed var(--line);
+  color:var(--tune); border-radius:8px; font-size:13px; font-weight:600;
+}
+.call-new-btn:hover{ border-color:var(--tune); background:var(--tune-dim); }
+.call-new-form{ display:flex; flex-direction:column; gap:8px; margin-top:8px; }
+.call-new-form[hidden]{ display:none; }
+.call-new-form input{ width:100%; }
+.call-new-actions{ display:flex; gap:8px; }
+.call-new-actions button{ height:auto; padding:8px 14px; font-size:13px; }
+.call-new-cancel{ background:transparent; color:var(--fog); border:1px solid var(--line); }
+.call-new-cancel:hover{ color:var(--ink); border-color:var(--fog); }
+.call-new-msg{ min-height:16px; font-size:12px; color:var(--rec); line-height:1.4; }
 .srv-room.current{ background:var(--tune-dim); border-color:var(--tune); cursor:default; }
 #sideToggleBtn.active{ border-color:var(--tune); color:var(--tune); }
 /* Sala de servidor: sem código nem link de convite (a entrada é pela lista do servidor). */

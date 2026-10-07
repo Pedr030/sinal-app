@@ -149,6 +149,18 @@
       <div class="call-rail" id="callRail"></div>
       <div class="call-side-name" id="callSideName"></div>
       <div class="srv-rooms" id="callRooms"></div>
+      <!-- Criar sala sem sair da call (fica FORA de #callRooms: a lista é redesenhada a cada atualização ao vivo e apagaria o que está sendo digitado) -->
+      <div class="call-new" id="callNew">
+        <button type="button" class="call-new-btn" id="callNewBtn">+ Criar sala</button>
+        <div class="call-new-form" id="callNewForm" hidden>
+          <input type="text" id="callNewTitle" maxlength="40" placeholder="Nome da sala (opcional)" autocomplete="off">
+          <div class="call-new-actions">
+            <button type="button" class="primary" id="callNewOk">Criar</button>
+            <button type="button" class="call-new-cancel" id="callNewCancel">Cancelar</button>
+          </div>
+          <div class="call-new-msg" id="callNewMsg" role="status"></div>
+        </div>
+      </div>
     </aside>
     <div class="room-main">
     <div class="room-bar">

@@ -367,3 +367,18 @@ test('recarga automática: o cálculo do intervalo e do login usa as constantes 
   assert.match(appJs, /const AUTO_RELOAD_TICK_MS = 10000;/);
   assert.match(appJs, /const AUTO_RELOAD_MIN_GAP_MS = 5 \* 60 \* 1000;/);
 });
+
+// ---------- criar sala dentro da call (HANDOFF §48) ----------
+const roomsLimitMsg = new Function('const SERVER_ROOMS_LIMIT = ' + appJs.match(/const SERVER_ROOMS_LIMIT = (\d+);/)[1] + ';' + extractFunction(appJs, 'serverRoomsLimitMessage') + '; return serverRoomsLimitMessage;')();
+
+test('criar sala na call: avisa do limite de salas antes de sair da sala atual', () => {
+  assert.equal(roomsLimitMsg(0), null);
+  assert.equal(roomsLimitMsg(9), null);
+  assert.match(roomsLimitMsg(10), /já tem 10 salas ao vivo/);
+  assert.match(roomsLimitMsg(15), /já tem 10 salas ao vivo/);
+});
+
+test('criar sala na call: o limite do app é o mesmo do servidor (lib/rooms.js)', () => {
+  const lib = readFileSync(join(ROOT, 'lib/rooms.js'), 'utf8');
+  assert.equal(Number(lib.match(/MAX_ROOMS_PER_GUILD = (\d+)/)[1]), Number(appJs.match(/const SERVER_ROOMS_LIMIT = (\d+);/)[1]));
+});

@@ -2895,6 +2895,38 @@ function renderCallSide(){
   rooms.forEach((r) => list.appendChild(renderRoomRow(r, roomCode)));
 }
 
+// ---- Criar sala sem sair da call ----
+// Espelha MAX_ROOMS_PER_GUILD de lib/rooms.js (o servidor é quem manda; isto só evita sair da sala atual
+// pra descobrir, só depois, que o limite estava cheio).
+const SERVER_ROOMS_LIMIT = 10;
+
+function serverRoomsLimitMessage(liveRooms){
+  return liveRooms >= SERVER_ROOMS_LIMIT ? `Esse servidor já tem ${SERVER_ROOMS_LIMIT} salas ao vivo. Entre numa delas ou espere alguma fechar.` : null;
+}
+
+function openCallNewForm(open){
+  const form = document.getElementById('callNewForm');
+  form.hidden = !open;
+  document.getElementById('callNewMsg').textContent = '';
+  if(open){ const input = document.getElementById('callNewTitle'); input.value = ''; input.focus(); }
+}
+
+async function createRoomFromCall(){
+  const guild = callView;
+  if(!room || !guildById(guild)) return;
+  const msg = document.getElementById('callNewMsg');
+  const blocked = serverRoomsLimitMessage((livesData[guild] || []).length);
+  if(blocked){ msg.textContent = blocked; return; }
+  const title = document.getElementById('callNewTitle').value;
+  const sharing = document.getElementById('shareBtn').classList.contains('active-share')
+    || document.getElementById('cameraBtn').classList.contains('active-share');
+  if(sharing && !(await askConfirm({ title: 'Criar sala e trocar?', message: 'Você está transmitindo. Criar uma sala nova vai tirar você desta e parar a transmissão.', okText: 'Criar sala' }))) return;
+  openCallNewForm(false);
+  leaveRoom();
+  getAudioCtx();
+  connectToRoom(null, getName(), 'server-create', { guild, title });
+}
+
 function toggleCallSide(){
   callSideOpen = !callSideOpen;
   try{ localStorage.setItem(CALL_SIDE_KEY, callSideOpen ? '1' : '0'); }catch(e){}
@@ -3097,6 +3129,13 @@ function setupServersUI(){
   document.getElementById('callRooms').addEventListener('click', (e) => {
     const row = e.target.closest('.srv-room');
     if(row) hopToRoom(row.dataset.room);
+  });
+  document.getElementById('callNewBtn').addEventListener('click', () => openCallNewForm(document.getElementById('callNewForm').hidden));
+  document.getElementById('callNewOk').addEventListener('click', createRoomFromCall);
+  document.getElementById('callNewCancel').addEventListener('click', () => openCallNewForm(false));
+  document.getElementById('callNewTitle').addEventListener('keydown', (e) => {
+    if(e.key === 'Enter'){ e.preventDefault(); createRoomFromCall(); }
+    else if(e.key === 'Escape'){ e.preventDefault(); openCallNewForm(false); }
   });
   document.getElementById('srvRoomTitle').addEventListener('keydown', (e) => { if(e.key === 'Enter') createServerRoom(); });
 
