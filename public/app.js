@@ -3588,7 +3588,7 @@ window.addEventListener('beforeunload', () => {
 });
 
 // PWA: versão, registro do service worker, detecção de atualização e botão de instalação
-const APP_VERSION = '0.8.62'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
+const APP_VERSION = '0.8.63'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
 // Dentro do Electron, mostra a versão do INSTALADOR (electron/package.json),
 // não a do site — ver preload.js. Fora dele (navegador normal), continua a
 // versão do deploy de sempre.
@@ -3696,8 +3696,57 @@ document.getElementById('updateBtn').addEventListener('click', async () => {
   const warning = updateLeaveWarning(document.body.classList.contains('in-room'), isSharing);
   if(warning && !(await askConfirm({ title: 'Atualizar agora?', message: warning, okText: 'Atualizar' }))) return;
   if(document.getElementById('updateBar').dataset.mode === 'app') window.sinalElectron.installUpdate();
-  else window.location.reload();
+  else reloadPage();
 });
+
+// ---- Atualização automática do site, só FORA de sala ----
+// Quem deixa o Sinal aberto por dias (a bandeja do app, uma aba) ficava com a versão velha até alguém
+// recarregar. Agora, quando o site novo já está baixado (siteUpdateReady), recarrega sozinho — mas só se não
+// houver nada a perder: fora de sala, sem transmissão, sem janela aberta (configurações, relatório,
+// confirmação...), sem texto sendo digitado e sem login do Discord esperando no navegador. Tudo isso precisa
+// estar livre por AUTO_RELOAD_STABLE_TICKS verificações seguidas (~30 s), e há um intervalo mínimo entre
+// recargas automáticas pra nunca entrar em laço. Dentro de uma sala nada muda: o aviso com botão continua.
+const AUTO_RELOAD_TICK_MS = 10000;
+const AUTO_RELOAD_STABLE_TICKS = 3;
+const AUTO_RELOAD_MIN_GAP_MS = 5 * 60 * 1000;
+const AUTO_RELOAD_KEY = 'sinal:autoReloadAt';
+let autoReloadStable = 0;
+
+// s = { siteReady, inRoom, sharing, overlayOpen, typing, loginPending, recentlyReloaded }
+function canAutoReload(s){
+  return !!s.siteReady && !s.inRoom && !s.sharing && !s.overlayOpen && !s.typing && !s.loginPending && !s.recentlyReloaded;
+}
+
+function autoReloadState(){
+  const open = (id) => { const el = document.getElementById(id); return !!el && !el.hidden; };
+  const a = document.activeElement;
+  const typing = !!a && ((a.tagName === 'TEXTAREA' && a.value) || (a.tagName === 'INPUT' && !['button', 'checkbox', 'radio', 'submit'].includes(a.type) && a.value));
+  let loginPending = false, recentlyReloaded = false;
+  try{
+    const saved = JSON.parse(localStorage.getItem(LOGIN_NONCE_KEY) || 'null');
+    loginPending = !!saved && Date.now() - saved.at <= LOGIN_NONCE_TTL_MS;
+    recentlyReloaded = Date.now() - Number(localStorage.getItem(AUTO_RELOAD_KEY) || 0) < AUTO_RELOAD_MIN_GAP_MS;
+  }catch(e){ /* sem localStorage: sem como lembrar; o contador de verificações ainda protege */ }
+  return {
+    siteReady: siteUpdateReady,
+    inRoom: document.body.classList.contains('in-room'),
+    sharing: document.getElementById('shareBtn').classList.contains('active-share') || document.getElementById('cameraBtn').classList.contains('active-share'),
+    overlayOpen: ['settingsOverlay', 'srvPickerOverlay', 'reportOverlay', 'confirmOverlay', 'changelogOverlay'].some(open),
+    typing, loginPending, recentlyReloaded
+  };
+}
+
+function reloadPage(){ window.location.reload(); }
+
+function autoReloadTick(){
+  if(!canAutoReload(autoReloadState())){ autoReloadStable = 0; return; }
+  if(++autoReloadStable < AUTO_RELOAD_STABLE_TICKS) return;
+  autoReloadStable = 0;
+  try{ localStorage.setItem(AUTO_RELOAD_KEY, String(Date.now())); }catch(e){}
+  appLog('[sinal] site atualizado sozinho (fora de sala)');
+  reloadPage();
+}
+setInterval(autoReloadTick, AUTO_RELOAD_TICK_MS);
 
 // Instalador 0.3.11+ avisa o estado da atualização do app; os mais antigos só mostram o aviso do site.
 if(window.sinalElectron && typeof window.sinalElectron.onUpdateState === 'function' && typeof window.sinalElectron.getUpdateState === 'function'){

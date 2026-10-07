@@ -346,3 +346,24 @@ test('mixer: a reserva cresce quando a fila esvazia no meio do som (e fica entre
   for(let i = 0; i < 4; i++) bloco(core2);
   assert.equal(core2.sources.get(1).prebuffer, 5760 - 480);
 });
+
+// ---------- atualização automática do site fora de sala (HANDOFF §48) ----------
+const canAutoReload = new Function(extractFunction(appJs, 'canAutoReload') + '; return canAutoReload;')();
+const livre = { siteReady: true, inRoom: false, sharing: false, overlayOpen: false, typing: false, loginPending: false, recentlyReloaded: false };
+
+test('recarga automática: só com site novo baixado e NADA a perder', () => {
+  assert.equal(canAutoReload(livre), true);
+  assert.equal(canAutoReload({ ...livre, siteReady: false }), false);   // nada novo
+  assert.equal(canAutoReload({ ...livre, inRoom: true }), false);       // dentro de sala
+  assert.equal(canAutoReload({ ...livre, sharing: true }), false);      // transmitindo
+  assert.equal(canAutoReload({ ...livre, overlayOpen: true }), false);  // janela aberta (config, relatório, confirmação...)
+  assert.equal(canAutoReload({ ...livre, typing: true }), false);       // digitando
+  assert.equal(canAutoReload({ ...livre, loginPending: true }), false); // esperando o login do Discord no navegador
+  assert.equal(canAutoReload({ ...livre, recentlyReloaded: true }), false); // já recarregou há pouco (sem laço)
+});
+
+test('recarga automática: o cálculo do intervalo e do login usa as constantes do código (30 s estáveis, 5 min entre recargas)', () => {
+  assert.match(appJs, /const AUTO_RELOAD_STABLE_TICKS = 3;/);
+  assert.match(appJs, /const AUTO_RELOAD_TICK_MS = 10000;/);
+  assert.match(appJs, /const AUTO_RELOAD_MIN_GAP_MS = 5 \* 60 \* 1000;/);
+});
