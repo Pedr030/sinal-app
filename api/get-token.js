@@ -33,7 +33,7 @@ import { createLimiter, clientIp } from '../lib/ratelimit.js';
 import {
   MAX_ROOMS_PER_GUILD, MAX_PARTICIPANTS_PER_ROOM, PRESENCE_ROOM, MAX_PRESENCE_GUILDS,
   parseServerRoom, newServerRoomName, cleanTitle, cleanDisplayName,
-  buildRoomMetadata, parseRoomMetadata, cleanAccess, cleanPassword, hashRoomPassword, verifyRoomPassword, encryptRoomPassword,
+  buildRoomMetadata, parseRoomMetadata, cleanAccess, cleanPassword, verifyRoomPassword, encryptRoomPassword,
   canEnterRoom, approvalDeciders, participantInfo, withApproved, recentFailures, withFailedAttempt, MAX_PASSWORD_TRIES
 } from '../lib/rooms.js';
 
@@ -189,7 +189,6 @@ export async function POST(request){
           maxParticipants: MAX_PARTICIPANTS_PER_ROOM,
           metadata: buildRoomMetadata({
             guildId, title, creator: { id: session.id, name }, access: newAccess,
-            passwordHash: newAccess === 'password' ? hashRoomPassword(apiSecret, room, newPassword) : undefined,
             passwordEnc: newAccess === 'password' ? encryptRoomPassword(apiSecret, room, newPassword) : undefined
           })
         });
