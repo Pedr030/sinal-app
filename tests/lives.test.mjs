@@ -83,10 +83,11 @@ test('campos bigint do LiveKit não quebram o JSON; salas saem em ordem de cria�
 });
 
 test('sala privada aparece (com cadeado) mas sem nenhum segredo', async () => {
-  fake.rooms = [{ name: `s${G1}-priv11`, numParticipants: 1, metadata: JSON.stringify({ v: 1, guild: G1, title: 'P', creator: { id: '1', name: 'D' }, access: 'password', pw: 'hash-secreto', createdAt: 1 }), creationTime: nowSec() - 60 }];
+  fake.rooms = [{ name: `s${G1}-priv11`, numParticipants: 1, metadata: JSON.stringify({ v: 1, guild: G1, title: 'P', creator: { id: '1', name: 'D' }, access: 'password', pwEnc: 'cifrado-secreto', fails: [['1', 1]], allowed: ['2'], createdAt: 1 }), creationTime: nowSec() - 60 }];
   const text = await (await call({ session: session(), guilds: [G1] })).text();
   assert.match(text, /"access":"password"/);
-  assert.doesNotMatch(text, /hash-secreto/);
+  assert.doesNotMatch(text, /cifrado-secreto/);
+  assert.doesNotMatch(text, /fails|allowed|pwEnc/);
 });
 
 // ---------- varredura de segurança (HANDOFF §42) ----------

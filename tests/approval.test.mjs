@@ -344,12 +344,12 @@ test('expulsar numa sala ABERTA não mexe em metadata nenhuma', async () => {
 });
 
 // ---------- Sala com SENHA (HANDOFF §50) ----------
-import { cleanPassword, hashRoomPassword, verifyRoomPassword, MIN_PASSWORD, MAX_PASSWORD, recentFailures, withFailedAttempt, TRY_WINDOW_MS, MAX_FAILS } from '../lib/rooms.js';
+import { cleanPassword, verifyRoomPassword, MIN_PASSWORD, MAX_PASSWORD, recentFailures, withFailedAttempt, TRY_WINDOW_MS, MAX_FAILS } from '../lib/rooms.js';
 const SENHA = 'segredo123';
 const SEGREDO_SERVIDOR = 'fake-secret'; // o mesmo que o harness põe em LIVEKIT_API_SECRET
 const roomPw = (extra = {}) => ({
   name: ROOM, numParticipants: 1,
-  metadata: JSON.stringify({ v: 1, guild: G, title: 'Cofre', creator: { id: CRIADOR, name: 'C' }, access: 'password', allowed: [], denied: [], pw: hashRoomPassword(SEGREDO_SERVIDOR, ROOM, SENHA), ...extra })
+  metadata: JSON.stringify({ v: 1, guild: G, title: 'Cofre', creator: { id: CRIADOR, name: 'C' }, access: 'password', allowed: [], denied: [], pwEnc: encryptRoomPassword(SEGREDO_SERVIDOR, ROOM, SENHA), ...extra })
 });
 
 test('cleanPassword: 4 a 32 caracteres, tira controle e espaços das pontas; o resto é inválido', () => {
@@ -361,49 +361,52 @@ test('cleanPassword: 4 a 32 caracteres, tira controle e espaços das pontas; o r
   assert.equal(MIN_PASSWORD, 4);
 });
 
-test('hash da senha: 64 hex, não contém a senha, depende da sala e da chave do servidor', () => {
-  const h = hashRoomPassword('chave', ROOM, SENHA);
-  assert.match(h, /^[0-9a-f]{64}$/);
-  assert.equal(h.includes(SENHA), false);
-  assert.notEqual(h, hashRoomPassword('chave', `s${G}-outra1`, SENHA));   // mesma senha, outra sala
-  assert.notEqual(h, hashRoomPassword('outra-chave', ROOM, SENHA));       // outra chave de servidor
-  assert.equal(h, hashRoomPassword('chave', ROOM, SENHA));                // determinístico
-});
-
-test('verifyRoomPassword: só a senha certa passa (com limpeza igual à da criação); metadata quebrado nunca passa', () => {
-  const meta = { access: 'password', pw: hashRoomPassword('chave', ROOM, SENHA) };
-  const v = (password, m = meta, secret = 'chave') => verifyRoomPassword({ secret, meta: m, room: ROOM, password });
+test('verifyRoomPassword (decifra e compara): só a senha certa passa; qualquer metadata quebrado, outra sala ou outra chave nunca passa', () => {
+  const meta = { access: 'password', pwEnc: encryptRoomPassword('chave', ROOM, SENHA) };
+  const v = (password, m = meta, secret = 'chave', room = ROOM) => verifyRoomPassword({ secret, meta: m, room, password });
   assert.equal(v(SENHA), true);
-  assert.equal(v('  ' + SENHA + '  '), true);
-  assert.equal(v('segredo124'), false);
-  assert.equal(v(SENHA, meta, 'chave-errada'), false);
+  assert.equal(v('  ' + SENHA + '  '), true);                       // mesma limpeza da criação
+  assert.equal(v('segredo124'), false);                             // um caractere errado
+  assert.equal(v('segredo12'), false);                              // mais curto
+  assert.equal(v('segredo1234'), false);                            // mais longo
+  assert.equal(v(SENHA.toUpperCase()), false);                      // diferencia maiúsculas
+  assert.equal(v(SENHA, meta, 'chave-errada'), false);              // chave do servidor errada
+  assert.equal(v(SENHA, meta, 'chave', `s${G}-outra1`), false);     // texto cifrado de OUTRA sala
   assert.equal(v(''), false);
   assert.equal(v(null), false);
-  assert.equal(v(SENHA, { access: 'password' }), false);                    // sem hash
-  assert.equal(v(SENHA, { access: 'password', pw: 'zzzz' }), false);        // hash que não é hex
-  assert.equal(v(SENHA, { access: 'password', pw: 'ab' }), false);          // hash curto
+  assert.equal(v(undefined), false);
+  assert.equal(v(SENHA, { access: 'password' }), false);            // sem texto cifrado
+  assert.equal(v(SENHA, { access: 'password', pwEnc: 'lixo' }), false);
+  assert.equal(v(SENHA, { access: 'password', pwEnc: 12345 }), false);
   assert.equal(v(SENHA, null), false);
   assert.equal(verifyRoomPassword({ secret: '', meta, room: ROOM, password: SENHA }), false);
+  // senhas com acento e no tamanho máximo
+  const longa = 'ç'.repeat(MAX_PASSWORD);
+  assert.equal(v(longa, { pwEnc: encryptRoomPassword('chave', ROOM, longa) }), true);
+  assert.equal(v(longa + 'x', { pwEnc: encryptRoomPassword('chave', ROOM, longa) }), false);
 });
 
-test('metadata da sala com senha: guarda só o hash (nunca a senha) e nasce com allowed/denied', () => {
-  const raw = buildRoomMetadata({ guildId: G, title: 'Cofre', creator: { id: CRIADOR, name: 'C' }, access: 'password', passwordHash: hashRoomPassword('k', ROOM, SENHA) });
+test('metadata da sala com senha: só o texto CIFRADO (nunca a senha nem hash) e nasce com allowed/denied', () => {
+  const raw = buildRoomMetadata({ guildId: G, title: 'Cofre', creator: { id: CRIADOR, name: 'C' }, access: 'password', passwordEnc: encryptRoomPassword('k', ROOM, SENHA) });
   const m = JSON.parse(raw);
   assert.equal(m.access, 'password');
-  assert.match(m.pw, /^[0-9a-f]{64}$/);
+  assert.equal(typeof m.pwEnc, 'string');
+  assert.equal('pw' in m, false);                                   // não existe mais hash da senha
   assert.deepEqual(m.allowed, []);
   assert.equal(raw.includes(SENHA), false);
-  assert.equal('pw' in JSON.parse(buildRoomMetadata({ guildId: G, title: 'T', creator: { id: CRIADOR, name: 'C' }, access: 'approval' })), false);
+  const apr = JSON.parse(buildRoomMetadata({ guildId: G, title: 'T', creator: { id: CRIADOR, name: 'C' }, access: 'approval', passwordEnc: 'ignorado' }));
+  assert.equal('pwEnc' in apr, false);                              // só sala com senha tem senha
 });
 
 const createPw = async (extra) => { fake.created = null; const res = await call({ mode: 'server-create', guild: G, title: 'Cofre', access: 'password', session: session({ id: CRIADOR }), ...extra }); return res; };
 
-test('criar sala com senha: grava só o hash no metadata; a senha não aparece em lugar nenhum da resposta nem do metadata', async () => {
+test('criar sala com senha: grava só o texto cifrado (sem hash); a senha não aparece em lugar nenhum da resposta nem do metadata', async () => {
   const res = await createPw({ password: SENHA });
   assert.equal(res.status, 200);
   const meta = JSON.parse(fake.created.metadata);
   assert.equal(meta.access, 'password');
-  assert.equal(meta.pw, hashRoomPassword(SEGREDO_SERVIDOR, fake.created.name, SENHA)); // amarrado ao nome da sala criada
+  assert.equal('pw' in meta, false);
+  assert.equal(decryptRoomPassword(SEGREDO_SERVIDOR, fake.created.name, meta.pwEnc), SENHA); // amarrado ao nome da sala criada
   assert.equal(fake.created.metadata.includes(SENHA), false);
   assert.equal(JSON.stringify(await res.json()).includes(SENHA), false);
 });
@@ -425,19 +428,19 @@ test('entrar sem senha numa sala com senha: 403 "sala-privada" com access "passw
   assert.equal(fake.actions.length, 0);
 });
 
-test('senha errada: 403 "senha-incorreta"; só o palpite errado é registrado (ninguém é aprovado); o hash nunca vai na resposta', async () => {
+test('senha errada: 403 "senha-incorreta"; só o palpite errado é registrado (ninguém é aprovado); o texto cifrado nunca vai na resposta', async () => {
   fake.rooms = [roomPw()];
   const res = await join(session({ id: '900000000000000032' }), { password: 'errada123' });
   assert.equal(res.status, 403);
   const body = await res.json();
   assert.equal(body.error, 'senha-incorreta');
-  assert.equal(JSON.stringify(body).includes(hashRoomPassword(SEGREDO_SERVIDOR, ROOM, SENHA)), false);
+  assert.equal(JSON.stringify(body).includes(JSON.parse(fake.rooms[0].metadata).pwEnc), false);
   assert.equal(fake.actions.length, 1);
   const meta = JSON.parse(fake.actions[0].metadata);
   assert.deepEqual(meta.allowed, []);                       // errar não aprova ninguém
   assert.equal(meta.fails.length, 1);
   assert.equal(meta.fails[0][0], '900000000000000032');
-  assert.equal(meta.pw, hashRoomPassword(SEGREDO_SERVIDOR, ROOM, SENHA)); // a senha da sala segue valendo
+  assert.equal(decryptRoomPassword(SEGREDO_SERVIDOR, ROOM, meta.pwEnc), SENHA); // a senha da sala segue valendo
 });
 
 test('palpites errados ficam no metadata da sala: o bloqueio vale mesmo numa instância nova (memória zerada)', async () => {
@@ -473,7 +476,7 @@ test('senha certa: entra (200) e fica LEMBRADO (allowed) — recarregar a págin
   assert.ok((await ok.json()).token);
   const up = fake.actions.find((a) => a.type === 'room-metadata');
   assert.deepEqual(JSON.parse(up.metadata).allowed, ['900000000000000033']);
-  assert.equal(JSON.parse(up.metadata).pw, hashRoomPassword(SEGREDO_SERVIDOR, ROOM, SENHA)); // o hash segue lá
+  assert.equal(decryptRoomPassword(SEGREDO_SERVIDOR, ROOM, JSON.parse(up.metadata).pwEnc), SENHA); // a senha da sala segue lá
   const reload = await join(s);                       // sem senha, mas já lembrado
   assert.equal(reload.status, 200);
   assert.equal((await join(session({ id: '900000000000000034' }))).status, 403); // outra pessoa continua de fora
@@ -530,7 +533,7 @@ test('expulsar alguém de sala com SENHA desfaz o "lembrado": pra voltar, precis
   assert.equal((await kickAs('dono-1', { userId: '2', tier: 'o', guild: G }, 'v-1')).status, 200);
   const meta = JSON.parse(fake.actions.find((a) => a.type === 'room-metadata').metadata);
   assert.deepEqual(meta.allowed, [OUTRO]);
-  assert.equal(meta.pw, hashRoomPassword(SEGREDO_SERVIDOR, ROOM, SENHA)); // a senha da sala continua valendo
+  assert.equal(decryptRoomPassword(SEGREDO_SERVIDOR, ROOM, meta.pwEnc), SENHA); // a senha da sala continua valendo
 });
 
 // ---------- Ver a senha da sala (HANDOFF §50) ----------
@@ -566,7 +569,7 @@ async function createApproval(){ fake.created = null; await call({ mode: 'server
 const roomPwEnc = (extra = {}) => ({
   name: ROOM, numParticipants: 2,
   metadata: JSON.stringify({ v: 1, guild: G, title: 'Cofre', creator: { id: CRIADOR, name: 'C' }, access: 'password', allowed: [], denied: [],
-    pw: hashRoomPassword(SEGREDO_SERVIDOR, ROOM, SENHA), pwEnc: encryptRoomPassword(SEGREDO_SERVIDOR, ROOM, SENHA), ...extra })
+    pwEnc: encryptRoomPassword(SEGREDO_SERVIDOR, ROOM, SENHA), ...extra })
 });
 function salaComSenha(){
   fake.rooms = [roomPwEnc()];
