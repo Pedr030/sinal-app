@@ -1,5 +1,14 @@
 [
   {
+    "id": "2026-10-05-fluido-h264",
+    "date": "2026-10-05",
+    "title": "Ajuste no modo Fluido",
+    "site": "0.8.61",
+    "items": [
+      "O modo Fluido agora usa outro formato de vídeo (H.264) para evitar um travamento que acontecia em alguns PCs. Ele pode usar um pouco mais do processador."
+    ]
+  },
+  {
     "id": "2026-10-05-estabilidade-app",
     "date": "2026-10-05",
     "title": "Mais estabilidade no app",

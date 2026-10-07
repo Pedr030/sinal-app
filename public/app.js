@@ -621,6 +621,7 @@ const SHARE_QUALITY_PRESETS = {
     name: 'Leve', short: '720p', desc: '720p · 30fps — upload fraco',
     resolution: { width: 1280, height: 720, frameRate: 30 },
     h265: { maxBitrate: 2_000_000, maxFramerate: 30 },
+    h264: { maxBitrate: 3_000_000, maxFramerate: 30 },
     vp8: { maxBitrate: 2_500_000, maxFramerate: 30 },
     contentHint: 'detail'
   },
@@ -628,6 +629,7 @@ const SHARE_QUALITY_PRESETS = {
     name: 'Nítido', short: '1080p', desc: '1080p · 30fps — texto e vídeo',
     resolution: { width: 1920, height: 1080, frameRate: 30 },
     h265: { maxBitrate: 4_000_000, maxFramerate: 30 },
+    h264: { maxBitrate: 5_500_000, maxFramerate: 30 },
     vp8: { maxBitrate: 6_000_000, maxFramerate: 30 },
     contentHint: 'detail'
   },
@@ -635,17 +637,43 @@ const SHARE_QUALITY_PRESETS = {
     name: 'Fluido', short: '60fps', desc: '1080p · 60fps — jogos',
     resolution: { width: 1920, height: 1080, frameRate: 60 },
     h265: { maxBitrate: 6_000_000, maxFramerate: 60 },
-    // Só existe com H.265 (60fps em VP8 pesaria na CPU e na VM). Esse VP8 é
-    // só a reserva pra quem assiste sem H.265 — a 30fps, como o Nítido.
+    // Fluido sai em H.264 por hardware (experimento, ver FLUIDO_CODEC abaixo). Mesmo teto de antes (6 Mbps/60fps).
+    h264: { maxBitrate: 6_000_000, maxFramerate: 60 },
+    // Só existe com H.265/H.264 por placa de vídeo (60fps em VP8 pesaria na CPU e na VM).
+    // Esse VP8 é só a reserva do H.265 pra quem assiste sem H.265 — a 30fps, como o Nítido.
     vp8: { maxBitrate: 6_000_000, maxFramerate: 30 },
     contentHint: 'motion',
     requiresH265: true
   }
 };
+
+// EXPERIMENTO (2026-10-05, HANDOFF §46): o Fluido em H.265 derrubou o app 3 vezes (o Chromium aborta ao
+// receber a saída do codificador H.265 da placa, em rtc_video_encoder.cc), e o Nítido em H.265 ficou 7 h
+// estável. Então o Fluido usa H.264 por hardware (caminho muito mais usado do Chromium) e os outros seguem
+// em H.265. Pra desfazer, basta trocar por 'h265'. H.264 gasta mais banda pra mesma imagem.
+const FLUIDO_CODEC = 'h264';
+
+// Codec principal de uma qualidade. Sem H.265 na placa: VP8 (e o Fluido nem existe, ver effectiveShareQuality).
+function pickShareCodec(q, h265Supported){
+  if(!h265Supported) return 'vp8';
+  return q === 'fluido' ? FLUIDO_CODEC : 'h265';
+}
+
+// Limites de envio (bitrate/fps) de um preset pra um codec.
+function shareEncodingFor(preset, codec){
+  return codec === 'h265' ? preset.h265 : codec === 'h264' ? preset.h264 : preset.vp8;
+}
+
+// Trocar a qualidade NO MEIO da transmissão não republica, então o codec fica o mesmo. Sair do Fluido pra
+// Nítido/Leve é ok (continua no mesmo codec); entrar no Fluido só dá se a transmissão já saiu no codec dele.
+function canSwitchQualityLive(activeCodec, targetQuality, h265Supported){
+  if(targetQuality !== 'fluido') return true;
+  return activeCodec === pickShareCodec('fluido', h265Supported);
+}
 const FLUIDO_UNAVAILABLE_TEXT = 'Precisa de uma placa de vídeo com codificador H.265 — este PC/navegador não tem';
 let shareQuality = 'nitido';
 let activeShareQuality = null; // qualidade da transmissão em andamento (pro status/tooltip)
-let activeShareCodec = null;   // 'h265' | 'vp8' — codec principal escolhido ao publicar
+let activeShareCodec = null;   // 'h265' | 'h264' | 'vp8' — codec principal escolhido ao publicar
 
 function canSendH265(){
   try{ return LivekitClient.supportsH265(); }catch(e){ return false; }
@@ -821,8 +849,9 @@ async function applyCaptureQuality(videoTrack, q){
 }
 
 // Troca a qualidade NO MEIO da transmissão, sem republicar (sem piscar pra
-// quem assiste): todas as qualidades usam o mesmo codec (H.265 se o PC tem,
-// senão VP8 — e Fluido só existe com H.265), então basta ajustar captura e
+// quem assiste): o codec é o da transmissão em andamento (ver
+// canSwitchQualityLive — o Fluido usa outro codec, então não dá pra ENTRAR nele
+// ao vivo), então basta ajustar captura e
 // limites de envio. Atualiza também as cópias que o LiveKit guarda
 // (track.encodings, que ele reaplica quando alguém começa/para de assistir,
 // e track.publishOptions, de onde ele recalcula se a fonte for trocada) —
@@ -833,8 +862,14 @@ async function changeActiveShareQuality(q){
   const track = pub && pub.videoTrack;
   q = effectiveShareQuality(q);
   if(!track || !activeShareQuality || q === activeShareQuality) return;
+  if(!canSwitchQualityLive(activeShareCodec, q, canSendH265())){
+    // O Fluido usa outro codec que o da transmissão em andamento: só dá pra começar nele de novo. A escolha
+    // já foi salva (vale na próxima transmissão); a atual segue como está.
+    setRoomStatus('O Fluido usa outro codec: pare e comece a transmissão de novo pra usar.', true);
+    return;
+  }
   const preset = SHARE_QUALITY_PRESETS[q];
-  const enc = activeShareCodec === 'h265' ? preset.h265 : preset.vp8;
+  const enc = shareEncodingFor(preset, activeShareCodec);
 
   await applyCaptureQuality(track, q);
   activeShareQuality = q;
@@ -903,7 +938,12 @@ function screenPublishOptions(q){
     // Os outros seguram a resolução (texto legível) e reduzem fps.
     degradationPreference: preset.contentHint === 'motion' ? 'maintain-framerate' : 'maintain-resolution'
   };
-  if(canSendH265()){
+  const codec = pickShareCodec(q, canSendH265());
+  if(codec === 'h264'){
+    opts.videoCodec = 'h264';
+    opts.screenShareEncoding = preset.h264;
+    opts.backupCodec = false; // todo navegador decodifica H.264: não precisa de reserva em VP8
+  } else if(codec === 'h265'){
     opts.videoCodec = 'h265';
     opts.screenShareEncoding = preset.h265;
     opts.backupCodec = { codec: 'vp8', encoding: preset.vp8 };
@@ -3561,7 +3601,7 @@ window.addEventListener('beforeunload', () => {
 });
 
 // PWA: versão, registro do service worker, detecção de atualização e botão de instalação
-const APP_VERSION = '0.8.60'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
+const APP_VERSION = '0.8.61'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
 // Dentro do Electron, mostra a versão do INSTALADOR (electron/package.json),
 // não a do site — ver preload.js. Fora dele (navegador normal), continua a
 // versão do deploy de sempre.

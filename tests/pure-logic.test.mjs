@@ -191,3 +191,38 @@ test('aviso de atualização: dentro da sala pede confirmação (e cita a transm
   assert.doesNotMatch(fn(true, false), /transmiss/);
   assert.equal(fn(true, true), 'Atualizar agora vai fazer você sair da sala e parar a sua transmissão.');
 });
+
+// ---------- codec por qualidade (experimento Fluido em H.264, HANDOFF §46) ----------
+const codecFns = new Function(
+  extractFunction(appJs, 'pickShareCodec') + extractFunction(appJs, 'shareEncodingFor') + extractFunction(appJs, 'canSwitchQualityLive') +
+  "const FLUIDO_CODEC = '" + appJs.match(/const FLUIDO_CODEC = '([a-z0-9]+)';/)[1] + "';" +
+  '; return { pickShareCodec, shareEncodingFor, canSwitchQualityLive };'
+)();
+const PRESETS_SRC = appJs.match(/const SHARE_QUALITY_PRESETS = \{[\s\S]*?\n\};/)[0];
+const SHARE_QUALITY_PRESETS = new Function(PRESETS_SRC + '; return SHARE_QUALITY_PRESETS;')();
+
+test('codec: Fluido sai em H.264 e Nítido/Leve em H.265 (placa com H.265); sem H.265 tudo cai pra VP8', () => {
+  assert.equal(codecFns.pickShareCodec('fluido', true), 'h264');
+  assert.equal(codecFns.pickShareCodec('nitido', true), 'h265');
+  assert.equal(codecFns.pickShareCodec('leve', true), 'h265');
+  for(const q of ['leve', 'nitido', 'fluido']) assert.equal(codecFns.pickShareCodec(q, false), 'vp8', q);
+});
+
+test('codec: todo preset tem limites pros três codecs, e o Fluido H.264 segue 60fps/6 Mbps', () => {
+  for(const [key, p] of Object.entries(SHARE_QUALITY_PRESETS)){
+    for(const c of ['h265', 'h264', 'vp8']){
+      const enc = codecFns.shareEncodingFor(p, c);
+      assert.ok(enc && enc.maxBitrate > 0 && enc.maxFramerate > 0, `${key}/${c}`);
+    }
+  }
+  assert.deepEqual(codecFns.shareEncodingFor(SHARE_QUALITY_PRESETS.fluido, 'h264'), { maxBitrate: 6_000_000, maxFramerate: 60 });
+  assert.equal(codecFns.shareEncodingFor(SHARE_QUALITY_PRESETS.fluido, 'h265').maxFramerate, 60);
+});
+
+test('troca de qualidade ao vivo: sair do Fluido é livre; entrar no Fluido só se a transmissão já é do codec dele', () => {
+  assert.equal(codecFns.canSwitchQualityLive('h264', 'nitido', true), true);   // Fluido -> Nítido
+  assert.equal(codecFns.canSwitchQualityLive('h265', 'leve', true), true);     // Nítido -> Leve
+  assert.equal(codecFns.canSwitchQualityLive('h264', 'fluido', true), true);   // já está no codec do Fluido
+  assert.equal(codecFns.canSwitchQualityLive('h265', 'fluido', true), false);  // Nítido (H.265) -> Fluido exige nova transmissão
+  assert.equal(codecFns.canSwitchQualityLive('vp8', 'fluido', false), true);   // sem H.265 o Fluido nem existe (effectiveShareQuality)
+});
