@@ -1,4 +1,5 @@
-// Decisão sobre pedidos de entrada em sala COM APROVAÇÃO (HANDOFF §49): aprovar ou recusar.
+// Decisão sobre pedidos de entrada em sala COM APROVAÇÃO (HANDOFF §49): aprovar ou recusar. Também ver a senha
+// (§50) e GERENCIAR a sala privada (§53): trocar o nome, trocar a senha e encerrar.
 //
 // Quem chama manda o MESMO token do LiveKit que já usa na sala (como em api/moderate.js). O servidor
 // confere a assinatura, que o token é DESTA sala e que quem chama está entre os que podem decidir agora:
@@ -9,10 +10,12 @@
 // O resultado fica no metadata da sala (allowed/denied, ver lib/rooms.js): o get-token consulta isso
 // quando a pessoa que pediu volta pra entrar.
 import { RoomServiceClient, TokenVerifier } from 'livekit-server-sdk';
-import { parseServerRoom, parseRoomMetadata, approvalDeciders, participantInfo, withApproved, withDenied, decryptRoomPassword } from '../lib/rooms.js';
+import { parseServerRoom, parseRoomMetadata, approvalDeciders, participantInfo, withApproved, withDenied, decryptRoomPassword,
+  canManageRoom, withTitle, withNewPassword, cleanTitle, cleanPassword, encryptRoomPassword } from '../lib/rooms.js';
 import { createLimiter, clientIp } from '../lib/ratelimit.js';
 
 const adminLimiter = createLimiter({ max: 60, windowMs: 60 * 1000 });
+const MANAGE_ACTIONS = ['rename', 'set-password', 'close'];
 
 function json(status, data){
   return new Response(JSON.stringify(data), { status, headers: { 'content-type': 'application/json', 'cache-control': 'no-store' } });
@@ -32,10 +35,14 @@ export async function POST(request){
 
   let body;
   try{ body = await request.json(); }catch(e){ return json(400, { error: 'corpo-invalido' }); }
-  const { action, room, userId } = body && typeof body === 'object' ? body : {};
+  const { action, room, userId, title, password } = body && typeof body === 'object' ? body : {};
   if(typeof room !== 'string' || !parseServerRoom(room)) return json(400, { error: 'sala-invalida' });
-  if(action !== 'approve' && action !== 'deny' && action !== 'reveal') return json(400, { error: 'acao-desconhecida' });
-  if(action !== 'reveal' && (typeof userId !== 'string' || !/^\d{15,21}$/.test(userId))) return json(400, { error: 'usuario-invalido' });
+  if(!['approve', 'deny', 'reveal', ...MANAGE_ACTIONS].includes(action)) return json(400, { error: 'acao-desconhecida' });
+  if((action === 'approve' || action === 'deny') && (typeof userId !== 'string' || !/^\d{15,21}$/.test(userId))) return json(400, { error: 'usuario-invalido' });
+  const newTitle = action === 'rename' ? cleanTitle(title) : '';
+  if(action === 'rename' && !newTitle) return json(400, { error: 'titulo-invalido' });
+  const newPassword = action === 'set-password' ? cleanPassword(password) : null;
+  if(action === 'set-password' && !newPassword) return json(400, { error: 'senha-invalida' });
 
   let claims;
   try{
@@ -56,11 +63,24 @@ export async function POST(request){
     const found = rooms.find((r) => r.name === room);
     if(!found) return json(404, { error: 'sala-nao-encontrada' });
     const meta = parseRoomMetadata(found.metadata);
-    if(action === 'reveal'){
+    const manage = MANAGE_ACTIONS.includes(action);
+    if(manage){
+      // Só sala privada (qualquer tipo de acesso que não seja aberto); trocar a senha, só sala com senha.
+      if(!meta || !meta.access || meta.access === 'open') return json(400, { error: 'sala-nao-privada' });
+      if(action === 'set-password' && meta.access !== 'password') return json(400, { error: 'sala-nao-tem-senha' });
+    } else if(action === 'reveal'){
       if(!meta || meta.access !== 'password') return json(400, { error: 'sala-nao-tem-senha' });
     } else if(!meta || meta.access !== 'approval') return json(400, { error: 'sala-nao-tem-aprovacao' });
 
     const people = (await roomService.listParticipants(room)).map(participantInfo);
+    if(manage){
+      const caller = people.find((p) => p.identity === callerIdentity);
+      if(!canManageRoom(meta, caller)) return json(403, { error: 'sem-permissao' });
+      if(action === 'rename') await roomService.updateRoomMetadata(room, JSON.stringify(withTitle(meta, newTitle)));
+      else if(action === 'set-password') await roomService.updateRoomMetadata(room, JSON.stringify(withNewPassword(meta, encryptRoomPassword(apiSecret, room, newPassword))));
+      else await roomService.deleteRoom(room); // encerrar: o LiveKit desconecta todo mundo (motivo "sala apagada")
+      return json(200, { ok: true });
+    }
     if(!approvalDeciders(meta, people).includes(callerIdentity)) return json(403, { error: 'sem-permissao' });
 
     // Ver a senha da sala: só entre quem pode cuidar dela (mesma regra de quem decide pedidos de entrada).

@@ -636,3 +636,158 @@ test('"reveal" não precisa de userId, mas aprovar/recusar continuam exigindo; n
   fake.participants[ROOM] = [{ identity: CRIADOR_ID, metadata: JSON.stringify({ userId: CRIADOR }), joinedAt: 1 }];
   assert.equal((await decide(t, { action: 'approve', userId: undefined })).status, 400);
 });
+
+// ---------- gerenciar sala privada: trocar nome, trocar senha, encerrar (HANDOFF §53) ----------
+import { canManageRoom, withTitle, withNewPassword } from '../lib/rooms.js';
+
+const manage = (token, body = {}) => postAdmin(new Request('http://localhost/api/room-admin', {
+  method: 'POST',
+  headers: { 'content-type': 'application/json', 'x-forwarded-for': '10.8.2.' + (++adminIp), ...(token ? { authorization: 'Bearer ' + token } : {}) },
+  body: JSON.stringify({ room: ROOM, ...body })
+}));
+const tCriador = () => tokenOf(CRIADOR_ID, { userId: CRIADOR });
+const tComum = () => tokenOf('d' + OUTRO + '-b', { userId: OUTRO });
+const tGerente = () => tokenOf('gerente-1', { userId: '555555555555555555', tier: 'm', guild: G });
+const tAdmin = () => tokenOf('sinal-1', { userId: '666666666666666666', isAdmin: true });
+const metaAgora = () => JSON.parse(fake.rooms[0].metadata);
+
+test('canManageRoom: criador, admin do Sinal e dono/Administrador/"gerencia"; o "responsável" por ter entrado primeiro e o comum NÃO', () => {
+  const meta = { creator: { id: CRIADOR } };
+  assert.equal(canManageRoom(meta, { userId: CRIADOR }), true);
+  assert.equal(canManageRoom(meta, { userId: '1', isAdmin: true }), true);
+  for(const tier of ['o', 'a', 'm']) assert.equal(canManageRoom(meta, { userId: '1', tier }), true, tier);
+  assert.equal(canManageRoom(meta, { userId: OUTRO, tier: 'x', joinedAt: 1 }), false);
+  assert.equal(canManageRoom(meta, { userId: '' }), false);
+  assert.equal(canManageRoom(meta, undefined), false);
+  assert.equal(canManageRoom(null, { userId: CRIADOR }), false);
+  assert.equal(canManageRoom({ creator: { id: CRIADOR } }, { userId: undefined }), false);
+});
+
+test('withTitle / withNewPassword: cópia; a senha nova limpa os lembrados e os palpites errados e mantém o resto', () => {
+  const meta = { v: 1, guild: G, title: 'A', access: 'password', pwEnc: 'velho', allowed: ['1'], denied: [['2', 1]], fails: [['3', 1]] };
+  assert.equal(withTitle(meta, 'B').title, 'B');
+  assert.equal(meta.title, 'A');
+  const novo = withNewPassword(meta, 'novo');
+  assert.deepEqual([novo.pwEnc, novo.allowed, novo.fails, novo.denied, novo.access], ['novo', [], [], [['2', 1]], 'password']);
+  assert.equal(meta.pwEnc, 'velho');
+});
+
+test('gerenciar: trocar o nome — criador, admin e "gerencia" podem; limpa o texto; o resto do metadata fica igual', async () => {
+  salaComSenha();
+  const antes = metaAgora();
+  const res = await manage(tCriador(), { action: 'rename', title: '  <b>Nova</b>   sala  ' });
+  assert.equal(res.status, 200);
+  assert.deepEqual(await res.json(), { ok: true });
+  const depois = metaAgora();
+  assert.equal(depois.title, 'bNova/b sala');
+  assert.deepEqual({ ...depois, title: antes.title }, antes);   // só o título mudou (senha, criador, allowed… intactos)
+  assert.equal((await manage(tAdmin(), { action: 'rename', title: 'Do admin' })).status, 200);
+  assert.equal((await manage(tGerente(), { action: 'rename', title: 'Do gerente' })).status, 200);
+  assert.equal(metaAgora().title, 'Do gerente');
+});
+
+test('gerenciar: nome vazio ou só símbolos proibidos = 400 "titulo-invalido" e nada é gravado', async () => {
+  salaComSenha();
+  for(const title of [undefined, '', '   ', '<>', 123, null, {}]){
+    const res = await manage(tCriador(), { action: 'rename', title });
+    assert.equal(res.status, 400, String(title));
+    assert.equal((await res.json()).error, 'titulo-invalido');
+  }
+  assert.equal(fake.actions.length, 0);
+  // nome gigante é cortado no limite
+  assert.equal((await manage(tCriador(), { action: 'rename', title: 'x'.repeat(200) })).status, 200);
+  assert.equal(metaAgora().title.length, 40);
+});
+
+test('gerenciar: participante comum e o "responsável por ter entrado primeiro" (criador ausente) NÃO gerenciam; nada é gravado', async () => {
+  salaComSenha();
+  for(const body of [{ action: 'rename', title: 'Invasor' }, { action: 'set-password', password: 'invasor123' }, { action: 'close' }]){
+    const res = await manage(tComum(), body);
+    assert.equal(res.status, 403, body.action);
+    assert.equal((await res.json()).error, 'sem-permissao');
+  }
+  // criador fora da sala: o 1º a entrar decide pedidos, mas NÃO é dono da sala
+  fake.participants[ROOM] = [
+    { identity: 'primeiro', metadata: JSON.stringify({ userId: VISITANTE, tier: 'x' }), joinedAt: 5 },
+    { identity: 'segundo', metadata: JSON.stringify({ userId: OUTRO }), joinedAt: 6 }
+  ];
+  assert.equal((await manage(tokenOf('primeiro', { userId: VISITANTE }), { action: 'close' })).status, 403);
+  assert.equal(fake.actions.length, 0);
+});
+
+test('gerenciar: sem token, token inválido, token de OUTRA sala ou de quem saiu NÃO fazem nada', async () => {
+  salaComSenha();
+  const body = { action: 'rename', title: 'X' };
+  assert.equal((await manage('', body)).status, 401);
+  assert.equal((await manage('lixo', body)).status, 401);
+  assert.equal((await manage(tokenOf(CRIADOR_ID, { userId: CRIADOR }, { room: `s${G}-zzzzzz` }), body)).status, 403);
+  assert.equal((await manage(tokenOf('d999-saiu', { userId: CRIADOR }), body)).status, 403);
+  assert.equal(fake.actions.length, 0);
+});
+
+test('gerenciar: trocar a senha — a antiga para de valer, a nova vale, lembrados e palpites errados são zerados, a resposta não vaza nada', async () => {
+  salaComSenha();
+  fake.rooms = [roomPwEnc({ allowed: ['900000000000000041'], fails: [['900000000000000042', Date.now()]] })];
+  const res = await manage(tCriador(), { action: 'set-password', password: '  novaSenha9  ' });
+  assert.equal(res.status, 200);
+  const texto = JSON.stringify(await res.json());
+  assert.equal(texto.includes('novaSenha9') || texto.includes('pwEnc'), false);
+  const meta = metaAgora();
+  assert.equal(decryptRoomPassword(SEGREDO_SERVIDOR, ROOM, meta.pwEnc), 'novaSenha9');   // cifrada e amarrada à sala, aparada
+  assert.deepEqual([meta.allowed, meta.fails], [[], []]);
+  assert.equal(fake.rooms[0].metadata.includes('novaSenha9'), false);
+  // na prática: quem lembrava da senha antiga precisa da nova; a antiga errada; a nova entra
+  assert.equal((await join(session({ id: '900000000000000041' }))).status, 403);
+  assert.equal((await join(session({ id: '900000000000000043' }), { password: SENHA })).status, 403);
+  assert.equal((await join(session({ id: '900000000000000044' }), { password: 'novaSenha9' })).status, 200);
+});
+
+test('gerenciar: senha nova inválida = 400 "senha-invalida"; em sala que não é de senha = 400 "sala-nao-tem-senha"', async () => {
+  salaComSenha();
+  for(const password of [undefined, '', 'abc', 'x'.repeat(33), 12345, {}]){
+    const res = await manage(tCriador(), { action: 'set-password', password });
+    assert.equal(res.status, 400, String(password));
+    assert.equal((await res.json()).error, 'senha-invalida');
+  }
+  assert.equal(fake.actions.length, 0);
+  fake.rooms = [roomApr()];                 // sala com aprovação
+  const res = await manage(tCriador(), { action: 'set-password', password: 'valida123' });
+  assert.equal(res.status, 400);
+  assert.equal((await res.json()).error, 'sala-nao-tem-senha');
+  assert.equal(fake.actions.length, 0);
+});
+
+test('gerenciar: encerrar a sala apaga a sala no LiveKit (todo mundo é desconectado); só quem gerencia', async () => {
+  salaComSenha();
+  assert.equal((await manage(tComum(), { action: 'close' })).status, 403);
+  assert.equal(fake.rooms.length, 1);
+  const res = await manage(tGerente(), { action: 'close' });
+  assert.equal(res.status, 200);
+  assert.deepEqual(fake.actions.filter((a) => a.type === 'delete-room'), [{ type: 'delete-room', room: ROOM }]);
+  assert.equal(fake.rooms.length, 0);
+  // sala que já não existe
+  assert.equal((await manage(tCriador(), { action: 'close' })).status, 404);
+});
+
+test('gerenciar: SÓ sala privada — sala aberta (ou sem metadata) recusa as três ações; tipo desconhecido conta como privada', async () => {
+  salaComSenha();
+  fake.rooms = [roomApr({ access: 'open' })];
+  for(const body of [{ action: 'rename', title: 'X' }, { action: 'set-password', password: 'valida123' }, { action: 'close' }]){
+    const res = await manage(tCriador(), body);
+    assert.equal(res.status, 400, body.action);
+    assert.equal((await res.json()).error, 'sala-nao-privada');
+  }
+  fake.rooms = [{ name: ROOM, numParticipants: 1, metadata: '' }];
+  assert.equal((await manage(tCriador(), { action: 'close' })).status, 400);
+  assert.equal(fake.actions.length, 0);
+  fake.rooms = [roomApr({ access: 'futuro' })];
+  assert.equal((await manage(tCriador(), { action: 'rename', title: 'Ok' })).status, 200);
+});
+
+test('gerenciar: ação desconhecida continua recusada; aprovar/recusar não ganharam atalho (ainda exigem userId e sala com aprovação)', async () => {
+  salaComSenha();
+  assert.equal((await manage(tCriador(), { action: 'apagar-tudo' })).status, 400);
+  assert.equal((await manage(tCriador(), { action: 'approve' })).status, 400);
+  assert.equal((await manage(tCriador(), { action: 'approve', userId: VISITANTE })).status, 400); // sala com senha, não aprovação
+  assert.equal(fake.actions.length, 0);
+});

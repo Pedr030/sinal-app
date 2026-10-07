@@ -50,6 +50,7 @@ export class RoomServiceClient {
   async createRoom(opts){ st().created = opts; return { name: opts.name }; }
   async updateRoomMetadata(room, metadata){ const r = st().rooms.find((x) => x.name === room); if(r) r.metadata = metadata; (st().actions = st().actions || []).push({ type: 'room-metadata', room, metadata }); return r || { name: room, metadata }; }
   async sendData(room, data, kind, options){ st().sent.push({ room, text: new TextDecoder().decode(data), kind, options }); }
+  async deleteRoom(room){ const s = st(); s.rooms = s.rooms.filter((x) => x.name !== room); (s.actions = s.actions || []).push({ type: 'delete-room', room }); }
   async removeParticipant(room, identity, options){ (st().actions = st().actions || []).push({ type: 'kick', room, identity, options }); }
   async mutePublishedTrack(room, identity, sid, muted){ (st().actions = st().actions || []).push({ type: 'mute', room, identity, sid, muted }); }
 }

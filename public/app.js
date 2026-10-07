@@ -463,7 +463,15 @@ function wireRoomEvents(liveRoom){
     if(!isCurrent()) return;
     if(participant) updateQualityDot(participant.identity, quality);
   });
-  liveRoom.on(RoomEvent.Disconnected, () => {
+  // Metadata da sala mudou (aprovados, nome, senha...): o nome no chip e os botões de quem cuida da sala acompanham.
+  liveRoom.on(RoomEvent.RoomMetadataChanged, () => {
+    if(!isCurrent()) return;
+    if(refreshRoomChip()) fetchLives(); // renomeou: a lista de salas do servidor não espera o próximo ciclo
+    updatePasswordButton();
+    updateKnockButton();
+    updateManageButton();
+  });
+  liveRoom.on(RoomEvent.Disconnected, (reason) => {
     if(!isCurrent()) return;
     // Chega aqui em qualquer desconexão que NÃO foi a gente mesmo chamando
     // leaveRoom() (isso já limpa `room` antes, então isCurrent() dá false e
@@ -472,7 +480,9 @@ function wireRoomEvents(liveRoom){
     // sala sem conseguir fazer nada (bug real, achado em teste); agora volta
     // pra tela inicial de verdade, igual sair por conta própria.
     leaveRoom();
-    setEntryStatus('Você foi desconectado da sala.');
+    setEntryStatus(LivekitClient.DisconnectReason && reason === LivekitClient.DisconnectReason.ROOM_DELETED
+      ? 'A sala foi encerrada.'
+      : 'Você foi desconectado da sala.');
   });
 }
 
@@ -533,6 +543,29 @@ function handleTrackRemoved(track, publication, participant){
   }
 }
 
+// Sala de server: o chip mostra o NOME da sala (do metadata no LiveKit), não o id interno. Roda na entrada e
+// toda vez que o metadata da sala muda (renomear, trocar a senha...).
+let lastChipText = null;
+function refreshRoomChip(){
+  if(!room) return;
+  let chipText = roomCode;
+  let chipAccess = '';
+  if(isServerRoomName(roomCode)){
+    try{
+      const meta = JSON.parse(room.metadata || '{}');
+      chipText = meta.title || 'Sala';
+      chipAccess = meta.access && meta.access !== 'open' ? meta.access : '';
+    }catch(e){ chipText = 'Sala'; }
+  }
+  const chip = document.getElementById('roomCodeChip');
+  chip.textContent = '';
+  if(chipAccess) chip.appendChild(accessIcon(chipAccess, 'chip-lock'));
+  chip.appendChild(document.createTextNode(chipText));
+  const changed = lastChipText !== null && lastChipText !== chipText;
+  lastChipText = chipText;
+  return changed;
+}
+
 function enterRoomUI(){
   // App desktop (v0.3.11+): main.js espera sair da sala pra perguntar se
   // reinicia pra atualizar — nunca interrompe a call.
@@ -550,22 +583,11 @@ function enterRoomUI(){
   renderCallSide();
   startLivesPolling();
   fetchLives(); // a foto da tela inicial pode estar velha
-  // Sala de server: o chip mostra o NOME da sala (do metadata no LiveKit), não o id interno.
-  let chipText = roomCode;
-  let chipAccess = '';
-  if(isServerRoomName(roomCode)){
-    try{
-      const meta = JSON.parse(room.metadata || '{}');
-      chipText = meta.title || 'Sala';
-      chipAccess = meta.access && meta.access !== 'open' ? meta.access : '';
-    }catch(e){ chipText = 'Sala'; }
-  }
-  const chip = document.getElementById('roomCodeChip');
-  chip.textContent = '';
-  if(chipAccess) chip.appendChild(accessIcon(chipAccess, 'chip-lock'));
-  chip.appendChild(document.createTextNode(chipText));
+  lastChipText = null; // sala nova: o primeiro desenho não conta como "renomeou"
+  refreshRoomChip();
   updatePasswordButton();
   updateKnockButton();
+  updateManageButton();
   document.getElementById('selfName').firstChild.textContent = myName + ' ';
   document.getElementById('chatMessages').innerHTML = '<div class="chat-empty mono">Sem mensagens ainda</div>';
   renderAvatars();
@@ -2355,7 +2377,9 @@ function leaveRoom(){
   clearKnockCards();
   hideResumeShare();
   document.getElementById('passwordBtn').hidden = true;
+  document.getElementById('manageBtn').hidden = true;
   closeRoomPassword();
+  closeManage();
   tileStreams.clear();
   tileVideoTracks.clear();
   qualityBaseLabel.clear();
@@ -3081,6 +3105,103 @@ function canDecideKnocks(meta, myMeta, guild){
   return !!meta && meta.access === 'approval' && isRoomCaretaker(meta, myMeta, guild);
 }
 
+// Gerenciar a sala (trocar nome e senha, encerrar — HANDOFF §53): só sala PRIVADA e só quem é dono dela
+// (mesma regra do servidor, canManageRoom em lib/rooms.js). O "responsável por ter entrado primeiro" não gerencia.
+function canManageRoomUI(meta, myMeta, guild){
+  return !!meta && !!meta.access && meta.access !== 'open' && isRoomCaretaker(meta, myMeta, guild);
+}
+function updateManageButton(){
+  const btn = document.getElementById('manageBtn');
+  let show = false;
+  try{
+    const claims = myTokenClaims();
+    show = !!room && !!claims && canManageRoomUI(JSON.parse(room.metadata || '{}'), JSON.parse(claims.metadata || '{}'), currentRoomGuild());
+  }catch(e){ /* sem metadata: sem botão */ }
+  btn.hidden = !show;
+  if(!show) closeManage(); // perdeu o direito (ou a sala mudou): a janela não fica aberta
+}
+
+function manageStatus(text, isError){
+  const el = document.getElementById('manageStatus');
+  el.textContent = text || '';
+  el.classList.toggle('error', !!isError);
+}
+function closeManage(){
+  document.getElementById('manageOverlay').hidden = true;
+  document.getElementById('managePassword').value = '';
+  manageStatus('');
+}
+function openManage(){
+  let meta = {};
+  try{ meta = JSON.parse(room.metadata || '{}'); }catch(e){ /* sem metadata */ }
+  document.getElementById('manageName').value = meta.title || '';
+  document.getElementById('managePassword').value = '';
+  document.getElementById('managePwSection').hidden = meta.access !== 'password';
+  manageStatus('');
+  document.getElementById('manageOverlay').hidden = false;
+  document.getElementById('manageName').focus();
+}
+
+// Texto pra cada resposta do servidor nas ações de gerenciar.
+function manageFailureText(error){
+  return ({
+    'sem-permissao': 'Só quem cuida da sala pode fazer isso.',
+    'titulo-invalido': 'Escreva um nome pra sala.',
+    'senha-invalida': 'A senha precisa ter de 4 a 32 caracteres.',
+    'sala-nao-encontrada': 'Essa sala já fechou.',
+    'sala-nao-privada': 'Só salas privadas podem ser gerenciadas.',
+    'muitos-pedidos': 'Muitos pedidos seguidos. Espere um instante.'
+  })[error] || 'Não consegui agora. Tente de novo.';
+}
+
+// Manda uma ação de gerenciar pro servidor. Devolve true se deu certo; senão mostra o motivo na própria janela.
+async function manageCall(body){
+  if(!myAccessToken || !roomCode) return false;
+  try{
+    const res = await fetch('/api/room-admin', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: 'Bearer ' + myAccessToken },
+      body: JSON.stringify({ room: roomCode, ...body })
+    });
+    const data = await res.json().catch(() => ({}));
+    if(res.ok) return true;
+    manageStatus(manageFailureText(data.error), true);
+  }catch(e){
+    manageStatus('Sem conexão com o servidor. Tente de novo.', true);
+  }
+  return false;
+}
+
+async function manageRename(){
+  const title = document.getElementById('manageName').value.trim();
+  if(!title){ manageStatus(manageFailureText('titulo-invalido'), true); return; }
+  manageStatus('Salvando...');
+  if(await manageCall({ action: 'rename', title })) manageStatus('Nome salvo.');
+}
+
+async function manageSetPassword(){
+  const input = document.getElementById('managePassword');
+  const choice = accessChoice('password', input.value);
+  if(choice.error){ manageStatus(choice.error, true); return; }
+  manageStatus('Trocando...');
+  if(await manageCall({ action: 'set-password', password: choice.password })){
+    input.value = '';
+    manageStatus('Senha trocada. Quem entrou com a antiga vai precisar da nova.');
+  }
+}
+
+async function manageEnd(){
+  const yes = await askConfirm({
+    title: 'Encerrar a sala',
+    message: 'Todo mundo será desconectado e a sala deixa de existir. Isso não dá pra desfazer.',
+    okText: 'Encerrar sala', danger: true
+  });
+  if(!yes) return;
+  manageStatus('Encerrando...');
+  // Dá certo => o LiveKit desconecta todo mundo (inclusive a gente) e o handler de Disconnected volta pra tela inicial.
+  if(await manageCall({ action: 'close' })) closeManage();
+}
+
 function updatePasswordButton(){
   const btn = document.getElementById('passwordBtn');
   let show = false;
@@ -3615,6 +3736,18 @@ function setupServersUI(){
   });
   document.getElementById('knockBtn').addEventListener('click', () => setKnockPanel(document.getElementById('knockPanel').hidden, true));
   document.getElementById('knockPanelClose').addEventListener('click', () => setKnockPanel(false, false));
+  document.getElementById('manageBtn').addEventListener('click', openManage);
+  document.getElementById('manageClose').addEventListener('click', closeManage);
+  document.getElementById('manageRename').addEventListener('click', manageRename);
+  document.getElementById('manageSetPw').addEventListener('click', manageSetPassword);
+  document.getElementById('manageEnd').addEventListener('click', manageEnd);
+  document.getElementById('manageName').addEventListener('keydown', (e) => { if(e.key === 'Enter'){ e.preventDefault(); manageRename(); } });
+  document.getElementById('managePassword').addEventListener('keydown', (e) => { if(e.key === 'Enter'){ e.preventDefault(); manageSetPassword(); } });
+  document.getElementById('manageOverlay').addEventListener('click', (e) => { if(e.target.id === 'manageOverlay') closeManage(); });
+  document.addEventListener('keydown', (e) => {
+    // Escape fecha esta janela, a não ser que a confirmação (por cima dela) esteja aberta: ela trata o próprio Escape.
+    if(e.key === 'Escape' && !document.getElementById('manageOverlay').hidden && document.getElementById('confirmOverlay').hidden) closeManage();
+  });
   document.getElementById('passwordBtn').addEventListener('click', showRoomPassword);
   document.getElementById('passwordClose').addEventListener('click', closeRoomPassword);
   document.getElementById('passwordCopy').addEventListener('click', async () => {

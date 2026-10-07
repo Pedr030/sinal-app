@@ -568,3 +568,43 @@ test('retomar transmissão e janela flutuante: ligações no código (marcador, 
   // nenhum exitPictureInPicture solto: tudo passa por exitPip() (que avisa que foi por código)
   assert.equal((appJs.match(/document\.exitPictureInPicture\(\)/g) || []).length, 1);
 });
+
+// ---------- gerenciar sala privada (HANDOFF §53): regra do botão e ligações no código ----------
+const manageFns = new Function(extractFunction(appJs, 'isRoomCaretaker') + extractFunction(appJs, 'canManageRoomUI') + extractFunction(appJs, 'manageFailureText') + '; return { canManageRoomUI, manageFailureText };')();
+
+test('gerenciar sala: botão só pra dono de sala PRIVADA (criador, admin, dono/administrador/gerência do servidor); aberta e comum não', () => {
+  const can = manageFns.canManageRoomUI;
+  for(const access of ['approval', 'password', 'tipo-futuro']){
+    const meta = { access, creator: { id: '111' } };
+    assert.equal(can(meta, { userId: '111' }, 'G1'), true, access + ' criador');
+    assert.equal(can(meta, { userId: '9', isAdmin: true }, 'G1'), true, access + ' admin');
+    for(const tier of ['o', 'a', 'm']) assert.equal(can(meta, { userId: '9', tier, guild: 'G1' }, 'G1'), true, access + ' ' + tier);
+    assert.equal(can(meta, { userId: '9', tier: 'm', guild: 'OUTRO' }, 'G1'), false, access + ' cargo de outro servidor');
+    assert.equal(can(meta, { userId: '9', tier: 'x', guild: 'G1' }, 'G1'), false, access + ' comum');
+  }
+  assert.equal(can({ access: 'open', creator: { id: '111' } }, { userId: '111' }, 'G1'), false); // sala aberta: nada a gerenciar
+  assert.equal(can({ creator: { id: '111' } }, { userId: '111' }, 'G1'), false);                  // sem tipo
+  assert.equal(can(null, { userId: '111' }, 'G1'), false);
+  assert.equal(can({ access: 'password' }, null, 'G1'), false);
+});
+
+test('gerenciar sala: texto pra cada erro do servidor (e um padrão pro desconhecido)', () => {
+  const t = manageFns.manageFailureText;
+  for(const e of ['sem-permissao', 'titulo-invalido', 'senha-invalida', 'sala-nao-encontrada', 'sala-nao-privada', 'muitos-pedidos']){
+    assert.notEqual(t(e), t('qualquer-outro'), e);
+  }
+  assert.match(t(undefined), /Tente de novo/);
+});
+
+test('gerenciar sala: ligações no código (botão, janela, ações, evento de metadata, aviso de sala encerrada, regra do hidden)', () => {
+  const html = readFileSync(join(ROOT, 'public/index.html'), 'utf8');
+  for(const id of ['manageBtn', 'manageOverlay', 'manageName', 'manageRename', 'managePwSection', 'managePassword', 'manageSetPw', 'manageStatus', 'manageEnd', 'manageClose']){
+    assert.match(html, new RegExp(`id="${id}"`), id);
+  }
+  assert.match(html, /id="manageBtn"[^>]*hidden/);                                   // nasce escondido
+  for(const action of ['rename', 'set-password', 'close']) assert.match(appJs, new RegExp(`action: '${action}'`), action);
+  assert.match(appJs, /RoomEvent\.RoomMetadataChanged[\s\S]*?refreshRoomChip\(\);[\s\S]*?updateManageButton\(\)/); // nome e botões acompanham o metadata
+  assert.match(appJs, /DisconnectReason\.ROOM_DELETED[\s\S]*?A sala foi encerrada\./);                          // quem estava dentro entende o que houve
+  assert.match(appJs, /askConfirm\(\{\s*title: 'Encerrar a sala'[\s\S]*?danger: true/);                          // encerrar sempre pede confirmação
+  assert.match(appJs, /function leaveRoom\(\)\{[\s\S]*?manageBtn'\)\.hidden = true;[\s\S]*?closeManage\(\)/);    // sair da sala fecha tudo
+});
