@@ -126,7 +126,7 @@ let titleFlashing = false;
 function flashTabTitle(){
   if(!document.hidden) return;
   titleFlashing = true;
-  document.title = '🔴 Nova transmissão — SINAL';
+  document.title = '● Nova transmissão — SINAL';
 }
 
 document.addEventListener('visibilitychange', () => {
@@ -1626,10 +1626,23 @@ const ICON_EYE_OFF = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none
 const ICON_KICK = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="8.5" cy="7" r="4"></circle><line x1="18" y1="8" x2="23" y2="13"></line><line x1="23" y1="8" x2="18" y2="13"></line></svg>';
 const ICON_DOTS = '<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><circle cx="12" cy="5" r="1.8"></circle><circle cx="12" cy="12" r="1.8"></circle><circle cx="12" cy="19" r="1.8"></circle></svg>';
 const ICON_PLAY = '<svg viewBox="0 0 24 24" width="32" height="32" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>';
+// Coroa do admin do Sinal e botão de tela cheia: SVG no mesmo traço dos outros ícones (nada de emoji). Constantes
+// estáticas — nenhum dado de fora entra nesses innerHTML.
+const ICON_CROWN_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 8l4.5 4L12 5l4.5 7L21 8l-2 11H5L3 8z"/></svg>';
+const ICON_FULLSCREEN_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>';
+function crownIcon(label){
+  const el = document.createElement('span');
+  el.className = 'admin-crown';
+  el.title = label || 'Admin do Sinal';
+  el.setAttribute('role', 'img');
+  el.setAttribute('aria-label', label || 'Admin do Sinal');
+  el.innerHTML = ICON_CROWN_SVG;
+  return el;
+}
 const ICON_PIP = '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"></rect><rect x="12" y="12" width="7" height="5" rx="1" fill="currentColor"></rect></svg>';
 const ICON_EYE_SMALL = '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"></path><circle cx="12" cy="12" r="3"></circle></svg>';
 
-// ---------------- Quem está assistindo (👁 N no rótulo do tile) ----------------
+// ---------------- Quem está assistindo (olho + N no rótulo do tile) ----------------
 // O servidor do LiveKit não conta pra ninguém quem se inscreveu em qual
 // track, então cada um avisa a sala pelo canal de dados (mesmo do chat)
 // quando começa/para de assistir. Todo mundo vê a contagem de toda
@@ -1809,7 +1822,7 @@ function addTile(id, name, stream){
   const isCamera = id.endsWith(':cam');
   const ownerIdentity = id.endsWith(':cam') ? id.slice(0, -4) : id;
   const owner = room && (ownerIdentity === room.localParticipant.identity ? room.localParticipant : room.remoteParticipants.get(ownerIdentity));
-  const crown = owner && participantIsAdmin(owner) ? '<span class="admin-crown" title="Admin da sala">👑</span>' : '';
+  const crown = owner && participantIsAdmin(owner) ? '<span class="admin-crown" title="Admin da sala" role="img" aria-label="Admin da sala">' + ICON_CROWN_SVG + '</span>' : '';
   const tile = document.createElement('div');
   tile.className = 'tile';
   tile.dataset.id = id;
@@ -1817,7 +1830,7 @@ function addTile(id, name, stream){
     <video autoplay playsinline></video>
     <div class="tile-hidden-overlay"><span class="mono">Vídeo desativado</span></div>
     <div class="pip-overlay"><span class="mono">Em janela flutuante</span></div>
-    <button class="fs-btn" title="Tela cheia">⛶</button>
+    <button class="fs-btn" title="Tela cheia" aria-label="Tela cheia">${ICON_FULLSCREEN_SVG}</button>
     ${!isSelf && document.pictureInPictureEnabled ? `<button class="pip-btn" title="Janela flutuante">${ICON_PIP}</button>` : ''}
     ${isSelf ? '' : `
     <div class="tile-controls">
@@ -2174,7 +2187,8 @@ function renderAvatars(){
     }
     const tip = document.createElement('span');
     tip.className = 'tip';
-    tip.textContent = displayName + (isYou ? ' (você)' : '') + (participantIsAdmin(p) ? ' 👑' : '');
+    tip.textContent = displayName + (isYou ? ' (você)' : '');
+    if(participantIsAdmin(p)) tip.appendChild(crownIcon('Admin do Sinal'));
     av.appendChild(tip);
     row.appendChild(av);
   });
@@ -2227,11 +2241,7 @@ function renderRosterPanel(){
     const nameEl = document.createElement('div');
     nameEl.className = 'name';
     if(participantIsAdmin(p)){
-      const crown = document.createElement('span');
-      crown.className = 'admin-crown';
-      crown.title = 'Admin da sala';
-      crown.textContent = '👑';
-      nameEl.appendChild(crown);
+      nameEl.appendChild(crownIcon('Admin da sala'));
     }
     nameEl.appendChild(document.createTextNode(displayName + (isYou ? ' (você)' : '')));
     info.appendChild(nameEl);
@@ -2474,7 +2484,7 @@ function renderDiscordStatus(){
   const btn = document.getElementById('discordLoginBtn');
   if(discordUser && discordUser.name){
     el.hidden = false;
-    const adminTag = discordUser.admin ? ' 👑' : '';
+    const adminTag = discordUser.admin ? ' <span class="admin-crown" title="Admin do Sinal" role="img" aria-label="Admin do Sinal">' + ICON_CROWN_SVG + '</span>' : '';
     el.innerHTML = `Conectado como <b>${escapeHtml(discordUser.name)}</b> (Discord)${adminTag} — `;
     const swapBtn = document.createElement('button');
     swapBtn.type = 'button';
@@ -2800,7 +2810,8 @@ function renderRoomRow(r, currentRoom){
         av.textContent = guildInitials(p.name);
       }
       line.appendChild(av);
-      line.appendChild(mk('span', 'srv-person-name', p.name + (p.admin ? ' 👑' : '')));
+      line.appendChild(mk('span', 'srv-person-name', p.name));
+      if(p.admin) line.appendChild(crownIcon('Admin do Sinal'));
       if(p.screen) line.appendChild(mk('span', 'srv-badge srv-badge-live', 'AO VIVO'));
       else if(p.camera) line.appendChild(mk('span', 'srv-badge', 'CÂMERA'));
       people.appendChild(line);

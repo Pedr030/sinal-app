@@ -418,9 +418,23 @@ test('pedido de entrada: cada resposta do servidor tem um texto claro (e o desco
   assert.match(knockFns.knockFailureText('algo-novo'), /Tente de novo/);
 });
 
-test('cadeado das salas privadas é um ícone SVG: nenhum emoji de cadeado no app', () => {
-  assert.doesNotMatch(appJs, /\u{1F512}|\u{1F510}|\u{1F513}|\u{1F50F}/u);
+// Regra do usuário (2026-10-07): a interface usa SÍMBOLOS em SVG, nunca emojis. Este teste varre o código que o
+// usuário vê (site, app desktop, mensagens do servidor) e falha se algum emoji ou pictograma voltar.
+import { readdirSync } from 'node:fs';
+test('nenhum emoji na interface nem nas mensagens: só símbolos SVG (cadeado, coroa, tela cheia)', () => {
+  const EMOJI = /[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{2B50}\u{2B55}\u{FE0F}]/u;
+  const dirs = [['public', /\.(html|js|css)$/], ['electron/src', /\.(html|js)$/], ['api', /\.js$/], ['lib', /\.js$/]];
+  const achados = [];
+  for(const [dir, ext] of dirs){
+    for(const name of readdirSync(join(ROOT, dir))){
+      if(!ext.test(name)) continue;
+      readFileSync(join(ROOT, dir, name), 'utf8').split(String.fromCharCode(10)).forEach((line, i) => {
+        if(EMOJI.test(line)) achados.push(`${dir}/${name}:${i + 1}`);
+      });
+    }
+  }
+  assert.deepEqual(achados, []);
   assert.match(appJs, /const ICON_LOCK_SVG = '<svg /);
-  const html = readFileSync(join(ROOT, 'public/index.html'), 'utf8');
-  assert.doesNotMatch(html, /\u{1F512}|\u{1F510}|\u{1F513}|\u{1F50F}/u);
+  assert.match(appJs, /const ICON_CROWN_SVG = '<svg /);
+  assert.match(appJs, /const ICON_FULLSCREEN_SVG = '<svg /);
 });

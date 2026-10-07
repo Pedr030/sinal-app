@@ -49,7 +49,7 @@ export async function POST(request){
   if(Buffer.byteLength(log, 'utf8') > MAX_LOG_BYTES) return json(413, { error: 'registro-grande-demais' });
 
   const content = [
-    `🐞 **Relatório de problema** — ${name} · app v${appVersion} · site v${siteVersion}`,
+    `**Relatório de problema** — ${name} · app v${appVersion} · site v${siteVersion}`,
     description ? '> ' + description.replace(/\n/g, '\n> ') : '> (sem descrição)'
   ].join('\n').slice(0, 1990);
 
