@@ -769,19 +769,23 @@ test('gerenciar: encerrar a sala apaga a sala no LiveKit (todo mundo é desconec
   assert.equal((await manage(tCriador(), { action: 'close' })).status, 404);
 });
 
-test('gerenciar: SÓ sala privada — sala aberta (ou sem metadata) recusa as três ações; tipo desconhecido conta como privada', async () => {
+test('gerenciar: vale pra qualquer sala de servidor (aberta também); só trocar a SENHA exige sala com senha; sem metadata não gerencia', async () => {
   salaComSenha();
   fake.rooms = [roomApr({ access: 'open' })];
-  for(const body of [{ action: 'rename', title: 'X' }, { action: 'set-password', password: 'valida123' }, { action: 'close' }]){
-    const res = await manage(tCriador(), body);
-    assert.equal(res.status, 400, body.action);
-    assert.equal((await res.json()).error, 'sala-nao-privada');
-  }
+  assert.equal((await manage(tCriador(), { action: 'rename', title: 'Aberta renomeada' })).status, 200);
+  assert.equal(metaAgora().title, 'Aberta renomeada');
+  const semSenha = await manage(tCriador(), { action: 'set-password', password: 'valida123' });
+  assert.equal(semSenha.status, 400);
+  assert.equal((await semSenha.json()).error, 'sala-nao-tem-senha');
   fake.rooms = [{ name: ROOM, numParticipants: 1, metadata: '' }];
-  assert.equal((await manage(tCriador(), { action: 'close' })).status, 400);
-  assert.equal(fake.actions.length, 0);
+  const sem = await manage(tCriador(), { action: 'close' });
+  assert.equal(sem.status, 400);
+  assert.equal((await sem.json()).error, 'sala-sem-dados');
   fake.rooms = [roomApr({ access: 'futuro' })];
   assert.equal((await manage(tCriador(), { action: 'rename', title: 'Ok' })).status, 200);
+  fake.rooms = [roomApr({ access: 'open' })];
+  assert.equal((await manage(tCriador(), { action: 'close' })).status, 200);   // encerrar sala aberta também vale
+  assert.equal(fake.rooms.length, 0);
 });
 
 test('gerenciar: ação desconhecida continua recusada; aprovar/recusar não ganharam atalho (ainda exigem userId e sala com aprovação)', async () => {
@@ -791,3 +795,158 @@ test('gerenciar: ação desconhecida continua recusada; aprovar/recusar não gan
   assert.equal((await manage(tCriador(), { action: 'approve', userId: VISITANTE })).status, 400); // sala com senha, não aprovação
   assert.equal(fake.actions.length, 0);
 });
+
+// ---------- trocar o tipo de acesso e passar a sala (HANDOFF §54) ----------
+import { withAccess, withCreator } from '../lib/rooms.js';
+
+test('withAccess: aberta não guarda lista nenhuma; aprovação/senha recomeçam só com quem está dentro; só senha guarda pwEnc; cópia', () => {
+  const meta = { v: 1, guild: G, title: 'T', creator: { id: CRIADOR }, access: 'password', pwEnc: 'x', allowed: ['1', '2'], denied: [['3', 1]], fails: [['4', 1]] };
+  const aberta = withAccess(meta, { access: 'open', admitted: ['1'] });
+  assert.deepEqual([aberta.access, 'allowed' in aberta, 'denied' in aberta, 'pwEnc' in aberta, 'fails' in aberta], ['open', false, false, false, false]);
+  const apr = withAccess(meta, { access: 'approval', admitted: ['7', '7', '', undefined, '8'] });
+  assert.deepEqual([apr.access, apr.allowed, apr.denied, 'pwEnc' in apr, 'fails' in apr], ['approval', ['7', '8'], [], false, false]);
+  const pw = withAccess({ ...meta, access: 'approval', pwEnc: undefined }, { access: 'password', passwordEnc: 'novo', admitted: ['9'] });
+  assert.deepEqual([pw.access, pw.pwEnc, pw.allowed], ['password', 'novo', ['9']]);
+  assert.deepEqual([meta.access, meta.pwEnc, meta.allowed], ['password', 'x', ['1', '2']]);   // o original não muda
+  assert.equal(withAccess(meta, { access: 'qualquer-coisa', admitted: [] }).access, 'open');   // (a API valida antes; aqui cai no padrão)
+  assert.equal(meta.title, withAccess(meta, { access: 'approval', admitted: [] }).title);       // o resto do metadata segue
+});
+
+test('withCreator: o novo dono vira creator; o antigo continua admitido em sala privada e nada é gravado em sala aberta', () => {
+  const priv = withCreator({ v: 1, guild: G, creator: { id: CRIADOR, name: 'C' }, access: 'approval', allowed: ['5'] }, { id: OUTRO, name: 'Novo' });
+  assert.deepEqual(priv.creator, { id: OUTRO, name: 'Novo' });
+  assert.deepEqual(priv.allowed, ['5', CRIADOR]);
+  const aberta = withCreator({ v: 1, guild: G, creator: { id: CRIADOR, name: 'C' }, access: 'open' }, { id: OUTRO, name: 'Novo' });
+  assert.equal('allowed' in aberta, false);
+  assert.equal(aberta.creator.id, OUTRO);
+});
+
+const setAccess = (token, body) => manage(token, { action: 'set-access', ...body });
+
+test('trocar acesso: aberta → aprovação e aberta → senha; quem está na sala continua admitido (recarregar não tranca ninguém)', async () => {
+  salaComSenha();
+  fake.rooms = [roomApr({ access: 'open', allowed: undefined, denied: undefined })];
+  assert.equal((await setAccess(tCriador(), { access: 'approval' })).status, 200);
+  let meta = metaAgora();
+  assert.equal(meta.access, 'approval');
+  assert.deepEqual([...meta.allowed].sort(), [CRIADOR, OUTRO, '555555555555555555', '666666666666666666'].sort());   // quem estava dentro
+  assert.deepEqual(meta.denied, []);
+  // o de fora agora precisa pedir; quem estava dentro entra direto
+  assert.equal((await join(session({ id: '900000000000000051' }))).status, 403);
+  assert.equal((await join(session({ id: OUTRO }))).status, 200);
+  // aprovação → senha (precisa da senha nova)
+  const semSenha = await setAccess(tCriador(), { access: 'password' });
+  assert.equal(semSenha.status, 400);
+  assert.equal((await semSenha.json()).error, 'senha-invalida');
+  assert.equal((await setAccess(tCriador(), { access: 'password', password: ' trocou99 ' })).status, 200);
+  meta = metaAgora();
+  assert.equal(meta.access, 'password');
+  assert.equal(decryptRoomPassword(SEGREDO_SERVIDOR, ROOM, meta.pwEnc), 'trocou99');
+  assert.equal(fake.rooms[0].metadata.includes('trocou99'), false);
+  assert.equal((await join(session({ id: '900000000000000052' }), { password: 'trocou99' })).status, 200);
+  assert.equal((await join(session({ id: '900000000000000053' }), { password: 'errada!!!' })).status, 403);
+});
+
+test('trocar acesso: senha → aberta apaga senha, lista e palpites; qualquer um do servidor entra; e de volta pra senha pede senha nova', async () => {
+  salaComSenha();
+  fake.rooms = [roomPwEnc({ allowed: ['900000000000000041'], fails: [['900000000000000042', Date.now()]] })];
+  assert.equal((await setAccess(tCriador(), { access: 'open' })).status, 200);
+  const meta = metaAgora();
+  assert.deepEqual([meta.access, 'pwEnc' in meta, 'allowed' in meta, 'denied' in meta, 'fails' in meta], ['open', false, false, false, false]);
+  assert.equal(fake.rooms[0].metadata.includes(SENHA), false);
+  assert.equal((await join(session({ id: '900000000000000054' }))).status, 200);   // sala aberta: entra sem nada
+});
+
+test('trocar acesso: senha ↔ aprovação — a senha some ao virar aprovação e quem estava dentro segue admitido', async () => {
+  salaComSenha();
+  assert.equal((await setAccess(tCriador(), { access: 'approval', password: 'ignorada123' })).status, 200);   // senha enviada à toa é ignorada
+  const meta = metaAgora();
+  assert.equal(meta.access, 'approval');
+  assert.equal('pwEnc' in meta, false);
+  assert.equal(fake.rooms[0].metadata.includes('ignorada123'), false);
+  assert.ok(meta.allowed.includes(OUTRO));
+});
+
+test('trocar acesso: mesmo tipo = 400 "mesmo-acesso"; tipo inventado/ausente = 400 "acesso-invalido"; nada é gravado', async () => {
+  salaComSenha();
+  const igual = await setAccess(tCriador(), { access: 'password', password: 'valida123' });
+  assert.equal(igual.status, 400);
+  assert.equal((await igual.json()).error, 'mesmo-acesso');
+  for(const access of [undefined, '', 'publica', 'OPEN', 5, null, {}]){
+    const res = await setAccess(tCriador(), { access });
+    assert.equal(res.status, 400, String(access));
+    assert.equal((await res.json()).error, 'acesso-invalido');
+  }
+  assert.equal(fake.actions.length, 0);
+});
+
+test('trocar acesso: só quem gerencia (comum e o "responsável" por ter entrado primeiro levam 403); sem token/inválido/outra sala nada', async () => {
+  salaComSenha();
+  assert.equal((await setAccess(tComum(), { access: 'open' })).status, 403);
+  assert.equal((await setAccess('', { access: 'open' })).status, 401);
+  assert.equal((await setAccess('lixo', { access: 'open' })).status, 401);
+  assert.equal((await setAccess(tokenOf(CRIADOR_ID, { userId: CRIADOR }, { room: `s${G}-zzzzzz` }), { access: 'open' })).status, 403);
+  assert.equal(fake.actions.length, 0);
+  assert.equal(metaAgora().access, 'password');
+  assert.equal((await setAccess(tGerente(), { access: 'open' })).status, 200);   // o "gerencia o servidor" gerencia
+});
+
+const passar = (token, userId) => manage(token, { action: 'transfer', userId });
+
+test('passar a sala: o novo dono (que está na sala) vira creator, com o nome do Discord limpo; o antigo continua admitido', async () => {
+  salaComSenha();
+  fake.participants[ROOM][1].name = '  Fulano​  Novo  ';
+  const res = await passar(tCriador(), OUTRO);
+  assert.equal(res.status, 200);
+  const meta = metaAgora();
+  assert.deepEqual(meta.creator, { id: OUTRO, name: 'Fulano Novo' });
+  assert.ok(meta.allowed.includes(CRIADOR));                      // o ex-dono pode voltar sem pedir de novo
+  assert.equal(decryptRoomPassword(SEGREDO_SERVIDOR, ROOM, meta.pwEnc), SENHA);
+  // quem era dono deixou de poder gerenciar; o novo dono pode
+  assert.equal((await manage(tCriador(), { action: 'rename', title: 'Ainda dono?' })).status, 403);
+  assert.equal((await manage(tComum(), { action: 'rename', title: 'Agora é minha' })).status, 200);
+  assert.equal(metaAgora().title, 'Agora é minha');
+});
+
+test('passar a sala: quem NÃO está na sala, quem já é dono e IDs inválidos são recusados; sala aberta também aceita', async () => {
+  salaComSenha();
+  const fora = await passar(tCriador(), '999999999999999999');
+  assert.equal(fora.status, 404);
+  assert.equal((await fora.json()).error, 'pessoa-nao-esta-na-sala');
+  const jaDono = await passar(tCriador(), CRIADOR);
+  assert.equal(jaDono.status, 400);
+  assert.equal((await jaDono.json()).error, 'ja-e-dono');
+  for(const userId of [undefined, '', 'abc', '123', 12345678901234567, null, {}]){
+    assert.equal((await passar(tCriador(), userId)).status, 400, String(userId));
+  }
+  assert.equal(fake.actions.length, 0);
+  fake.rooms = [roomApr({ access: 'open', allowed: undefined, denied: undefined })];
+  assert.equal((await passar(tCriador(), OUTRO)).status, 200);
+  assert.equal(metaAgora().creator.id, OUTRO);
+  assert.equal('allowed' in metaAgora(), false);   // sala aberta não ganha lista
+});
+
+test('passar a sala: o pedido não escolhe a identidade (vem do metadata assinado da pessoa na sala); comum e fora da sala levam 403', async () => {
+  salaComSenha();
+  assert.equal((await passar(tComum(), OUTRO)).status, 403);
+  assert.equal((await passar(tokenOf('d999-saiu', { userId: CRIADOR }), OUTRO)).status, 403);
+  assert.equal(fake.actions.length, 0);
+});
+
+test('pedido sem resposta quando a sala muda de tipo: virou ABERTA = o próximo aviso entra (200); virou SENHA = recebe "sala-privada" com access "password" (o app troca pra caixa da senha)', async () => {
+  salaComSenha();
+  fake.rooms = [roomApr()];                                         // sala com aprovação, alguém batendo na porta
+  const esperando = session({ id: '900000000000000061' });
+  assert.equal((await (await join(esperando, { knock: true })).json()).error, 'aguardando-aprovacao');
+  assert.equal((await setAccess(tCriador(), { access: 'password', password: 'virouSenha1' })).status, 200);
+  const trancada = await join(esperando, { knock: true });
+  assert.equal(trancada.status, 403);
+  assert.deepEqual(await trancada.json(), { error: 'sala-privada', access: 'password' });
+  assert.equal((await join(esperando, { password: 'virouSenha1' })).status, 200);
+  fake.rooms = [roomApr()];
+  assert.equal((await setAccess(tCriador(), { access: 'open' })).status, 200);
+  const livre = await join(session({ id: '900000000000000062' }), { knock: true });   // quem estava esperando insiste
+  assert.equal(livre.status, 200);
+  assert.ok((await livre.json()).token);
+});
+

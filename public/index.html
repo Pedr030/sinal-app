@@ -439,13 +439,24 @@
 
 <!-- Gerenciar a sala privada (só pra quem cuida dela) — ver openManage() em app.js -->
 <div id="manageOverlay" class="settings-overlay confirm-overlay" hidden>
-  <div class="settings-panel confirm-panel" role="dialog" aria-modal="true" aria-labelledby="manageTitle">
+  <div class="settings-panel confirm-panel manage-panel" role="dialog" aria-modal="true" aria-labelledby="manageTitle">
     <div class="confirm-title" id="manageTitle">Gerenciar sala</div>
     <label class="manage-label" for="manageName">Nome da sala</label>
     <div class="manage-row">
       <input type="text" id="manageName" maxlength="40" autocomplete="off">
       <button type="button" id="manageRename" class="primary">Salvar</button>
     </div>
+    <label class="manage-label" for="manageAccess">Quem pode entrar</label>
+    <div class="manage-row">
+      <select id="manageAccess" class="access-select manage-select">
+        <option value="open">Aberta: qualquer pessoa do servidor</option>
+        <option value="approval">Com aprovação</option>
+        <option value="password">Com senha</option>
+      </select>
+      <button type="button" id="manageApplyAccess" class="primary">Aplicar</button>
+    </div>
+    <input type="text" id="manageAccessPw" class="knock-password" maxlength="32" placeholder="Senha da sala (4 a 32 caracteres)" autocomplete="off" hidden>
+    <div class="manage-hint" id="manageAccessHint"></div>
     <div id="managePwSection" hidden>
       <label class="manage-label" for="managePassword">Nova senha</label>
       <div class="manage-row">
@@ -453,6 +464,14 @@
         <button type="button" id="manageSetPw" class="primary">Trocar</button>
       </div>
       <div class="manage-hint">Quem já está na sala continua nela. Quem entrou com a senha antiga vai precisar da nova.</div>
+    </div>
+    <div id="manageTransferSection">
+      <label class="manage-label" for="manageTransfer">Passar a sala para</label>
+      <div class="manage-row">
+        <select id="manageTransfer" class="access-select manage-select"></select>
+        <button type="button" id="manageDoTransfer" class="primary">Passar</button>
+      </div>
+      <div class="manage-hint" id="manageTransferHint"></div>
     </div>
     <div class="manage-status" id="manageStatus" aria-live="polite"></div>
     <div class="confirm-actions manage-actions">

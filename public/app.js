@@ -350,6 +350,7 @@ function wireRoomEvents(liveRoom){
   liveRoom.on(RoomEvent.ParticipantConnected, (participant) => {
     if(!isCurrent()) return;
     renderAvatars();
+    refreshManageDialog(); // a lista de "passar a sala" acompanha quem entra
     // Quem chega agora não sabe quem já tá assistindo o quê — cada um manda
     // o próprio estado só pra essa pessoa (ver "Quem está assistindo").
     sendWatchSync([participant.identity]);
@@ -364,6 +365,7 @@ function wireRoomEvents(liveRoom){
     myWatching.delete(participant.identity);
     myWatching.delete(participant.identity + ':cam');
     renderAvatars();
+    refreshManageDialog(); // ...e quem sai
   });
   // Depois de uma queda e volta, mensagens podem ter se perdido no meio —
   // reenvia o estado completo pra sala toda.
@@ -466,10 +468,13 @@ function wireRoomEvents(liveRoom){
   // Metadata da sala mudou (aprovados, nome, senha...): o nome no chip e os botões de quem cuida da sala acompanham.
   liveRoom.on(RoomEvent.RoomMetadataChanged, () => {
     if(!isCurrent()) return;
-    if(refreshRoomChip()) fetchLives(); // renomeou: a lista de salas do servidor não espera o próximo ciclo
+    if(refreshRoomChip()) fetchLives(); // renomeou ou mudou o acesso: a lista de salas do servidor não espera o próximo ciclo
+    // Deixou de ser sala com aprovação: os pedidos pendentes e o sino saem (quem estava esperando entra sozinho no próximo aviso).
+    if(currentRoomMeta().access !== 'approval') clearKnockCards();
     updatePasswordButton();
     updateKnockButton();
     updateManageButton();
+    refreshManageDialog();
   });
   liveRoom.on(RoomEvent.Disconnected, (reason) => {
     if(!isCurrent()) return;
@@ -561,8 +566,9 @@ function refreshRoomChip(){
   chip.textContent = '';
   if(chipAccess) chip.appendChild(accessIcon(chipAccess, 'chip-lock'));
   chip.appendChild(document.createTextNode(chipText));
-  const changed = lastChipText !== null && lastChipText !== chipText;
-  lastChipText = chipText;
+  const key = chipText + '|' + chipAccess;
+  const changed = lastChipText !== null && lastChipText !== key;
+  lastChipText = key;
   return changed;
 }
 
@@ -3105,10 +3111,11 @@ function canDecideKnocks(meta, myMeta, guild){
   return !!meta && meta.access === 'approval' && isRoomCaretaker(meta, myMeta, guild);
 }
 
-// Gerenciar a sala (trocar nome e senha, encerrar — HANDOFF §53): só sala PRIVADA e só quem é dono dela
-// (mesma regra do servidor, canManageRoom em lib/rooms.js). O "responsável por ter entrado primeiro" não gerencia.
+// Gerenciar a sala (nome, tipo de acesso, senha, passar a sala, encerrar — HANDOFF §53/§54): qualquer sala de servidor
+// (o metadata de servidor tem `guild`; sala por código não tem) e só quem é dono dela (mesma regra do servidor,
+// canManageRoom em lib/rooms.js). O "responsável por ter entrado primeiro" não gerencia.
 function canManageRoomUI(meta, myMeta, guild){
-  return !!meta && !!meta.access && meta.access !== 'open' && isRoomCaretaker(meta, myMeta, guild);
+  return !!meta && !!meta.guild && isRoomCaretaker(meta, myMeta, guild);
 }
 function updateManageButton(){
   const btn = document.getElementById('manageBtn');
@@ -3129,16 +3136,72 @@ function manageStatus(text, isError){
 function closeManage(){
   document.getElementById('manageOverlay').hidden = true;
   document.getElementById('managePassword').value = '';
+  document.getElementById('manageAccessPw').value = '';
   manageStatus('');
 }
+const ACCESS_HINTS = {
+  open: 'Qualquer pessoa do servidor entra sozinha.',
+  approval: 'Quem quiser entrar pede, e alguém que cuida da sala aprova. Quem está na sala agora continua.',
+  password: 'Entra quem souber a senha. Quem está na sala agora continua.'
+};
+let manageSyncedAccess = null;
+function currentRoomMeta(){
+  try{ return JSON.parse((room && room.metadata) || '{}'); }catch(e){ return {}; }
+}
+// Mostra/esconde o campo da senha do "Quem pode entrar" e a dica conforme a escolha. A senha só é pedida ao mudar PARA
+// senha; se a sala já é de senha, trocar a senha tem a seção própria.
+function syncManageAccessFields(){
+  const sel = document.getElementById('manageAccess');
+  const current = currentRoomMeta().access || 'open';
+  document.getElementById('manageAccessPw').hidden = !(sel.value === 'password' && current !== 'password');
+  document.getElementById('manageApplyAccess').disabled = sel.value === current;
+  document.getElementById('manageAccessHint').textContent = sel.value === current ? '' : (ACCESS_HINTS[sel.value] || '');
+}
+// Quem pode receber a sala: as OUTRAS pessoas na sala (com conta do Discord) que ainda não são o dono.
+function transferCandidates(liveRoom, meta){
+  const out = [];
+  if(!liveRoom) return out;
+  liveRoom.remoteParticipants.forEach((p) => {
+    let info = {};
+    try{ info = JSON.parse(p.metadata || '{}'); }catch(e){ /* visitante sem metadata */ }
+    if(typeof info.userId === 'string' && /^\d{15,21}$/.test(info.userId) && !(meta.creator && meta.creator.id === info.userId)){
+      out.push({ userId: info.userId, name: p.name || p.identity });
+    }
+  });
+  return out.sort((a, b) => a.name.localeCompare(b.name));
+}
+function fillManageTransfer(){
+  const sel = document.getElementById('manageTransfer');
+  const keep = sel.value;
+  const people = transferCandidates(room, currentRoomMeta());
+  sel.innerHTML = '';
+  people.forEach((p) => { const o = document.createElement('option'); o.value = p.userId; o.textContent = p.name; sel.appendChild(o); });
+  if(people.some((p) => p.userId === keep)) sel.value = keep;
+  document.getElementById('manageDoTransfer').disabled = !people.length;
+  sel.disabled = !people.length;
+  document.getElementById('manageTransferHint').textContent = people.length
+    ? 'A pessoa vira dona da sala e você deixa de ser (a não ser que seja admin ou cuide do servidor).'
+    : 'Ninguém mais está na sala pra receber.';
+}
+// A janela acompanha o que muda na sala enquanto está aberta (alguém entra/sai, outro dono mexeu no acesso...).
+function refreshManageDialog(){
+  if(document.getElementById('manageOverlay').hidden) return;
+  const meta = currentRoomMeta();
+  const access = meta.access || 'open';
+  document.getElementById('managePwSection').hidden = access !== 'password';
+  if(manageSyncedAccess !== access){ document.getElementById('manageAccess').value = access; manageSyncedAccess = access; }
+  syncManageAccessFields();
+  fillManageTransfer();
+}
 function openManage(){
-  let meta = {};
-  try{ meta = JSON.parse(room.metadata || '{}'); }catch(e){ /* sem metadata */ }
+  const meta = currentRoomMeta();
   document.getElementById('manageName').value = meta.title || '';
   document.getElementById('managePassword').value = '';
-  document.getElementById('managePwSection').hidden = meta.access !== 'password';
+  document.getElementById('manageAccessPw').value = '';
+  manageSyncedAccess = null;
   manageStatus('');
   document.getElementById('manageOverlay').hidden = false;
+  refreshManageDialog();
   document.getElementById('manageName').focus();
 }
 
@@ -3149,7 +3212,11 @@ function manageFailureText(error){
     'titulo-invalido': 'Escreva um nome pra sala.',
     'senha-invalida': 'A senha precisa ter de 4 a 32 caracteres.',
     'sala-nao-encontrada': 'Essa sala já fechou.',
-    'sala-nao-privada': 'Só salas privadas podem ser gerenciadas.',
+    'sala-sem-dados': 'Essa sala não pode ser gerenciada.',
+    'acesso-invalido': 'Escolha como as pessoas entram na sala.',
+    'mesmo-acesso': 'A sala já é assim.',
+    'pessoa-nao-esta-na-sala': 'Essa pessoa saiu da sala.',
+    'ja-e-dono': 'Essa pessoa já é dona da sala.',
     'muitos-pedidos': 'Muitos pedidos seguidos. Espere um instante.'
   })[error] || 'Não consegui agora. Tente de novo.';
 }
@@ -3188,6 +3255,42 @@ async function manageSetPassword(){
     input.value = '';
     manageStatus('Senha trocada. Quem entrou com a antiga vai precisar da nova.');
   }
+}
+
+async function manageApplyAccess(){
+  const sel = document.getElementById('manageAccess');
+  const current = currentRoomMeta().access || 'open';
+  if(sel.value === current){ manageStatus(manageFailureText('mesmo-acesso'), true); return; }
+  let password;
+  if(sel.value === 'password'){
+    const choice = accessChoice('password', document.getElementById('manageAccessPw').value);
+    if(choice.error){ manageStatus(choice.error, true); return; }
+    password = choice.password;
+  }
+  if(sel.value === 'open'){
+    const yes = await askConfirm({ title: 'Abrir a sala', message: 'Qualquer pessoa do servidor vai poder entrar sozinha, sem aprovação nem senha.', okText: 'Abrir sala' });
+    if(!yes) return;
+  }
+  manageStatus('Aplicando...');
+  if(await manageCall({ action: 'set-access', access: sel.value, password })){
+    document.getElementById('manageAccessPw').value = '';
+    manageStatus('Acesso alterado.');
+  }
+}
+
+async function manageTransfer(){
+  const sel = document.getElementById('manageTransfer');
+  const userId = sel.value;
+  const name = sel.options[sel.selectedIndex] ? sel.options[sel.selectedIndex].textContent : '';
+  if(!userId) return;
+  const yes = await askConfirm({
+    title: 'Passar a sala',
+    message: `Passar a sala para ${name}? Ela vira dona e você deixa de ser (a não ser que seja admin ou cuide do servidor).`,
+    okText: 'Passar a sala'
+  });
+  if(!yes) return;
+  manageStatus('Passando...');
+  if(await manageCall({ action: 'transfer', userId })) manageStatus('Pronto: ' + name + ' é a dona da sala agora.');
 }
 
 async function manageEnd(){
@@ -3300,15 +3403,15 @@ function requestToJoinRoom(roomName, access){
       cancel.textContent = cancelText;
     };
     const onKey = (e) => { if(e.key === 'Escape'){ e.preventDefault(); e.stopPropagation(); finish(false); } };
-    const finish = (ok) => {
+    const cleanup = () => {
       stopped = true; clearTimeout(timer);
       overlay.hidden = true;
       pwInput.hidden = true; pwInput.value = '';
       primary.disabled = false;
       document.removeEventListener('keydown', onKey, true);
       primary.onclick = cancel.onclick = pwInput.onkeydown = null;
-      resolve(ok);
     };
+    const finish = (ok) => { cleanup(); resolve(ok); };
     const post = (extra) => fetch('/api/get-token', {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ mode: 'server-join', room: roomName, name: getName(), session: (discordUser && discordUser.session) || undefined, ...extra })
@@ -3348,9 +3451,12 @@ function requestToJoinRoom(roomName, access){
       let error = '';
       try{
         const res = await post({ knock: true });
-        if(res.status === 200){ finish(true); return; }
-        error = (await res.json().catch(() => ({}))).error || '';
+        if(res.status === 200){ finish(true); return; } // inclusive se a sala virou ABERTA enquanto esperava: entra sozinho
+        const data = await res.json().catch(() => ({}));
+        error = data.error || '';
         if(res.status === 429) error = 'aguardando-aprovacao'; // muitos pedidos seguidos: só espera e tenta de novo
+        // A sala trocou de aprovação pra SENHA enquanto esperava: troca pra caixa da senha, sem a pessoa precisar refazer nada.
+        if(error === 'sala-privada' && data.access === 'password' && !stopped){ cleanup(); resolve(requestToJoinRoom(roomName, 'password')); return; }
       }catch(e){ error = 'aguardando-aprovacao'; } // sem rede por um instante: segue tentando
       if(stopped) return;
       if(error === 'aguardando-aprovacao'){
@@ -3741,6 +3847,13 @@ function setupServersUI(){
   document.getElementById('manageRename').addEventListener('click', manageRename);
   document.getElementById('manageSetPw').addEventListener('click', manageSetPassword);
   document.getElementById('manageEnd').addEventListener('click', manageEnd);
+  document.getElementById('manageAccess').addEventListener('change', () => {
+    syncManageAccessFields();
+    if(!document.getElementById('manageAccessPw').hidden) document.getElementById('manageAccessPw').focus();
+  });
+  document.getElementById('manageApplyAccess').addEventListener('click', manageApplyAccess);
+  document.getElementById('manageDoTransfer').addEventListener('click', manageTransfer);
+  document.getElementById('manageAccessPw').addEventListener('keydown', (e) => { if(e.key === 'Enter'){ e.preventDefault(); manageApplyAccess(); } });
   document.getElementById('manageName').addEventListener('keydown', (e) => { if(e.key === 'Enter'){ e.preventDefault(); manageRename(); } });
   document.getElementById('managePassword').addEventListener('keydown', (e) => { if(e.key === 'Enter'){ e.preventDefault(); manageSetPassword(); } });
   document.getElementById('manageOverlay').addEventListener('click', (e) => { if(e.target.id === 'manageOverlay') closeManage(); });
