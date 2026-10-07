@@ -1,5 +1,15 @@
 [
   {
+    "id": "2026-10-07-audio-estavel",
+    "date": "2026-10-07",
+    "title": "Som da transmissão mais estável",
+    "site": "0.8.62",
+    "items": [
+      "No app, o som da transmissão não estala mais quando o PC está sobrecarregado, como durante um jogo pesado.",
+      "Quando a imagem trava, o app agora anota mais detalhes para ajudar a descobrir o motivo nos relatórios de problema."
+    ]
+  },
+  {
     "id": "2026-10-05-fluido-h264",
     "date": "2026-10-05",
     "title": "Ajuste no modo Fluido",
