@@ -528,3 +528,43 @@ test('botão escondido (atributo hidden) some DE VERDADE: .icon-btn[hidden] tem 
   const html = readFileSync(join(ROOT, 'public/index.html'), 'utf8');
   for(const id of ['knockBtn', 'passwordBtn', 'sideToggleBtn']) assert.match(html, new RegExp('id="' + id + '"[^>]*hidden'), id);
 });
+
+// ---------- retomar transmissão depois de uma queda do app + sair da janela flutuante (HANDOFF §52) ----------
+const shouldOfferResumeShare = new Function(extractFunction(appJs, 'shouldOfferResumeShare') + '; return shouldOfferResumeShare;')();
+const pipLeaveKind = new Function(extractFunction(appJs, 'pipLeaveKind') + '; return pipLeaveKind;')();
+
+test('retomar transmissão: só oferece pra MESMA sala, sem limite de idade (a transmissão pode ter horas)', () => {
+  const marker = { room: 's810000000000000001-abc123', at: Date.now() - 7 * 3600 * 1000 };
+  assert.equal(shouldOfferResumeShare(marker, 's810000000000000001-abc123'), true);
+  assert.equal(shouldOfferResumeShare(marker, 's810000000000000001-outra1'), false);
+  assert.equal(shouldOfferResumeShare(marker, ''), false);
+  assert.equal(shouldOfferResumeShare(marker, null), false);
+  assert.equal(shouldOfferResumeShare(null, 'ABC123'), false);
+  assert.equal(shouldOfferResumeShare({ room: 123 }, 'ABC123'), false);
+  assert.equal(shouldOfferResumeShare({}, 'ABC123'), false);
+});
+
+test('janela flutuante: expandir = não pausou e não foi por código; X = pausou; código = nunca traz o app', () => {
+  assert.equal(pipLeaveKind(false, false, 60000), 'expanded');
+  assert.equal(pipLeaveKind(false, true, 60000), 'closed');          // vídeo pausado
+  assert.equal(pipLeaveKind(false, false, 200), 'closed');           // pause recente (chegou antes de o vídeo voltar)
+  assert.equal(pipLeaveKind(false, false, Infinity), 'expanded');    // nunca pausou
+  assert.equal(pipLeaveKind(true, false, 60000), 'code');            // trocar de sala, tile removido, botão do tile
+  assert.equal(pipLeaveKind(true, true, 10), 'code');
+});
+
+test('retomar transmissão e janela flutuante: ligações no código (marcador, botões, foco, regra do hidden)', () => {
+  const html = readFileSync(join(ROOT, 'public/index.html'), 'utf8');
+  const css = readFileSync(join(ROOT, 'public/style.css'), 'utf8');
+  const main = readFileSync(join(ROOT, 'electron/src/main.js'), 'utf8');
+  const preload = readFileSync(join(ROOT, 'electron/src/preload.js'), 'utf8');
+  for(const id of ['resumeShare', 'resumeShareBtn', 'resumeShareDismiss']) assert.match(html, new RegExp(`id="${id}"`));
+  assert.match(css, /\.resume-share\[hidden\]\{display:none;\}/);       // display:flex não pode vencer o hidden
+  assert.match(appJs, /setSharingMarker\(true\)/);                        // marca ao começar a transmitir
+  assert.match(appJs, /function resetShareButton\(\)\{[\s\S]*?setSharingMarker\(false\)/); // apaga quando termina por vontade
+  assert.match(appJs, /takeSharingMarker\(\);[\s\S]*?params\.get\('retomar'\) !== '1'/);    // lê (e apaga) antes de decidir
+  assert.match(preload, /focusWindow: \(\) => ipcRenderer\.send\('sinal:focus-window'\)/);
+  assert.match(main, /trustedIpc\.on\('sinal:focus-window'/);
+  // nenhum exitPictureInPicture solto: tudo passa por exitPip() (que avisa que foi por código)
+  assert.equal((appJs.match(/document\.exitPictureInPicture\(\)/g) || []).length, 1);
+});

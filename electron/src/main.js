@@ -926,6 +926,16 @@ function setupAutoUpdater(){
   });
 }
 
+// Botão "expandir" da janela flutuante: traz a janela principal de volta (restaura se estava
+// minimizada, mostra se estava na bandeja). O site só pede depois de saber que foi um clique em
+// "expandir" (e não no X), então não rouba o foco de quem está jogando.
+trustedIpc.on('sinal:focus-window', () => {
+  if(!mainWindow || mainWindow.isDestroyed()) return;
+  if(mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+});
+
 trustedIpc.on('sinal:set-in-room', (event, value, roomCode) => {
   inRoom = !!value;
   lastRoomCode = inRoom && typeof roomCode === 'string' ? roomCode.slice(0, 64) : null;

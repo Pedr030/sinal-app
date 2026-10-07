@@ -613,6 +613,17 @@ body.picker-quality.sharing .quality-wrap{ display:inline-flex; }
 }
 .audio-hint b{ color:var(--ink); font-weight:600; }
 
+/* Depois de uma queda do app durante uma transmissão: oferece retomar (nunca retoma sozinho). */
+.resume-share{
+  display:flex; align-items:center; gap:12px; flex-wrap:wrap; justify-content:center;
+  margin:0 0 14px; padding:10px 14px; background:var(--panel);
+  border:1px solid var(--tune); border-radius:10px; font-size:13px;
+}
+.resume-share[hidden]{display:none;}
+.resume-share button{height:auto; padding:8px 14px; font-size:13px;}
+.resume-share-dismiss{background:transparent; border:1px solid var(--line); color:var(--fog); border-radius:8px; cursor:pointer;}
+.resume-share-dismiss:hover{color:var(--ink);}
+
 #roomStatus{font-size:13px; color:var(--fog); margin-top:10px; text-align:center; font-family:'JetBrains Mono';}
 #roomStatus.error{color:var(--rec);}
 

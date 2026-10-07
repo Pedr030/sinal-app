@@ -64,6 +64,63 @@ function setEntryStatus(msg){
   document.getElementById('entryStatus').textContent = msg || '';
   document.getElementById('srvStatus').textContent = msg || ''; // painel do servidor (HANDOFF §39)
 }
+// ---------------- RETOMAR TRANSMISSÃO DEPOIS DE UMA QUEDA DO APP ----------------
+// Quando a página do app desktop cai (HANDOFF §37) ele recarrega sozinho e volta pra sala. Se a pessoa estava
+// transmitindo, o site guarda um marcador (sala + hora) enquanto a transmissão existe e apaga quando ela termina
+// por vontade da pessoa; se a página caiu, o marcador sobra e, na volta (?retomar=1), oferecemos o botão
+// "Retomar transmissão". Nunca retoma sozinho: iniciar a captura é decisão da pessoa (e abre o seletor de tela).
+const SHARING_MARKER_KEY = 'sinal:wasSharing';
+function setSharingMarker(on){
+  try{
+    if(on) localStorage.setItem(SHARING_MARKER_KEY, JSON.stringify({ room: roomCode, at: Date.now() }));
+    else localStorage.removeItem(SHARING_MARKER_KEY);
+  }catch(e){ /* localStorage indisponível — só não oferece retomar */ }
+}
+function takeSharingMarker(){
+  let marker = null;
+  try{
+    marker = JSON.parse(localStorage.getItem(SHARING_MARKER_KEY) || 'null');
+    localStorage.removeItem(SHARING_MARKER_KEY); // sempre apaga: vale só pra esta volta
+  }catch(e){ marker = null; }
+  return marker;
+}
+// O marcador só vale pra MESMA sala em que a pessoa estava. Sem limite de idade: ele guarda a hora em que a
+// transmissão COMEÇOU (pode ter horas) e a volta depois da queda é imediata (?retomar=1, e só a primeira em 5 min).
+function shouldOfferResumeShare(marker, code){
+  return !!(marker && typeof marker.room === 'string' && code && marker.room === code);
+}
+// ---------------- JANELA FLUTUANTE (picture-in-picture): sair dela ----------------
+// "Expandir" e o X da janelinha disparam o mesmo leavepictureinpicture; o Chromium pausa o vídeo só no X.
+// Sair por código nosso (trocar de sala, tile removido, clicar no botão do tile) não é nenhum dos dois.
+let pipExitByCode = false;
+function exitPip(){
+  if(!document.pictureInPictureElement) return;
+  pipExitByCode = true;
+  document.exitPictureInPicture().catch(() => { pipExitByCode = false; });
+}
+function pipLeaveKind(byCode, videoPaused, msSincePause){
+  if(byCode) return 'code';
+  if(videoPaused || msSincePause < 1000) return 'closed';
+  return 'expanded';
+}
+// No Electron o "expandir" só fecha a janelinha: pede à janela principal pra voltar (restaura/mostra/foca).
+function focusAppWindow(){
+  if(window.sinalElectron && window.sinalElectron.focusWindow) window.sinalElectron.focusWindow();
+  else window.focus();
+}
+
+function showResumeShare(){ document.getElementById('resumeShare').hidden = false; }
+function hideResumeShare(){ document.getElementById('resumeShare').hidden = true; }
+function setupResumeShare(){
+  document.getElementById('resumeShareDismiss').addEventListener('click', hideResumeShare);
+  document.getElementById('resumeShareBtn').addEventListener('click', () => {
+    hideResumeShare();
+    // Se a pessoa já recomeçou a transmitir por conta própria, não faz nada (toggleShare pararia a transmissão).
+    if(document.getElementById('shareBtn').classList.contains('active-share')) return;
+    toggleShare(); // abre o seletor de tela de sempre: a escolha do que mostrar continua sendo da pessoa
+  });
+}
+
 function setRoomStatus(msg, isError){
   const el = document.getElementById('roomStatus');
   el.textContent = msg || '';
@@ -1203,6 +1260,8 @@ async function toggleShare(){
   setBtnLabel(btn, 'Parar compartilhamento');
   btn.classList.add('active-share');
   appLog(`[sinal] transmissão iniciada: ${activeShareQuality} · ${activeShareCodec} · ${describeCaptureSurface(videoTrack)}`);
+  setSharingMarker(true);
+  hideResumeShare();
   // Botão de qualidade fica ativo: dá pra trocar no meio (changeActiveShareQuality).
   // body.sharing: no app, o botão (escondido fora da transmissão, já que lá
   // a escolha é no seletor) aparece enquanto transmite.
@@ -1258,6 +1317,7 @@ function resetShareButton(){
   document.getElementById('selfPreview').style.display = 'none';
   document.getElementById('selfStatus').textContent = 'Assistindo';
   if(activeShareQuality) appLog('[sinal] transmissão encerrada');
+  setSharingMarker(false);
   sendStatsPrev = null; senderDetailPrev = null;
   activeShareQuality = null;
   activeShareCodec = null;
@@ -1859,17 +1919,28 @@ function addTile(id, name, stream){
     pipBtn.addEventListener('click', (e) => {
       e.stopPropagation();
       if(document.pictureInPictureElement === video){
-        document.exitPictureInPicture().catch(() => {});
+        exitPip();
       } else {
         video.requestPictureInPicture().catch((err) => console.warn('[sinal] janela flutuante falhou:', err));
       }
     });
+    // Fechar no X da janelinha PAUSA o vídeo (Chromium); "expandir" não pausa. É a diferença que usamos pra
+    // saber qual dos dois foi (os dois disparam leavepictureinpicture).
+    let lastPauseAt = -Infinity;
+    video.addEventListener('pause', () => { lastPauseAt = performance.now(); });
     video.addEventListener('enterpictureinpicture', () => tile.classList.add('in-pip'));
     video.addEventListener('leavepictureinpicture', () => {
       tile.classList.remove('in-pip');
-      // Fechar no X da janelinha pausa o vídeo (comportamento do Chromium) —
-      // de volta no tile, tem que continuar ao vivo.
-      if(!tile.classList.contains('render-off')) video.play().catch(() => {});
+      const byCode = pipExitByCode;
+      pipExitByCode = false;
+      // O pause do X pode chegar um instante depois do evento de saída: espera um pouco antes de decidir.
+      setTimeout(() => {
+        const kind = pipLeaveKind(byCode, video.paused, performance.now() - lastPauseAt);
+        // De volta no tile, tem que continuar ao vivo (o X pausou).
+        if(!tile.classList.contains('render-off')) video.play().catch(() => {});
+        // "Expandir" tem que trazer o app de volta (o Electron só fecha a janelinha).
+        if(kind === 'expanded') focusAppWindow();
+      }, 250);
     });
   }
   tile.addEventListener('click', () => togglePin(id));
@@ -1948,7 +2019,7 @@ function removeTile(id){
   // Transmissão acabou ou parei de assistir — a janela flutuante não pode
   // ficar pra trás congelada no último quadro.
   if(el && document.pictureInPictureElement && el.contains(document.pictureInPictureElement)){
-    document.exitPictureInPicture().catch(() => {});
+    exitPip();
   }
   if(el) el.remove();
   tiles.delete(id);
@@ -2282,6 +2353,7 @@ function leaveRoom(){
   myAccessToken = null;
   toggleRosterPanel(false);
   clearKnockCards();
+  hideResumeShare();
   document.getElementById('passwordBtn').hidden = true;
   closeRoomPassword();
   tileStreams.clear();
@@ -2291,7 +2363,7 @@ function leaveRoom(){
   qualityStatsPrev.clear();
   tileViewers.clear();
   myWatching.clear();
-  if(document.pictureInPictureElement) document.exitPictureInPicture().catch(() => {});
+  exitPip();
   tiles.forEach(el => el.remove());
   tiles.clear();
   pinnedOrder = [];
@@ -2342,6 +2414,7 @@ function leaveRoom(){
 // continua só preenchendo o código.
 function resumeAfterAppRecovery(){
   const params = new URLSearchParams(window.location.search);
+  const wasSharing = takeSharingMarker(); // apaga sempre; só vale numa volta de queda (?retomar=1)
   if(params.get('retomar') !== '1') return;
   params.delete('retomar');
   const clean = window.location.pathname + (params.toString() ? '?' + params.toString() : '');
@@ -2353,7 +2426,13 @@ function resumeAfterAppRecovery(){
   // Direto, sem passar pelo campo de código: sala de servidor não aparece mais ali (pickPrefillCode).
   getAudioCtx();
   const server = isServerRoomName(code);
-  connectToRoom(server ? code : code.toUpperCase(), getName(), server ? 'server-join' : 'join');
+  const target = server ? code : code.toUpperCase();
+  connectToRoom(target, getName(), server ? 'server-join' : 'join').then(() => {
+    if(room && shouldOfferResumeShare(wasSharing, roomCode)){
+      appLog('[sinal] oferecendo retomar a transmissão depois da recuperação');
+      showResumeShare();
+    }
+  });
 }
 
 // Qual código mostrar no campo "entrar em sala existente": SÓ código de sala por
@@ -4039,6 +4118,7 @@ window.addEventListener('DOMContentLoaded', () => {
   setupServersUI();
   setupAppLogin();
   setupStageFit();
+  setupResumeShare();
   resumeAfterAppRecovery();
 });
 
