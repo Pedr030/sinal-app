@@ -5,7 +5,7 @@
 // uma segunda credencial) — TokenVerifier confirma a assinatura e o grant
 // antes de qualquer coisa rodar.
 import { RoomServiceClient, TokenVerifier } from 'livekit-server-sdk';
-import { canModerateTarget, isModeratorToken } from '../lib/rooms.js';
+import { canModerateTarget, isModeratorToken, parseRoomMetadata, withoutAllowed } from '../lib/rooms.js';
 import { createLimiter, clientIp } from '../lib/ratelimit.js';
 
 const moderateLimiter = createLimiter({ max: 60, windowMs: 60 * 1000 });
@@ -98,6 +98,19 @@ export async function POST(request){
       // modificado voltaria na hora com o MESMO token. (Expulsar não é banir: quem tem direito
       // de entrar na sala ainda pode pedir um token novo.)
       await roomService.removeParticipant(room, targetIdentity, { revokeTokenTs: BigInt(Math.floor(Date.now() / 1000)) });
+      // Sala com aprovação ou senha (HANDOFF §49/§50): expulsar desfaz a aprovação da pessoa — pra voltar, precisa pedir de
+      // novo. (Sem isso ela reentraria na hora, e a expulsão não serviria de nada.) Falha aqui não desfaz a
+      // expulsão, que já aconteceu; só fica registrada.
+      try{
+        const targetUserId = (parseMeta(target.metadata) || {}).userId;
+        const found = (await roomService.listRooms([room])).find((r) => r.name === room);
+        const meta = found && parseRoomMetadata(found.metadata);
+        if(meta && meta.access && meta.access !== 'open' && typeof targetUserId === 'string' && targetUserId){
+          await roomService.updateRoomMetadata(room, JSON.stringify(withoutAllowed(meta, targetUserId)));
+        }
+      }catch(e){
+        console.error('desfazer aprovação ao expulsar falhou:', e && e.message, e);
+      }
     } else if(action === 'muteScreen' || action === 'muteCamera'){
       if(!trackSid){
         return new Response(JSON.stringify({ error: 'trackSid-faltando' }), {

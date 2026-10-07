@@ -123,6 +123,15 @@
         <label for="srvRoomTitle">Criar uma sala neste servidor</label>
         <input type="text" id="srvRoomTitle" maxlength="40" placeholder="Nome da sala (ex: Ranqueada, Treino)" autocomplete="off">
       </div>
+      <div class="field access-field">
+        <label for="srvRoomAccess">Quem pode entrar</label>
+        <select id="srvRoomAccess" class="access-select">
+          <option value="open">Aberta: qualquer pessoa do servidor</option>
+          <option value="approval">Privada: entra quem você aprovar</option>
+          <option value="password">Privada: entra quem souber a senha</option>
+        </select>
+        <input type="text" id="srvRoomPassword" class="access-password" maxlength="32" placeholder="Senha da sala (4 a 32 caracteres)" autocomplete="off" hidden>
+      </div>
       <button type="button" class="primary" id="srvCreateBtn">Criar sala</button>
       <p class="hint">Ou clique numa sala ao lado pra entrar. Só quem está neste servidor do Discord vê e entra nas salas dele.</p>
       <div id="srvStatus" class="entry-status"></div>
@@ -149,6 +158,24 @@
       <div class="call-rail" id="callRail"></div>
       <div class="call-side-name" id="callSideName"></div>
       <div class="srv-rooms" id="callRooms"></div>
+      <!-- Criar sala sem sair da call (fica FORA de #callRooms: a lista é redesenhada a cada atualização ao vivo e apagaria o que está sendo digitado) -->
+      <div class="call-new" id="callNew">
+        <button type="button" class="call-new-btn" id="callNewBtn">+ Criar sala</button>
+        <div class="call-new-form" id="callNewForm" hidden>
+          <input type="text" id="callNewTitle" maxlength="40" placeholder="Nome da sala (opcional)" autocomplete="off">
+          <select id="callNewAccess" class="access-select" aria-label="Quem pode entrar">
+            <option value="open">Aberta</option>
+            <option value="approval">Privada: aprovação</option>
+            <option value="password">Privada: senha</option>
+          </select>
+          <input type="text" id="callNewPassword" class="access-password" maxlength="32" placeholder="Senha (4 a 32 caracteres)" autocomplete="off" hidden>
+          <div class="call-new-actions">
+            <button type="button" class="primary" id="callNewOk">Criar</button>
+            <button type="button" class="call-new-cancel" id="callNewCancel">Cancelar</button>
+          </div>
+          <div class="call-new-msg" id="callNewMsg" role="status"></div>
+        </div>
+      </div>
     </aside>
     <div class="room-main">
     <div class="room-bar">
@@ -165,6 +192,13 @@
       </div>
       <div class="avatars" id="avatarsRow"></div>
       <div class="end">
+        <button class="icon-btn" id="knockBtn" title="Pedidos para entrar" aria-label="Pedidos para entrar" aria-expanded="false" hidden>
+          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+          <span class="chat-badge" id="knockBadge">0</span>
+        </button>
+        <button class="icon-btn" id="passwordBtn" title="Ver a senha da sala" aria-label="Ver a senha da sala" hidden>
+          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="15" r="4"/><path d="M10.85 12.15L19 4"/><path d="M18 5l3 3"/><path d="M15 8l3 3"/></svg>
+        </button>
         <button class="icon-btn" id="sideToggleBtn" title="Salas do servidor" aria-label="Salas do servidor" hidden>
           <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="9" y1="3" x2="9" y2="21"/></svg>
         </button>
@@ -179,6 +213,16 @@
           <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
         </button>
       </div>
+    </div>
+
+    <!-- Pedidos de entrada numa sala privada (só aparece pra quem pode decidir) — ver handleKnock() em app.js -->
+    <div class="knock-panel" id="knockPanel" aria-live="polite" hidden>
+      <div class="knock-head">
+        <span>Pedidos para entrar</span>
+        <button type="button" id="knockPanelClose" class="settings-close" aria-label="Fechar">&times;</button>
+      </div>
+      <div class="knock-list" id="knockList"></div>
+      <div class="knock-empty" id="knockEmpty">Ninguém está pedindo para entrar agora.</div>
     </div>
 
     <div id="stageArea">
@@ -367,6 +411,32 @@
     <div class="report-actions">
       <span id="reportStatus" class="settings-note"></span>
       <button type="button" id="reportSendBtn" class="report-send">Enviar</button>
+    </div>
+  </div>
+</div>
+
+<!-- Senha da sala (só pra quem cuida da sala) — ver showRoomPassword() em app.js -->
+<div id="passwordOverlay" class="settings-overlay confirm-overlay" hidden>
+  <div class="settings-panel confirm-panel" role="dialog" aria-modal="true" aria-labelledby="passwordTitle">
+    <div class="confirm-title" id="passwordTitle">Senha da sala</div>
+    <div class="confirm-message" id="passwordNote">Passe esta senha só pra quem você quer na sala.</div>
+    <div class="password-box mono" id="passwordValue"></div>
+    <div class="confirm-actions">
+      <button type="button" id="passwordClose" class="confirm-cancel">Fechar</button>
+      <button type="button" id="passwordCopy" class="primary confirm-ok">Copiar</button>
+    </div>
+  </div>
+</div>
+
+<!-- Pedir para entrar numa sala privada (com aprovação) — ver requestToJoinRoom() em app.js -->
+<div id="knockOverlay" class="settings-overlay confirm-overlay" hidden>
+  <div class="settings-panel confirm-panel" role="alertdialog" aria-modal="true" aria-labelledby="knockTitle" aria-describedby="knockMsg">
+    <div class="confirm-title" id="knockTitle"></div>
+    <div class="confirm-message" id="knockMsg"></div>
+    <input type="text" id="knockPassword" class="knock-password" maxlength="32" placeholder="Senha da sala" autocomplete="off" hidden>
+    <div class="confirm-actions">
+      <button type="button" id="knockCancel" class="confirm-cancel">Cancelar</button>
+      <button type="button" id="knockPrimary" class="primary confirm-ok">Pedir para entrar</button>
     </div>
   </div>
 </div>

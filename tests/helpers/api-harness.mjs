@@ -48,6 +48,7 @@ export class RoomServiceClient {
   }
   async listParticipants(room){ return st().participants[room] || []; }
   async createRoom(opts){ st().created = opts; return { name: opts.name }; }
+  async updateRoomMetadata(room, metadata){ const r = st().rooms.find((x) => x.name === room); if(r) r.metadata = metadata; (st().actions = st().actions || []).push({ type: 'room-metadata', room, metadata }); return r || { name: room, metadata }; }
   async sendData(room, data, kind, options){ st().sent.push({ room, text: new TextDecoder().decode(data), kind, options }); }
   async removeParticipant(room, identity, options){ (st().actions = st().actions || []).push({ type: 'kick', room, identity, options }); }
   async mutePublishedTrack(room, identity, sid, muted){ (st().actions = st().actions || []).push({ type: 'mute', room, identity, sid, muted }); }
@@ -57,7 +58,7 @@ export class TokenVerifier {
   async verify(token){
     if(!String(token).startsWith('FAKE_JWT.')) throw new Error('invalid');
     const d = JSON.parse(String(token).slice(9));
-    return { video: d.grant, metadata: d.metadata, identity: d.identity };
+    return { video: d.grant, metadata: d.metadata, sub: d.identity, name: d.name };  // o SDK real traz a identidade em sub
   }
 }
 export const DataPacket_Kind = { RELIABLE: 0, LOSSY: 1 };

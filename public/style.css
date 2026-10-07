@@ -286,6 +286,9 @@ body.electron-app #settingsBtn{display:inline-flex;}
   width:46px; padding:0; display:inline-flex; align-items:center; justify-content:center;
   position:relative;
 }
+/* .icon-btn define display e, sem esta regra, VENCE o atributo hidden: o botão fica "escondido" na marcação e continua na tela
+   (foi assim que a chave da senha apareceu em sala de aprovação). */
+.icon-btn[hidden]{ display:none; }
 .icon-btn .icon{ width:18px; height:18px; }
 .icon-btn .icon-check{ display:none; color:var(--tune); }
 .icon-btn.copied .icon-copy{ display:none; }
@@ -469,7 +472,11 @@ body.picker-quality.sharing .quality-wrap{ display:inline-flex; }
   display:flex; align-items:center; gap:6px; z-index:2;
 }
 .tile .label .led{width:6px;height:6px;border-radius:50%; background:var(--rec); animation:blink 1.8s ease-in-out infinite;}
-.admin-crown{ font-size:12px; line-height:1; }
+.admin-crown{ display:inline-flex; align-items:center; vertical-align:middle; color:var(--tune); line-height:1; flex-shrink:0; }
+.admin-crown svg{ width:13px; height:13px; display:block; }
+.avatar .tip .admin-crown{ margin-left:5px; }
+.srv-person .admin-crown{ margin-left:2px; }
+.tile .label .admin-crown{ margin-right:2px; }
 /* Card "clique pra assistir" (autoSubscribe:false, igual ao Discord — ver
    addPendingTile em app.js). Mesma grade/tamanho de um .tile ao vivo, só
    sem vídeo nenhum até a pessoa clicar. */
@@ -495,6 +502,7 @@ body.picker-quality.sharing .quality-wrap{ display:inline-flex; }
   display:flex; align-items:center; justify-content:center;
 }
 .tile:hover .fs-btn{opacity:1;}
+.tile .fs-btn svg{ width:16px; height:16px; display:block; }
 /* Janela flutuante (picture-in-picture) — mesmo visual do botão de tela
    cheia, logo à esquerda dele. */
 .tile .pip-btn{
@@ -511,7 +519,7 @@ body.picker-quality.sharing .quality-wrap{ display:inline-flex; }
   background:var(--panel-2); color:var(--fog); font-size:11.5px; letter-spacing:1px; text-transform:uppercase; z-index:1;
 }
 .tile.in-pip .pip-overlay{ display:flex; }
-/* 👁 N — quem tá assistindo essa transmissão (nomes no title) */
+/* olho + N — quem tá assistindo essa transmissão (nomes no title) */
 .tile .label .viewers{
   display:inline-flex; align-items:center; gap:3px; margin-left:4px; color:var(--fog);
   text-transform:none; cursor:default;
@@ -721,6 +729,58 @@ body.in-room .update-bar{ bottom:auto; top:12px; }
 .report-send{ background:var(--tune); border-color:var(--tune); color:#1a1200; font-weight:600; padding:8px 18px; height:auto; }
 .report-send:disabled{ opacity:.6; }
 
+/* ---------- Sala privada (HANDOFF §49) ---------- */
+.access-select{
+  width:100%; font-family:'Inter'; font-weight:600; font-size:14px; height:46px; cursor:pointer;
+  background:var(--panel-2); border:1px solid var(--line); border-radius:var(--radius); padding:0 12px; color:var(--ink);
+}
+.access-select:focus-visible{ outline:2px solid var(--tune); outline-offset:2px; }
+.access-select option{ background:var(--panel-2); color:var(--ink); }
+.access-password, .knock-password{ width:100%; margin-top:10px; }
+.access-password[hidden], .knock-password[hidden]{ display:none; }
+.call-new-form .access-select{ height:38px; font-size:13px; }
+.call-new-form .access-password{ height:38px; font-size:13px; margin-top:0; }
+.access-field{ margin-bottom:16px; }
+.password-box{
+  background:var(--panel-2); border:1px solid var(--line); border-radius:8px; padding:12px 14px; min-height:44px;
+  font-size:18px; letter-spacing:1px; color:var(--tune); word-break:break-all; user-select:all;
+}
+#passwordBtn.active, #passwordBtn:hover{ border-color:var(--tune); color:var(--tune); }
+.private-toggle{ display:flex; align-items:flex-start; gap:8px; font-size:13px; color:var(--ink); cursor:pointer; margin:6px 0 16px; line-height:1.4; }
+.private-toggle input{ accent-color:var(--tune); margin-top:3px; cursor:pointer; }
+.private-toggle small{ color:var(--fog); font-size:11.5px; }
+.call-new-form .private-toggle{ margin:0; font-size:12.5px; }
+/* Lista de pedidos de entrada (sala com aprovação): abre sozinha quando chega pedido novo e pelo sino da barra. */
+.knock-panel{
+  position:fixed; top:168px; right:16px; z-index:160; display:flex; flex-direction:column; /* abaixo da barra da sala: não cobre os botões */
+  width:320px; max-width:calc(100vw - 32px); max-height:60vh;
+  background:var(--panel); border:1px solid var(--line); border-radius:12px; box-shadow:0 12px 40px rgba(0,0,0,.55);
+}
+.knock-panel[hidden]{ display:none; }
+.knock-head{ display:flex; align-items:center; justify-content:space-between; padding:10px 8px 10px 14px; font-weight:700; font-size:14px; border-bottom:1px solid var(--line); }
+.knock-list{ display:flex; flex-direction:column; gap:10px; padding:12px; overflow-y:auto; scrollbar-width:thin; scrollbar-color:var(--line) transparent; }
+.knock-list:empty{ display:none; }
+.knock-empty{ padding:16px 14px; font-size:13px; color:var(--fog); line-height:1.5; }
+.knock-list:not(:empty) + .knock-empty{ display:none; }
+#knockBtn.active{ border-color:var(--tune); color:var(--tune); }
+.knock-card{
+  background:var(--panel-2); border:1px solid var(--tune); border-radius:10px; padding:12px;
+  display:flex; flex-direction:column; gap:10px;
+}
+.knock-who{ display:flex; align-items:center; gap:10px; font-size:13.5px; line-height:1.35; min-width:0; }
+.knock-who strong{ display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.knock-avatar{
+  width:34px; height:34px; border-radius:50%; overflow:hidden; flex-shrink:0; background:var(--panel-2);
+  display:flex; align-items:center; justify-content:center; font-size:11px; font-family:'JetBrains Mono', monospace;
+}
+.knock-avatar img{ width:100%; height:100%; object-fit:cover; display:block; }
+.knock-actions{ display:flex; gap:8px; }
+.knock-actions button{ height:auto; padding:8px 14px; font-size:13px; }
+.knock-deny{ background:transparent; color:var(--fog); border:1px solid var(--line); }
+.knock-deny:hover{ color:var(--ink); border-color:var(--fog); }
+.knock-error{ font-size:12px; color:var(--rec); min-height:0; }
+.knock-error:empty{ display:none; }
+
 /* ---------- Janela de confirmação (askConfirm em app.js) ---------- */
 .confirm-overlay{ z-index:300; } /* acima das outras janelas (servidores, relatório, Novidades) */
 .confirm-panel{ width:400px; gap:10px; box-shadow:0 20px 60px rgba(0,0,0,.5); }
@@ -852,6 +912,20 @@ button.confirm-ok.danger-fill:hover{ background:#ff5c52; }
 .call-rail-btn .srv-live-dot{ width:11px; height:11px; }
 .call-side-name{ padding:12px 14px 6px; font-weight:700; font-size:13px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .call-side .srv-rooms{ padding-bottom:10px; }
+.call-new{ padding:0 10px 12px; border-top:1px solid var(--line); padding-top:10px; }
+.call-new-btn{
+  width:100%; height:auto; padding:9px 10px; background:transparent; border:1px dashed var(--line);
+  color:var(--tune); border-radius:8px; font-size:13px; font-weight:600;
+}
+.call-new-btn:hover{ border-color:var(--tune); background:var(--tune-dim); }
+.call-new-form{ display:flex; flex-direction:column; gap:8px; margin-top:8px; }
+.call-new-form[hidden]{ display:none; }
+.call-new-form input{ width:100%; }
+.call-new-actions{ display:flex; gap:8px; }
+.call-new-actions button{ height:auto; padding:8px 14px; font-size:13px; }
+.call-new-cancel{ background:transparent; color:var(--fog); border:1px solid var(--line); }
+.call-new-cancel:hover{ color:var(--ink); border-color:var(--fog); }
+.call-new-msg{ min-height:16px; font-size:12px; color:var(--rec); line-height:1.4; }
 .srv-room.current{ background:var(--tune-dim); border-color:var(--tune); cursor:default; }
 #sideToggleBtn.active{ border-color:var(--tune); color:var(--tune); }
 /* Sala de servidor: sem código nem link de convite (a entrada é pela lista do servidor). */
@@ -873,6 +947,11 @@ button.confirm-ok.danger-fill:hover{ background:#ff5c52; }
 .srv-room-icon{ display:inline-flex; align-items:center; justify-content:center; width:16px; color:var(--fog); flex-shrink:0; }
 .srv-room-icon svg{ width:15px; height:15px; display:block; }
 .srv-room-icon.live{ color:var(--rec); }
+.srv-room-lock{ color:var(--tune); }
+/* cadeado dentro do nome da sala (barra da sala) */
+.room-bar .code-chip:has(.chip-lock){ display:inline-flex; align-items:center; gap:10px; }
+.chip-lock{ display:inline-flex; color:var(--tune); }
+.chip-lock svg{ width:16px; height:16px; display:block; }
 
 /* Dentro da sala o conteúdo usa a largura toda da janela (fora dela o teto de 1440px continua):
    num monitor de 1920px os destaques ganhavam ~480px de margem sem uso e ficavam bem menores. */
