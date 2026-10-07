@@ -226,3 +226,123 @@ test('troca de qualidade ao vivo: sair do Fluido é livre; entrar no Fluido só 
   assert.equal(codecFns.canSwitchQualityLive('h265', 'fluido', true), false);  // Nítido (H.265) -> Fluido exige nova transmissão
   assert.equal(codecFns.canSwitchQualityLive('vp8', 'fluido', false), true);   // sem H.265 o Fluido nem existe (effectiveShareQuality)
 });
+
+// ---------- diagnóstico de travadas (HANDOFF §47) ----------
+const trouble = new Function(
+  extractFunction(appJs, 'senderTroubleLine') + extractFunction(appJs, 'viewerTroubleLine') + '; return { senderTroubleLine, viewerTroubleLine };'
+)();
+
+test('diagnóstico (envio): fps bom e sem limite não gera linha; fps baixo ou limite gera, com o gargalo', () => {
+  const ok = { quality: 'Fluido', codec: 'H.264', width: 1920, height: 1080, targetFps: 60, reason: 'none', d: { seconds: 4, frames: 236, encodeMs: 900, bytes: 3_000_000, keyFrames: 0, pli: 0, nack: 0 } };
+  assert.equal(trouble.senderTroubleLine(ok), null);
+  const baixo = { ...ok, d: { ...ok.d, frames: 24, encodeMs: 960, keyFrames: 2, pli: 1, nack: 9 } };
+  const linha = trouble.senderTroubleLine(baixo);
+  assert.match(linha, /Fluido H\.264 1920x1080/);
+  assert.match(linha, /6fps \(meta 60\)/);
+  assert.match(linha, /codificação 40\.0ms\/quadro/);
+  assert.match(linha, /keyframes\+2/);
+  assert.match(linha, /pedidos de keyframe\+1/);
+  assert.match(linha, /retransmissões\+9/);
+  assert.match(trouble.senderTroubleLine({ ...ok, reason: 'cpu' }), /limite=cpu/); // fps ok mas o navegador diz que está reduzindo
+});
+
+test('diagnóstico (envio): zero quadros no intervalo não divide por zero; intervalo inválido não gera linha', () => {
+  const base = { quality: 'Nítido', codec: 'H.265', width: 1920, height: 1080, targetFps: 30, reason: 'none' };
+  const linha = trouble.senderTroubleLine({ ...base, d: { seconds: 4, frames: 0, encodeMs: 0, bytes: 0, keyFrames: 0, pli: 0, nack: 0 } });
+  assert.match(linha, /0fps/);
+  assert.doesNotMatch(linha, /ms\/quadro/);
+  assert.equal(trouble.senderTroubleLine({ ...base, d: { seconds: 0, frames: 10 } }), null);
+  assert.equal(trouble.senderTroubleLine({ ...base, d: null }), null);
+});
+
+test('diagnóstico (recepção): distingue "não chegou" de "chegou e foi descartado"; fluxo normal não gera linha', () => {
+  const normal = { codec: 'H.265', width: 1920, height: 1080, d: { seconds: 4, received: 240, decoded: 238, dropped: 0, freezes: 0, freezeSeconds: 0, bytes: 3_000_000, lost: 0, pli: 0, nack: 0 } };
+  assert.equal(trouble.viewerTroubleLine(normal), null);
+  const naoChegou = trouble.viewerTroubleLine({ ...normal, d: { ...normal.d, received: 24, decoded: 24, lost: 30, nack: 12 } });
+  assert.match(naoChegou, /recebe 6fps · decodifica 6fps/);
+  assert.match(naoChegou, /pacotes perdidos\+30/);
+  const descartado = trouble.viewerTroubleLine({ ...normal, d: { ...normal.d, decoded: 40, dropped: 200, freezes: 2, freezeSeconds: 1.4 } });
+  assert.match(descartado, /recebe 60fps · decodifica 10fps/);
+  assert.match(descartado, /descartados\+200/);
+  assert.match(descartado, /congelamentos\+2 \(1\.4s\)/);
+});
+
+// ---------- mistura do áudio isolado no AudioWorklet (HANDOFF §47) ----------
+const workletSrc = readFileSync(join(ROOT, 'public/audio-mixer-worklet.js'), 'utf8');
+const MixerCore = new Function(workletSrc + '; return MixerCore;')();
+const pcm = (frames, fn) => { // PCM s16le estéreo intercalado a partir de uma função amostra(i) em [-1,1]
+  const u = new Uint8Array(frames * 4); const v = new DataView(u.buffer);
+  for(let i = 0; i < frames; i++){ const x = Math.round(fn(i) * 32767); v.setInt16(i * 4, x, true); v.setInt16(i * 4 + 2, x, true); }
+  return u;
+};
+const bloco = (core, n = 128) => { const l = new Float32Array(n), r = new Float32Array(n); core.render(l, r); return { l, r }; };
+
+test('mixer: só toca depois de juntar a reserva (~60 ms) e então sai o sinal certo, contínuo', () => {
+  const core = new MixerCore();
+  core.push(1, pcm(480, () => 0.5));              // 10 ms: abaixo da reserva
+  assert.ok(bloco(core).l.every((x) => x === 0));  // ainda em silêncio
+  for(let i = 0; i < 6; i++) core.push(1, pcm(480, () => 0.5)); // chega a 70 ms
+  const b = bloco(core);
+  assert.ok(Math.abs(b.l[0] - 0.5) < 0.001 && Math.abs(b.r[127] - 0.5) < 0.001);
+});
+
+test('mixer: soma as origens e limita em ±1 (sem estourar)', () => {
+  const core = new MixerCore();
+  for(let i = 0; i < 8; i++){ core.push(1, pcm(480, () => 0.7)); core.push(2, pcm(480, () => 0.7)); }
+  const b = bloco(core);
+  assert.equal(b.l[0], 1);   // 0.7 + 0.7 = 1.4 -> 1
+  assert.equal(b.r[10], 1);
+  const core2 = new MixerCore();
+  for(let i = 0; i < 8; i++){ core2.push(1, pcm(480, () => 0.3)); core2.push(2, pcm(480, () => 0.2)); }
+  assert.ok(Math.abs(bloco(core2).l[0] - 0.5) < 0.001);
+});
+
+test('mixer: esvaziou a fila = silêncio e volta a juntar a reserva antes de tocar de novo (sem estalos repetidos)', () => {
+  const core = new MixerCore();
+  for(let i = 0; i < 7; i++) core.push(1, pcm(480, () => 0.5)); // 3360 quadros
+  let tocou = 0;
+  for(let i = 0; i < 40; i++) if(bloco(core).l[0] !== 0) tocou++; // 40*128 = 5120 > 3360: esvazia
+  assert.ok(tocou > 0 && tocou < 40);
+  core.push(1, pcm(480, () => 0.5)); // chega pouco: abaixo da reserva
+  assert.ok(bloco(core).l.every((x) => x === 0));
+});
+
+test('mixer: fila acima de ~250 ms descarta o excesso mais antigo (atraso sempre limitado); remove tira a origem', () => {
+  const core = new MixerCore();
+  core.push(1, pcm(20000, (i) => (i < 15000 ? 0.1 : 0.9))); // 416 ms de uma vez: o começo (0.1) é o antigo
+  const s = core.sources.get(1);
+  assert.ok(s.queuedFrames <= 12000 && s.queuedFrames >= 4700);
+  assert.ok(Math.abs(bloco(core).l[0] - 0.9) < 0.001);      // sobrou só o mais novo
+  core.remove(1);
+  assert.equal(core.sources.size, 0);
+});
+
+test('mixer: bytes quebrados (tamanho não múltiplo de 4) e vazios não derrubam nada', () => {
+  const core = new MixerCore();
+  core.push(1, new Uint8Array(0));
+  core.push(1, new Uint8Array(3));
+  assert.equal(core.sources.size, 0);
+  core.push(1, new Uint8Array(7)); // 1 quadro + sobra ignorada
+  assert.equal(core.sources.get(1).queuedFrames, 1);
+});
+
+test('mixer: a reserva cresce quando a fila esvazia no meio do som (e fica entre 60 e 200 ms) e encolhe depois de muito tempo sem furo', () => {
+  const core = new MixerCore();
+  for(let i = 0; i < 7; i++) core.push(1, pcm(480, () => 0.5));
+  const s = () => core.sources.get(1);
+  assert.equal(s().prebuffer, 2880);
+  for(let i = 0; i < 40; i++) bloco(core);          // esvazia: furo
+  assert.equal(s().prebuffer, 2880 + 1920);
+  for(let k = 0; k < 10; k++){                       // vários furos seguidos: nunca passa de 200 ms
+    for(let i = 0; i < 30; i++) core.push(1, pcm(480, () => 0.5));
+    for(let i = 0; i < 200; i++) bloco(core);
+  }
+  assert.ok(s().prebuffer <= 9600 && s().prebuffer > 2880);
+  // muito tempo tocando sem furo: devolve atraso aos poucos
+  const core2 = new MixerCore();
+  for(let i = 0; i < 30; i++) core2.push(1, pcm(480, () => 0.5));
+  core2.sources.get(1).prebuffer = 5760;
+  core2.sources.get(1).calmFrames = 48000 * 30 - 5;  // quase na hora de encolher
+  for(let i = 0; i < 4; i++) bloco(core2);
+  assert.equal(core2.sources.get(1).prebuffer, 5760 - 480);
+});

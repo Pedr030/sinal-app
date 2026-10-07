@@ -899,7 +899,7 @@ async function changeActiveShareQuality(q){
     console.warn('[sinal] troca de qualidade no meio da transmissão incompleta:', e);
   }
   capBackupCodec(track); // VP8 reserva segue o activeShareQuality novo
-  sendStatsPrev = null;
+  sendStatsPrev = null; senderDetailPrev = null;
   updateQualityBtn();
   appLog(`[sinal] qualidade trocada no meio da transmissão: ${q}`);
 }
@@ -1054,132 +1054,34 @@ function hideAudioSourcesPanel(){
 // nem chama isso, window.sinalElectron simplesmente não existe.
 let electronAudioCtx = null; // guardado pra fechar quando parar de compartilhar
 
-function createElectronIsolatedAudioTrack(){
+// A mistura em si (filas por origem, reserva, soma) fica em audio-mixer-worklet.js, que roda na thread de
+// áudio: assim um engasgo da página (jogo pesado na máquina) não vira estalo. Aqui só se repassa o que chega.
+async function createElectronIsolatedAudioTrack(){
   const audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 48000 });
+  try{
+    await audioCtx.audioWorklet.addModule('audio-mixer-worklet.js');
+  }catch(e){
+    audioCtx.close().catch(() => {});
+    throw e;
+  }
   const destination = audioCtx.createMediaStreamDestination();
+  const mixer = new AudioWorkletNode(audioCtx, 'sinal-mixer', { numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [2] });
+  mixer.connect(destination);
 
-  // ScriptProcessorNode é oficialmente descontinuado (substituído por
-  // AudioWorkletNode), mas continua funcionando em todo Chromium/Electron
-  // atual — escolhido de propósito aqui por não precisar de um arquivo de
-  // worklet separado (que precisaria ser publicado em public/ e carregado
-  // via audioWorklet.addModule). Roda na thread principal, não numa thread
-  // de áudio dedicada — pra esse uso (áudio suplementar, não a voz
-  // principal da call, que continua 100% pelo Discord) é aceitável; se um
-  // dia der problema de qualidade perceptível, migrar pra AudioWorkletNode
-  // é o caminho.
-  //
-  // 2 canais de ENTRADA (não 0) de propósito, mesmo sem usar o inputBuffer:
-  // testado que um ScriptProcessorNode com 0 canais de entrada declarados
-  // não é "puxado" de verdade pelo motor de áudio do Chromium, mesmo com
-  // uma fonte conectada (ver electron/test/test-pcm-to-track.html).
-  // 2048 frames (~43ms) em vez de 4096 (~85ms): corta metade da latência
-  // fixa desse bloco. Contrapartida: roda na thread principal, então um
-  // engasgo maior que ~43ms dela vira um estalo audível — se isso aparecer
-  // com frequência, volta pra 4096 (e sobe TARGET_QUEUED_FRAMES junto).
-  const processor = audioCtx.createScriptProcessor(2048, 2, 2);
-  // Uma fila por PID de origem — no modo "compartilhar tela inteira" pode
-  // ter várias fontes simultâneas (ver HANDOFF §15.13), cada uma mandando
-  // seus próprios pedaços de PCM; a mistura acontece aqui, somando amostra
-  // por amostra de cada fila ativa no momento de montar o buffer de saída.
-  // No modo "compartilhar uma janela" é só uma fila mesmo (um PID só) — o
-  // mesmo código atende os dois casos sem precisar de branch.
-  //
-  // Limite de fila: a reprodução consome exatamente em tempo real, então
-  // qualquer sobra acumulada (engasgo da thread principal, IPC chegando em
-  // rajada) nunca é recuperada sozinha — vira atraso permanente. O limite
-  // antigo era 2s (e zerava tudo quando estourava), o que dava exatamente o
-  // sintoma relatado: áudio atrasando cada vez mais, normalizando de repente
-  // e recomeçando o ciclo. Agora, passou de ~250ms, corta só o excesso mais
-  // antigo de volta pra ~100ms — atraso sempre limitado, ao custo de um
-  // pulinho curto de vez em quando. O alvo precisa ficar acima do tamanho do
-  // bloco do processor (2048), senão o próximo bloco depois de um corte sai
-  // incompleto.
-  const TARGET_QUEUED_FRAMES = 4800;  // ~100ms
-  const MAX_QUEUED_FRAMES = 12000;    // ~250ms
-  const sources = new Map(); // pid -> { queue: [{left,right}], readIndex, queuedFrames }
-
-  function sourceState(pid){
-    let s = sources.get(pid);
-    if(!s){ s = { queue: [], readIndex: 0, queuedFrames: 0 }; sources.set(pid, s); }
-    return s;
-  }
-
-  function trimToTarget(s){
-    let excess = s.queuedFrames - TARGET_QUEUED_FRAMES;
-    while(excess > 0 && s.queue.length){
-      const remainingInChunk = s.queue[0].left.length - s.readIndex;
-      if(remainingInChunk <= excess){
-        s.queue.shift();
-        s.readIndex = 0;
-        s.queuedFrames -= remainingInChunk;
-        excess -= remainingInChunk;
-      }else{
-        s.readIndex += excess;
-        s.queuedFrames -= excess;
-        excess = 0;
-      }
-    }
-  }
-
-  processor.onaudioprocess = (event) => {
-    const left = event.outputBuffer.getChannelData(0);
-    const right = event.outputBuffer.getChannelData(1);
-    for(let i = 0; i < left.length; i++){
-      let l = 0, r = 0;
-      for(const s of sources.values()){
-        if(s.queue.length === 0) continue;
-        const chunk = s.queue[0];
-        l += chunk.left[s.readIndex];
-        r += chunk.right[s.readIndex];
-        s.readIndex++;
-        s.queuedFrames--;
-        if(s.readIndex >= chunk.left.length){ s.queue.shift(); s.readIndex = 0; }
-      }
-      // Somar N fontes pode passar de ±1.0 — clampa em vez de deixar
-      // estourar (distorção feia) ou normalizar (mudaria o volume toda
-      // hora que uma fonte entra/sai, pior ainda).
-      left[i] = Math.max(-1, Math.min(1, l));
-      right[i] = Math.max(-1, Math.min(1, r));
-    }
-  };
-
-  processor.connect(destination);
-  // "Motor" mudo pra garantir que o processor seja puxado de verdade (ver
-  // comentário acima sobre canais de entrada) — não produz som nenhum
-  // (offset 0), só mantém o nó ativo no grafo.
-  const silentSource = audioCtx.createConstantSource();
-  silentSource.offset.value = 0;
-  silentSource.connect(processor);
-  silentSource.start();
-
-  // window.sinalElectron.onAudioChunk: buf chega como Uint8Array de PCM
-  // 16-bit LE intercalado estéreo, 48kHz — mesmo formato fixo que o addon
-  // nativo sempre usa. `pid` identifica de qual fonte veio.
+  // window.sinalElectron.onAudioChunk: buf chega como Uint8Array de PCM 16-bit LE intercalado estéreo,
+  // 48kHz (formato fixo do addon nativo); `pid` identifica a origem. Só copia e transfere pro worklet.
   window.sinalElectron.onAudioChunk((pid, buf) => {
-    const s = sourceState(pid);
-    const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
-    const frameCount = Math.floor(buf.length / 4); // 4 bytes por frame (2 canais × 16 bits)
-    const left = new Float32Array(frameCount);
-    const right = new Float32Array(frameCount);
-    for(let i = 0; i < frameCount; i++){
-      left[i] = view.getInt16(i * 4, true) / 32768;
-      right[i] = view.getInt16(i * 4 + 2, true) / 32768;
-    }
-    s.queue.push({ left, right });
-    s.queuedFrames += frameCount;
-    // por fonte — as outras fontes não são afetadas
-    if(s.queuedFrames > MAX_QUEUED_FRAMES) trimToTarget(s);
+    const bytes = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+    mixer.port.postMessage({ type: 'chunk', pid, buf: bytes }, [bytes]);
   });
 
-  // Fonte parou de vez (app fechou, ver scanAudioSources em main.js) — some
-  // com a fila dela em vez de deixar um resquício mudo pra sempre no Map.
+  // Origem parou de vez (app fechou, ver scanAudioSources em main.js) — some com a fila dela.
   window.sinalElectron.onAudioSourceRemoved((pid) => {
-    sources.delete(pid);
+    mixer.port.postMessage({ type: 'remove', pid });
   });
 
-  // Checklist de apps detectados (só chega evento aqui no modo "tela
-  // inteira" — ver scanAudioSources em main.js; no modo janela nunca
-  // dispara, o painel fica escondido o tempo todo).
+  // Checklist de apps detectados (só chega evento aqui no modo "tela inteira" — ver scanAudioSources em
+  // main.js; no modo janela nunca dispara, o painel fica escondido o tempo todo).
   window.sinalElectron.onAudioSources(renderAudioSourcesPanel);
 
   electronAudioCtx = audioCtx;
@@ -1311,7 +1213,7 @@ async function toggleShare(){
   // tela já está funcionando nesse ponto, só fica sem esse áudio extra.
   if(window.sinalElectron && window.sinalElectron.isElectron && shareElectronAudio){
     try{
-      const audioTrack = createElectronIsolatedAudioTrack();
+      const audioTrack = await createElectronIsolatedAudioTrack();
       await room.localParticipant.publishTrack(audioTrack, screenAudioPublishOptions({ name: 'sinal-isolated-audio' }));
     }catch(e){
       console.error('[sinal] publicar áudio isolado falhou (segue só com vídeo):', e);
@@ -1334,7 +1236,7 @@ function resetShareButton(){
   document.getElementById('selfPreview').style.display = 'none';
   document.getElementById('selfStatus').textContent = 'Assistindo';
   if(activeShareQuality) appLog('[sinal] transmissão encerrada');
-  sendStatsPrev = null;
+  sendStatsPrev = null; senderDetailPrev = null;
   activeShareQuality = null;
   activeShareCodec = null;
   document.body.classList.remove('sharing');
@@ -1435,7 +1337,8 @@ function updateQualityDot(identity, quality){
 // Extrai perda de pacote (delta desde a última amostra, não acumulado — um
 // valor acumulado desde o início da chamada fica cada vez menos
 // representativo do estado ATUAL) e jitter do inbound-rtp de vídeo.
-const qualityStatsPrev = new Map(); // tileId -> { lost, received } acumulados na última amostra
+const qualityStatsPrev = new Map();
+const viewerDetailPrev = new Map(); // tileId -> última leitura detalhada (diagnóstico de travada)
 
 // Selo "1080p60" / "720p" no rótulo do tile — do que está chegando (ou
 // saindo, no próprio tile) DE VERDADE, pelas estatísticas: se a rede ou o PC
@@ -1470,6 +1373,50 @@ function codecLabel(report, codecId){
   return ({ H265: 'H.265', H264: 'H.264', VP8: 'VP8', VP9: 'VP9', AV1: 'AV1' })[name.toUpperCase()] || name;
 }
 
+// ---- Diagnóstico de travadas (HANDOFF §47) ----
+// O painel mede a cada 4 s e só mostra o instante; uma queda de 1 s passava batida e o relatório não tinha
+// de onde tirar a causa. Agora, quando o fps cai, uma linha curta vai pro registro do app (e pro "Enviar
+// relatório") com a variação desde a última medida: onde está o gargalo (codificação lenta, CPU, upload,
+// quadros que chegam e não são mostrados, congelamentos, pedidos de keyframe/retransmissão).
+const TROUBLE_LOG_EVERY_MS = 15000;
+const troubleLoggedAt = new Map(); // tipo/tile -> quando registrou por último
+
+function shouldLogTrouble(key, now){
+  const last = troubleLoggedAt.get(key) || 0;
+  if(now - last < TROUBLE_LOG_EVERY_MS) return false;
+  troubleLoggedAt.set(key, now);
+  return true;
+}
+
+// Lado de quem transmite. d = variações no intervalo (frames codificados, ms de codificação, bytes...).
+function senderTroubleLine({ quality, codec, width, height, targetFps, reason, d }){
+  if(!d || !(d.seconds > 0) || !(d.frames >= 0)) return null;
+  const fps = d.frames / d.seconds;
+  const limited = reason && reason !== 'none';
+  if(fps >= targetFps * 0.75 && !limited) return null;
+  const parts = [`${quality || '?'} ${codec || '?'} ${width || '?'}x${height || '?'}`, `${Math.round(fps)}fps (meta ${targetFps})`, `${Math.round(d.bytes * 8 / 1000 / d.seconds)}kbps`];
+  if(d.frames > 0) parts.push(`codificação ${(d.encodeMs / d.frames).toFixed(1)}ms/quadro`);
+  parts.push(`limite=${reason || 'none'}`);
+  if(d.keyFrames) parts.push(`keyframes+${d.keyFrames}`);
+  if(d.pli) parts.push(`pedidos de keyframe+${d.pli}`);
+  if(d.nack) parts.push(`retransmissões+${d.nack}`);
+  return `[sinal] envio abaixo do esperado: ${parts.join(' · ')}`;
+}
+
+// Lado de quem assiste. Separa "o quadro não chegou" (received baixo) de "chegou e não foi mostrado" (dropped).
+function viewerTroubleLine({ codec, width, height, d }){
+  if(!d || !(d.seconds > 0)) return null;
+  const decodedFps = d.decoded / d.seconds;
+  if(decodedFps >= 20 && !d.freezes) return null;
+  const parts = [`${codec || '?'} ${width || '?'}x${height || '?'}`, `recebe ${Math.round(d.received / d.seconds)}fps`, `decodifica ${Math.round(decodedFps)}fps`, `${Math.round(d.bytes * 8 / 1000 / d.seconds)}kbps`];
+  if(d.dropped) parts.push(`descartados+${d.dropped}`);
+  if(d.freezes) parts.push(`congelamentos+${d.freezes} (${d.freezeSeconds.toFixed(1)}s)`);
+  if(d.lost) parts.push(`pacotes perdidos+${d.lost}`);
+  if(d.pli) parts.push(`pedidos de keyframe+${d.pli}`);
+  if(d.nack) parts.push(`retransmissões+${d.nack}`);
+  return `[sinal] recepção abaixo do esperado: ${parts.join(' · ')}`;
+}
+
 async function sampleTileDetailedStats(tileId, track){
   if(!track || typeof track.getRTCStatsReport !== 'function') return;
   let report;
@@ -1490,6 +1437,26 @@ async function sampleTileDetailedStats(tileId, track){
     bytes: inbound.bytesReceived || 0,
     ts: inbound.timestamp
   });
+
+  // diagnóstico de travada (só pra tiles de outras pessoas; ver viewerTroubleLine)
+  const vprev = viewerDetailPrev.get(tileId);
+  const vcur = {
+    ts: inbound.timestamp, received: inbound.framesReceived || 0, decoded: inbound.framesDecoded || 0, dropped: inbound.framesDropped || 0,
+    freezes: inbound.freezeCount || 0, freezeSeconds: inbound.totalFreezesDuration || 0, bytes: inbound.bytesReceived || 0,
+    lost: inbound.packetsLost || 0, pli: inbound.pliCount || 0, nack: inbound.nackCount || 0
+  };
+  viewerDetailPrev.set(tileId, vcur);
+  if(vprev && vcur.ts > vprev.ts){
+    const line = viewerTroubleLine({
+      codec: codecLabel(report, inbound.codecId), width: inbound.frameWidth, height: inbound.frameHeight,
+      d: {
+        seconds: (vcur.ts - vprev.ts) / 1000, received: vcur.received - vprev.received, decoded: vcur.decoded - vprev.decoded,
+        dropped: vcur.dropped - vprev.dropped, freezes: vcur.freezes - vprev.freezes, freezeSeconds: vcur.freezeSeconds - vprev.freezeSeconds,
+        bytes: vcur.bytes - vprev.bytes, lost: Math.max(0, vcur.lost - vprev.lost), pli: vcur.pli - vprev.pli, nack: vcur.nack - vprev.nack
+      }
+    });
+    if(line && shouldLogTrouble('v:' + tileId, Date.now())) appLog(line);
+  }
 
   const total = deltaLost + deltaReceived;
   const lossPct = total > 0 ? (deltaLost / total) * 100 : 0;
@@ -1524,6 +1491,7 @@ async function sampleTileDetailedStats(tileId, track){
 // fazendo isso e por quê. Com simulcast desligado na tela (ver HANDOFF §28),
 // esse passou a ser o gargalo que sobra pra imagem ruim.
 let sendStatsPrev = null; // { bytes, ts } da última amostra, pra calcular kbps
+let senderDetailPrev = null; // última leitura detalhada de quem transmite (diagnóstico de travada)
 
 const SEND_LIMIT_TEXT = {
   cpu: { full: 'CPU do seu PC sobrecarregada', short: 'limitado pela CPU' },
@@ -1557,7 +1525,7 @@ async function sampleOwnScreenStats(){
   const { Track } = LivekitClient;
   const pub = room.localParticipant.getTrackPublication(Track.Source.ScreenShare);
   const track = pub && pub.videoTrack;
-  if(!track || typeof track.getRTCStatsReport !== 'function'){ sendStatsPrev = null; return; }
+  if(!track || typeof track.getRTCStatsReport !== 'function'){ sendStatsPrev = null; senderDetailPrev = null; return; }
   capBackupCodec(track);
   let report;
   try{ report = await track.getRTCStatsReport(); }catch(e){ return; }
@@ -1585,6 +1553,25 @@ async function sampleOwnScreenStats(){
     parts.push(`${kbps} kbps`);
   }
   sendStatsPrev = { bytes: outbound.bytesSent || 0, ts: outbound.timestamp };
+
+  // diagnóstico de travada (ver senderTroubleLine)
+  const scur = {
+    ts: outbound.timestamp, frames: outbound.framesEncoded || 0, encodeS: outbound.totalEncodeTime || 0, bytes: outbound.bytesSent || 0,
+    keyFrames: outbound.keyFramesEncoded || 0, pli: outbound.pliCount || 0, nack: outbound.nackCount || 0
+  };
+  const sprev = senderDetailPrev;
+  senderDetailPrev = scur;
+  if(sprev && scur.ts > sprev.ts && activeShareQuality){
+    const line = senderTroubleLine({
+      quality: SHARE_QUALITY_PRESETS[activeShareQuality].name, codec: outCodec, width: outbound.frameWidth, height: outbound.frameHeight,
+      targetFps: shareEncodingFor(SHARE_QUALITY_PRESETS[activeShareQuality], activeShareCodec).maxFramerate, reason: outbound.qualityLimitationReason,
+      d: {
+        seconds: (scur.ts - sprev.ts) / 1000, frames: scur.frames - sprev.frames, encodeMs: (scur.encodeS - sprev.encodeS) * 1000,
+        bytes: scur.bytes - sprev.bytes, keyFrames: scur.keyFrames - sprev.keyFrames, pli: scur.pli - sprev.pli, nack: scur.nack - sprev.nack
+      }
+    });
+    if(line && shouldLogTrouble('send', Date.now())) appLog(line);
+  }
 
   const reason = outbound.qualityLimitationReason;
   const limit = reason && reason !== 'none' ? (SEND_LIMIT_TEXT[reason] || SEND_LIMIT_TEXT.other) : null;
@@ -3601,7 +3588,7 @@ window.addEventListener('beforeunload', () => {
 });
 
 // PWA: versão, registro do service worker, detecção de atualização e botão de instalação
-const APP_VERSION = '0.8.61'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
+const APP_VERSION = '0.8.62'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
 // Dentro do Electron, mostra a versão do INSTALADOR (electron/package.json),
 // não a do site — ver preload.js. Fora dele (navegador normal), continua a
 // versão do deploy de sempre.
