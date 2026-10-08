@@ -1801,7 +1801,8 @@ setInterval(() => {
 
 // ---------------- UI: palco (destaque) + fileira (minimizados) ----------------
 let tiles = new Map();     // id -> elemento .tile
-let pinnedOrder = [];      // ids em destaque, no máximo 2, ordem de fixação
+const MAX_PINNED = 4;      // máximo de transmissões em destaque ao mesmo tempo
+let pinnedOrder = [];      // ids em destaque (até MAX_PINNED), ordem de fixação
 
 const ICON_VOLUME = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="3,9 3,15 8,15 13,20 13,4 8,9"></polygon><path d="M16 8a5 5 0 010 8"></path></svg>';
 const ICON_VOLUME_MUTED = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="3,9 3,15 8,15 13,20 13,4 8,9"></polygon><line x1="16" y1="9" x2="22" y2="15"></line><line x1="22" y1="9" x2="16" y2="15"></line></svg>';
@@ -2156,7 +2157,7 @@ function removeTile(id){
 
 function pinTile(id){
   if(pinnedOrder.includes(id) || !tiles.has(id)) return;
-  if(pinnedOrder.length >= 2){
+  if(pinnedOrder.length >= MAX_PINNED){
     moveTileTo(pinnedOrder.shift(), 'filmstrip'); // tira o destaque mais antigo
   }
   pinnedOrder.push(id);
@@ -2184,19 +2185,19 @@ function moveTileTo(id, where){
 function updateStageVisibility(){
   const total = tiles.size;
   document.getElementById('emptyState').style.display = total === 0 ? 'flex' : 'none';
-  document.getElementById('spotlightGrid').style.display = pinnedOrder.length > 0 ? 'grid' : 'none';
+  document.getElementById('spotlightGrid').style.display = pinnedOrder.length > 0 ? 'flex' : 'none';
   document.getElementById('filmstrip').style.display = (total - pinnedOrder.length) > 0 ? 'flex' : 'none';
   document.getElementById('stageArea').classList.toggle('has-spotlight', pinnedOrder.length > 0);
   scheduleFitSpotlight();
 }
 
 // ---------------- ENCAIXE DOS DESTAQUES (HANDOFF §43) ----------------
-// Os tiles em destaque (no máximo 2) são sempre 16:9. Antes a largura de cada um vinha de uma regra
+// Os tiles em destaque (no máximo MAX_PINNED) são sempre 16:9. Antes a largura de cada um vinha de uma regra
 // fixa de CSS e sobrava muito espaço vazio embaixo (duas transmissões numa tela de 1920x1060 ficavam
 // com 712x400 e ~220px de vazio). Agora o tamanho vem de um cálculo: pra cada arrumação possível
 // (1 coluna, 2 colunas…) vê qual o MAIOR tile 16:9 que cabe no espaço livre e usa a melhor.
 const SPOTLIGHT_GAP = 16;
-const SPOTLIGHT_MIN_WIDTH = 240;
+const SPOTLIGHT_MIN_WIDTH = 200; // igual à miniatura da fileira; abaixo disso a página rola em vez de encolher mais
 
 // Maior largura de tile que cabe em (W x H) com n tiles 16:9 e o espaço entre eles. Pura (testada).
 function bestSpotlightLayout(n, W, H, gap){
@@ -2208,14 +2209,19 @@ function bestSpotlightLayout(n, W, H, gap){
     const w = Math.min(byWidth, byHeight);
     if(!best || w > best.width + 1) best = { cols, width: w }; // empate (±1px) fica com menos colunas
   }
-  return { cols: best.cols, width: Math.max(SPOTLIGHT_MIN_WIDTH, Math.floor(best.width)) };
+  if(best.width < SPOTLIGHT_MIN_WIDTH){
+    // Nem a melhor arrumação chega ao mínimo: usa o mínimo e só quantas colunas cabem na largura (o resto desce e a página rola).
+    const fit = Math.floor((W + gap) / (SPOTLIGHT_MIN_WIDTH + gap));
+    return { cols: Math.max(1, Math.min(n, fit)), width: SPOTLIGHT_MIN_WIDTH };
+  }
+  return { cols: best.cols, width: Math.floor(best.width) };
 }
 
 function fitSpotlight(){
   const grid = document.getElementById('spotlightGrid');
   const stage = document.getElementById('stageArea');
   const n = pinnedOrder.length;
-  const props = ['--spot-cols', '--tile-w', '--tile-max', '--tile-max-w'];
+  const props = ['--spot-w', '--tile-w', '--tile-max', '--tile-max-w'];
   if(!n || grid.style.display === 'none' || !stage.offsetParent){
     props.forEach((p) => grid.style.removeProperty(p)); // sem destaque (ou sala fechada): volta ao padrão
     return;
@@ -2230,7 +2236,8 @@ function fitSpotlight(){
   const strip = document.getElementById('filmstrip');
   const stripH = strip.style.display === 'none' ? 0 : strip.offsetHeight + 14;
   const layout = bestSpotlightLayout(n, W, freeH - stripH, SPOTLIGHT_GAP);
-  grid.style.setProperty('--spot-cols', `repeat(${layout.cols}, ${layout.width}px)`);
+  // Largura da fileira = só o que as colunas ocupam; assim a última linha (ex.: o 3º de 3 destaques) fica centralizada.
+  grid.style.setProperty('--spot-w', `${layout.cols * layout.width + (layout.cols - 1) * SPOTLIGHT_GAP}px`);
   grid.style.setProperty('--tile-w', `${layout.width}px`);
   grid.style.setProperty('--tile-max', 'none');
   grid.style.setProperty('--tile-max-w', 'none');
@@ -4013,11 +4020,19 @@ function setupServersUI(){
 // ---------------- Novidades (patch notes / log de versões) ----------------
 // Conteúdo em public/changelog.json (fonte única — a janela de atualização
 // do app e as notas da release do GitHub saem dele também, ver HANDOFF §34).
-// Abre sozinho UMA vez quando entra uma novidade que a pessoa ainda não viu
-// — só na tela inicial, nunca dentro de uma sala, e nunca pra quem está
+// Abre sozinho UMA vez quando entra uma novidade GRANDE (`destaque: true`) que a pessoa ainda não viu
+// (as pequenas só acendem a bolinha do botão) — só na tela inicial, nunca dentro de uma sala, e nunca pra quem está
 // abrindo o Sinal pela primeira vez (não tem "o que mudou" pra quem chegou agora).
 const CHANGELOG_SEEN_KEY = 'sinal:changelogSeen';
 let changelogEntries = null;
+
+// Entre as entradas mais novas que a última vista (`seenId`; sem ela, todas), alguma é grande?
+// É isso que decide se a janela abre sozinha. Pura (testada).
+function hasUnseenMajor(entries, seenId){
+  const list = Array.isArray(entries) ? entries : [];
+  const idx = list.findIndex((e) => e && e.id === seenId);
+  return list.slice(0, idx === -1 ? list.length : idx).some((e) => e && e.destaque === true);
+}
 
 function formatChangelogDate(iso){
   const [y, m, d] = String(iso).split('-').map(Number);
@@ -4120,7 +4135,7 @@ async function setupChangelog(){
   // Link de convite (?sala=) vai direto pra sala — não cobre a entrada com
   // a janela; a bolinha no botão fica avisando.
   const viaInvite = new URLSearchParams(location.search).has('sala');
-  if(!viaInvite && !document.body.classList.contains('in-room')) openChangelog();
+  if(!viaInvite && !document.body.classList.contains('in-room') && hasUnseenMajor(changelogEntries, seen)) openChangelog();
 }
 
 // pré-preenche a preferência de qualidade de compartilhamento salva (§
@@ -4481,7 +4496,7 @@ window.addEventListener('beforeunload', () => {
 });
 
 // PWA: versão, registro do service worker, detecção de atualização e botão de instalação
-const APP_VERSION = '0.8.68'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
+const APP_VERSION = '0.8.69'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
 // Dentro do Electron, mostra a versão do INSTALADOR (electron/package.json),
 // não a do site — ver preload.js. Fora dele (navegador normal), continua a
 // versão do deploy de sempre.

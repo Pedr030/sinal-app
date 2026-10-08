@@ -442,9 +442,10 @@ body.picker-quality.sharing .quality-wrap{ display:inline-flex; }
 @media (max-height:620px){ body.in-room footer{ display:none; } }
 
 .spotlight{
-  /* --spot-cols / --tile-w vêm do encaixe automático (fitSpotlight() em app.js); sem JS cai no layout antigo */
-  display:none; grid-template-columns:var(--spot-cols, repeat(auto-fit, minmax(460px, 1fr)));
-  gap:16px; justify-items:center; justify-content:center;
+  /* --spot-w / --tile-w vêm do encaixe automático (fitSpotlight() em app.js); sem JS cai no layout antigo.
+     Flex com quebra de linha (não grade) pra a última linha ficar centralizada quando sobra um tile. */
+  display:none; flex-wrap:wrap; gap:16px; justify-content:center; align-content:center;
+  width:var(--spot-w, 100%); max-width:100%; margin:0 auto;
 }
 .filmstrip{
   display:none; gap:10px; overflow-x:auto; padding-bottom:6px;
@@ -457,7 +458,7 @@ body.picker-quality.sharing .quality-wrap{ display:inline-flex; }
   overflow:hidden; position:relative; aspect-ratio:16/9;
 }
 .spotlight .tile{
-  aspect-ratio:16/9; border-color:var(--tune);
+  flex:0 0 auto; aspect-ratio:16/9; border-color:var(--tune);
   width:var(--tile-w, 100%); max-height:var(--tile-max, 76vh); max-width:var(--tile-max-w, calc(76vh * 16 / 9));
 }
 /* Cursor de mão comum, não a lupinha de zoom-in/zoom-out — o tile é

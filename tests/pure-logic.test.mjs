@@ -121,7 +121,7 @@ test('prefill: nome de sala de servidor NUNCA aparece no campo (nem do convite, 
 
 // ---------- encaixe dos destaques (HANDOFF §43) ----------
 const bestSpotlightLayout = new Function(
-  'const SPOTLIGHT_MIN_WIDTH = 240;' + extractFunction(appJs, 'bestSpotlightLayout') + '; return bestSpotlightLayout;'
+  'const SPOTLIGHT_MIN_WIDTH = 200;' + extractFunction(appJs, 'bestSpotlightLayout') + '; return bestSpotlightLayout;'
 )();
 
 test('encaixe: uma transmissão usa o maior 16:9 que cabe (limitado pela altura livre)', () => {
@@ -147,12 +147,28 @@ test('encaixe: escolhe a arrumação de MAIOR área; nada passa do espaço livre
     const l = bestSpotlightLayout(n, W, H, 16);
     const rows = Math.ceil(n / l.cols);
     assert.ok(l.cols * l.width + (l.cols - 1) * 16 <= W + 1, `largura ${n},${W},${H}`);
-    if(l.width > 240) assert.ok(rows * (l.width * 9 / 16) + (rows - 1) * 16 <= H + 1, `altura ${n},${W},${H}`);
+    if(l.width > 200) assert.ok(rows * (l.width * 9 / 16) + (rows - 1) * 16 <= H + 1, `altura ${n},${W},${H}`);
   }
 });
 
 test('encaixe: espaço minúsculo respeita a largura mínima (a página rola em vez de sumir)', () => {
-  assert.equal(bestSpotlightLayout(2, 300, 100, 16).width, 240);
+  assert.deepEqual(bestSpotlightLayout(2, 300, 100, 16), { cols: 1, width: 200 }); // só 1 coluna de 200 cabe nos 300px
+  assert.deepEqual(bestSpotlightLayout(4, 600, 100, 16), { cols: 2, width: 200 }); // 2 colunas de 200 cabem; as outras descem
+});
+
+test('encaixe: 3 e 4 destaques (até MAX_PINNED)', () => {
+  // tela grande: 3 lado a lado (maior que 2x2); 4 em 2x2
+  assert.deepEqual(bestSpotlightLayout(3, 1884, 606, 16), { cols: 3, width: 617 });
+  assert.deepEqual(bestSpotlightLayout(4, 1884, 606, 16), { cols: 2, width: 524 });
+  // janela média: 2 colunas (o 3º desce e fica centralizado pelo CSS); janela alta o bastante empilha (431 > 424)
+  assert.deepEqual(bestSpotlightLayout(3, 864, 500, 16), { cols: 2, width: 424 });
+  // janela baixa e larga: os 4 numa fileira, sem rolagem
+  assert.deepEqual(bestSpotlightLayout(4, 919, 255, 16), { cols: 4, width: 217 });
+});
+
+test('o máximo de destaques é 4 e o 5º fixado tira o mais antigo', () => {
+  assert.match(appJs, /const MAX_PINNED = 4;/);
+  assert.match(appJs, /if\(pinnedOrder\.length >= MAX_PINNED\)\{\s*moveTileTo\(pinnedOrder\.shift\(\), 'filmstrip'\)/);
 });
 
 test('encaixe: empate fica com menos colunas', () => {
@@ -783,4 +799,29 @@ test('opção de codificação por hardware: o texto explica o que é e a verifi
   assert.match(html, /id="settingsHardwareStatus"[^>]*hidden/);
   assert.match(appJs, /sem como saber = sem suporte/);
   assert.match(appJs, /\.catch\(\(\) => \{\s*hardwareEncodeChecked = true;/);
+});
+
+// ---------- Novidades: só as grandes abrem a janela sozinha ----------
+const hasUnseenMajor = new Function(extractFunction(appJs, 'hasUnseenMajor') + '; return hasUnseenMajor;')();
+
+test('novidades: abre sozinha só se alguma entrada nova (mais recente que a vista) for grande', () => {
+  const list = [{ id: 'c' }, { id: 'b', destaque: true }, { id: 'a' }];
+  assert.equal(hasUnseenMajor(list, 'a'), true);   // viu 'a'; 'b' (grande) é novo
+  assert.equal(hasUnseenMajor(list, 'b'), false);  // viu 'b'; só falta 'c', pequena
+  assert.equal(hasUnseenMajor(list, 'c'), false);  // viu tudo
+});
+
+test('novidades: só entradas pequenas novas = não abre (só a bolinha do botão)', () => {
+  assert.equal(hasUnseenMajor([{ id: 'c' }, { id: 'b' }, { id: 'a', destaque: true }], 'a'), false);
+});
+
+test('novidades: sem id visto (ou id desconhecido) considera todas; destaque tem que ser exatamente true', () => {
+  assert.equal(hasUnseenMajor([{ id: 'b' }, { id: 'a', destaque: true }], null), true);
+  assert.equal(hasUnseenMajor([{ id: 'b' }, { id: 'a', destaque: true }], 'velho'), true);
+  assert.equal(hasUnseenMajor([{ id: 'b', destaque: 'sim' }, { id: 'a', destaque: 1 }], null), false);
+  assert.equal(hasUnseenMajor(null, 'a'), false);
+});
+
+test('novidades: a janela só abre sozinha quando há novidade grande não vista', () => {
+  assert.match(appJs, /hasUnseenMajor\(changelogEntries, seen\)\) openChangelog\(\);/);
 });

@@ -1,5 +1,15 @@
 [
   {
+    "id": "2026-10-08-ate-quatro-telas",
+    "date": "2026-10-08",
+    "title": "Até 4 telas em destaque",
+    "site": "0.8.69",
+    "items": [
+      "Agora dá para deixar até 4 transmissões em destaque ao mesmo tempo. Elas se ajustam sozinhas ao tamanho da janela.",
+      "A janela de Novidades passa a abrir sozinha só nas atualizações grandes. As pequenas acendem uma bolinha no botão."
+    ]
+  },
+  {
     "id": "2026-10-08-codificacao-placa",
     "date": "2026-10-08",
     "title": "Codificação pela placa de vídeo",
