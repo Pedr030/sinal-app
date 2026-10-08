@@ -1240,7 +1240,8 @@ function preferH264High(sdp){
   return changed ? lines.join(CRLF) : sdp;
 }
 
-let hardwareEncodeReady = false; // a placa disse que codifica H.264 High 1080p60 por hardware (mediaCapabilities)
+let hardwareEncodeReady = false;   // a placa disse que codifica H.264 High 1080p60 por hardware (mediaCapabilities)
+let hardwareEncodeChecked = false; // a verificação da placa já terminou (com ou sem suporte)
 function setupHardwareEncode(){
   if(!(window.sinalElectron && window.sinalElectron.isElectron) || !window.RTCPeerConnection) return;
   const originalCreateOffer = RTCPeerConnection.prototype.createOffer;
@@ -1254,17 +1255,33 @@ function setupHardwareEncode(){
     }catch(e){ /* nunca atrapalha a negociação: segue com a oferta original */ }
     return offer;
   };
-  if(!navigator.mediaCapabilities || !navigator.mediaCapabilities.encodingInfo) return;
+  if(!navigator.mediaCapabilities || !navigator.mediaCapabilities.encodingInfo){ hardwareEncodeChecked = true; return; } // sem como saber = sem suporte
   navigator.mediaCapabilities.encodingInfo({ type: 'webrtc', video: { contentType: 'video/h264;profile-level-id=64001f;packetization-mode=1', width: 1920, height: 1080, framerate: 60, bitrate: 6000000 } })
     .then((r) => {
       hardwareEncodeReady = !!(r && r.supported && r.powerEfficient);
+      hardwareEncodeChecked = true;
       appLog('[sinal] codificação por hardware (H.264 High): ' + (hardwareEncodeReady ? 'a placa suporta' : 'a placa não suporta'));
-      if(electronSettings) renderHardwareSection();
-    }).catch(() => {});
+      if(electronSettings) renderHardwareSection(electronSettings);
+    }).catch(() => {
+      hardwareEncodeChecked = true;
+      if(electronSettings) renderHardwareSection(electronSettings);
+    });
 }
-function renderHardwareSection(){
+// A opção aparece pra todo mundo que tem um app que a conhece (chave `hardwareEncode`). Placa sem suporte: fica cinza, sem
+// poder marcar, com o aviso; enquanto a verificação da placa não termina também fica cinza ("Verificando…").
+function renderHardwareSection(settings){
   const sec = document.getElementById('settingsHardwareSection');
-  if(sec) sec.hidden = !('hardwareEncode' in electronSettings) || !hardwareEncodeReady;
+  if(!sec) return;
+  const known = !!settings && 'hardwareEncode' in settings;
+  sec.hidden = !known;
+  if(!known) return;
+  const cb = document.getElementById('settingsHardwareEncode');
+  const status = document.getElementById('settingsHardwareStatus');
+  cb.disabled = !hardwareEncodeReady;
+  cb.checked = hardwareEncodeReady && !!settings.hardwareEncode; // sem suporte nunca aparece marcada
+  document.getElementById('settingsHardwareRow').classList.toggle('settings-row-disabled', !hardwareEncodeReady);
+  status.hidden = hardwareEncodeReady;
+  status.textContent = hardwareEncodeChecked ? 'Sua placa de vídeo não suporta este método de codificação.' : 'Verificando a sua placa de vídeo…';
 }
 
 async function toggleShare(){
@@ -4246,9 +4263,8 @@ function setupSettingsPanel(){
       startMinimizedCb.disabled = !settings.startWithWindows;
       document.getElementById('settingsStartMinimizedRow').classList.toggle('settings-row-disabled', !settings.startWithWindows);
     }
-    // Codificação por hardware: só onde o app conhece a chave `hardwareEncode` E a placa confirmou que codifica H.264 High.
-    document.getElementById('settingsHardwareSection').hidden = !('hardwareEncode' in settings) || !hardwareEncodeReady;
-    document.getElementById('settingsHardwareEncode').checked = !!settings.hardwareEncode;
+    // Codificação por hardware: aparece onde o app conhece a chave `hardwareEncode`; cinza se a placa não suporta.
+    renderHardwareSection(settings);
     const supportsExcluded = Array.isArray(settings.excludedAudioApps);
     audioSection.hidden = !supportsExcluded;
     if(supportsExcluded) renderExcludedList(settings.excludedAudioApps);
@@ -4465,7 +4481,7 @@ window.addEventListener('beforeunload', () => {
 });
 
 // PWA: versão, registro do service worker, detecção de atualização e botão de instalação
-const APP_VERSION = '0.8.67'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
+const APP_VERSION = '0.8.68'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
 // Dentro do Electron, mostra a versão do INSTALADOR (electron/package.json),
 // não a do site — ver preload.js. Fora dele (navegador normal), continua a
 // versão do deploy de sempre.

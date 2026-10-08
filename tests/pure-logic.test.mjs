@@ -727,7 +727,7 @@ test('codificação por hardware: nasce DESLIGADA, só no app desktop, só se a 
   assert.match(appJs, /profile-level-id=64001f;packetization-mode=1', width: 1920, height: 1080, framerate: 60/);
   assert.match(appJs, /r\.supported && r\.powerEfficient/);
   assert.match(appJs, /catch\(e\)\{ \/\* nunca atrapalha a negociação/);                           // erro no ajuste nunca derruba a negociação
-  assert.match(appJs, /'hardwareEncode' in settings\) \|\| !hardwareEncodeReady/);
+  assert.match(appJs, /const known = !!settings && 'hardwareEncode' in settings;/);                 // aparece pra todo app que conhece a chave
   assert.match(html, /id="settingsHardwareSection"[^>]*hidden/);
   assert.match(html, /id="settingsHardwareEncode"/);
   assert.match(appJs, /codificador em uso: \$\{outbound\.encoderImplementation\}/);                // o relatório diz qual codificador está em uso
@@ -736,4 +736,51 @@ test('codificação por hardware: nasce DESLIGADA, só no app desktop, só se a 
 test('gancho de teste do seletor: só existe fora do app empacotado (nunca no instalador)', () => {
   const main = readFileSync(join(ROOT, 'electron/src/main.js'), 'utf8');
   assert.match(main, /!app\.isPackaged && process\.env\.SINAL_TEST_AUTOPICK === '1'/);
+});
+
+// ---------- codificação por hardware: a opção aparece pra todos; sem suporte da placa fica cinza com o aviso ----------
+function fakeHardwareUi(ready, checked){
+  const els = {
+    settingsHardwareSection: { hidden: true },
+    settingsHardwareEncode: { disabled: false, checked: false },
+    settingsHardwareStatus: { hidden: true, textContent: '' },
+    settingsHardwareRow: { disabledClass: false, classList: { toggle(name, on){ if(name === 'settings-row-disabled') els.settingsHardwareRow.disabledClass = !!on; } } }
+  };
+  const render = new Function('document', 'hardwareEncodeReady', 'hardwareEncodeChecked', extractFunction(appJs, 'renderHardwareSection') + '; return renderHardwareSection;')({ getElementById: (id) => els[id] }, ready, checked);
+  return { els, render };
+}
+
+test('opção de codificação por hardware: placa COM suporte = habilitada e reflete a configuração', () => {
+  const { els, render } = fakeHardwareUi(true, true);
+  render({ hardwareEncode: true });
+  assert.deepEqual([els.settingsHardwareSection.hidden, els.settingsHardwareEncode.disabled, els.settingsHardwareEncode.checked, els.settingsHardwareRow.disabledClass, els.settingsHardwareStatus.hidden], [false, false, true, false, true]);
+  render({ hardwareEncode: false });
+  assert.equal(els.settingsHardwareEncode.checked, false);
+});
+
+test('opção de codificação por hardware: placa SEM suporte = visível, cinza, sem poder marcar (nunca aparece marcada) e com o aviso', () => {
+  const { els, render } = fakeHardwareUi(false, true);
+  render({ hardwareEncode: true });                                           // mesmo que a configuração esteja ligada de antes
+  assert.deepEqual([els.settingsHardwareSection.hidden, els.settingsHardwareEncode.disabled, els.settingsHardwareEncode.checked, els.settingsHardwareRow.disabledClass, els.settingsHardwareStatus.hidden], [false, true, false, true, false]);
+  assert.equal(els.settingsHardwareStatus.textContent, 'Sua placa de vídeo não suporta este método de codificação.');
+});
+
+test('opção de codificação por hardware: enquanto a placa é verificada fica cinza com "Verificando…"; app antigo (sem a chave) não mostra a seção', () => {
+  const { els, render } = fakeHardwareUi(false, false);
+  render({ hardwareEncode: false });
+  assert.deepEqual([els.settingsHardwareSection.hidden, els.settingsHardwareEncode.disabled, els.settingsHardwareStatus.hidden], [false, true, false]);
+  assert.match(els.settingsHardwareStatus.textContent, /Verificando/);
+  const velho = fakeHardwareUi(true, true);
+  velho.render({ shortcutEnabled: true });                                    // instalador que não conhece `hardwareEncode`
+  assert.equal(velho.els.settingsHardwareSection.hidden, true);
+  velho.render(null);
+  assert.equal(velho.els.settingsHardwareSection.hidden, true);
+});
+
+test('opção de codificação por hardware: o texto explica o que é e a verificação nunca deixa a opção presa (erro/sem API = sem suporte)', () => {
+  const html = readFileSync(join(ROOT, 'public/index.html'), 'utf8');
+  assert.match(html, /chip de vídeo da sua placa/);
+  assert.match(html, /id="settingsHardwareStatus"[^>]*hidden/);
+  assert.match(appJs, /sem como saber = sem suporte/);
+  assert.match(appJs, /\.catch\(\(\) => \{\s*hardwareEncodeChecked = true;/);
 });
