@@ -1,5 +1,16 @@
 [
   {
+    "id": "2026-10-08-codificacao-placa",
+    "date": "2026-10-08",
+    "title": "Codificação pela placa de vídeo",
+    "site": "0.8.67",
+    "app": "0.3.19",
+    "items": [
+      "No app, nova opção experimental nas Configurações para codificar o vídeo pela placa de vídeo, que usa menos o processador ao transmitir. Ela fica desligada até você ligar.",
+      "Correções de estabilidade no app."
+    ]
+  },
+  {
     "id": "2026-10-07-controle-das-salas",
     "date": "2026-10-07",
     "title": "Mais controle sobre as salas",

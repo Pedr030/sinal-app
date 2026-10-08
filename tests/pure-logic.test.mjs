@@ -645,3 +645,95 @@ test('pedido de entrada no app: a consulta entra sozinha se a sala virou aberta 
   assert.match(appJs, /if\(res\.status === 200\)\{ finish\(true\); return; \} \/\/ inclusive se a sala virou ABERTA/);
   assert.match(appJs, /error === 'sala-privada' && data\.access === 'password' && !stopped\)\{ cleanup\(\); resolve\(requestToJoinRoom\(roomName, 'password'\)\)/);
 });
+
+test('diagnóstico (envio): sem resolução e sem quadros = ninguém assistindo (dynacast pausou) e NÃO gera linha; com resolução e 0 quadros ainda gera', () => {
+  const pausado = { quality: 'Fluido', codec: 'H.264', width: undefined, height: undefined, targetFps: 60, reason: 'bandwidth', d: { seconds: 16, frames: 0, encodeMs: 0, bytes: 0, keyFrames: 0, pli: 0, nack: 0 } };
+  assert.equal(trouble.senderTroubleLine(pausado), null);
+  assert.match(trouble.senderTroubleLine({ ...pausado, width: 1920, height: 1080 }), /0fps/);                 // travou de verdade: continua avisando
+  assert.match(trouble.senderTroubleLine({ ...pausado, d: { ...pausado.d, frames: 120 }, width: undefined, height: undefined }), /fps/); // com quadros, mesmo sem resolução, segue a regra normal
+});
+
+test('diagnóstico (envio): mostra quantos quadros a CAPTURA entregou, pra separar "a captura entregou pouco" de "o envio perdeu quadros"', () => {
+  const base = { quality: 'Fluido', codec: 'H.264', width: 1920, height: 1080, targetFps: 60, reason: 'none', d: { seconds: 4, frames: 124, encodeMs: 700, bytes: 2_000_000, keyFrames: 0, pli: 0, nack: 0 } };
+  assert.match(trouble.senderTroubleLine({ ...base, d: { ...base.d, captured: 124 } }), /31fps \(meta 60\) · captura 31fps/);   // capturou pouco
+  assert.match(trouble.senderTroubleLine({ ...base, d: { ...base.d, captured: 240 } }), /31fps \(meta 60\) · captura 60fps/);   // capturou 60 e o envio perdeu
+  assert.doesNotMatch(trouble.senderTroubleLine(base), /captura/);                                                           // sem o dado (navegador antigo): some
+  assert.doesNotMatch(trouble.senderTroubleLine({ ...base, d: { ...base.d, captured: null } }), /captura/);
+});
+
+test('app desktop: o seletor de tela responde UMA vez só (cancelar não gera erro duplo) e a segunda instância não monta nada', () => {
+  const main = readFileSync(join(ROOT, 'electron/src/main.js'), 'utf8');
+  assert.match(main, /setDisplayMediaRequestHandler\(async \(request, callback\) => \{\s*[\s\S]*?let answered = false;[\s\S]*?const answer = /);
+  const handler = main.slice(main.indexOf('setDisplayMediaRequestHandler(async'), main.indexOf('setDisplayMediaRequestHandler(async') + 4000);
+  assert.equal((handler.match(/\bcallback\(/g) || []).length, 1);   // o único callback( é o de dentro de answer()
+  assert.match(main, /app\.whenReady\(\)\.then\(\(\) => \{\s*[\s\S]*?if\(!gotSingleInstanceLock\) return;/);
+});
+
+test('diagnóstico: contador que volta pra trás (faixa nova, reconexão) não vira linha com fps negativo', () => {
+  const neg = { codec: 'H.264', width: 1920, height: 1080, d: { seconds: 4, received: -2056, decoded: -2056, dropped: 0, freezes: -903, freezeSeconds: -472, bytes: -105_000_000, lost: 0, pli: -80, nack: -5850 } };
+  assert.equal(trouble.viewerTroubleLine(neg), null);
+  assert.equal(trouble.senderTroubleLine({ quality: 'Fluido', codec: 'H.264', width: 1920, height: 1080, targetFps: 60, reason: 'none', d: { seconds: 4, frames: 10, encodeMs: 40, bytes: -5, keyFrames: 0, pli: 0, nack: 0 } }), null);
+});
+
+// ---------- codificação por hardware: perfil H.264 High na frente (HANDOFF §58) ----------
+const preferH264High = new Function(extractFunction(appJs, 'preferH264High') + '; return preferH264High;')();
+const CRLF = String.fromCharCode(13, 10);
+// resposta de verdade do servidor (trecho): Baseline (108, 114) na frente, High (118) depois
+const respostaServidor = [
+  'v=0', 'm=audio 9 UDP/TLS/RTP/SAVPF 111', 'a=rtpmap:111 opus/48000/2',
+  'm=video 9 UDP/TLS/RTP/SAVPF 108 114 118 96 109',
+  'a=rtpmap:108 H264/90000', 'a=fmtp:108 level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f',
+  'a=rtpmap:114 H264/90000', 'a=fmtp:114 level-asymmetry-allowed=1;packetization-mode=0;profile-level-id=42e01f',
+  'a=rtpmap:118 H264/90000', 'a=fmtp:118 level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=64001f',
+  'a=rtpmap:96 VP8/90000', 'a=rtpmap:109 rtx/90000', 'a=fmtp:109 apt=108', ''
+].join(CRLF);
+
+test('perfil H.264 High: numa oferta/resposta de SDP o High passa pra frente dos H.264 Baseline; o resto não muda', () => {
+  const out = preferH264High(respostaServidor);
+  const m = /m=video \d+ \S+ ([\d ]+)/.exec(out.split(CRLF).find((l) => l.startsWith('m=video')) + ' ');
+  assert.equal(m[1].trim(), '118 108 114 96 109');                          // High antes do Baseline; VP8 e rtx continuam onde estavam
+  assert.equal(out.split(CRLF).filter((l) => l.startsWith('a=')).join('|'), respostaServidor.split(CRLF).filter((l) => l.startsWith('a=')).join('|'));   // atributos intactos
+  assert.ok(out.includes('m=audio 9 UDP/TLS/RTP/SAVPF 111'));              // só a linha de vídeo muda
+});
+
+test('perfil H.264 High: não mexe quando não há o que fazer (já é o primeiro, sem High, sem H.264, texto estranho)', () => {
+  const jaHigh = respostaServidor.replace('108 114 118 96 109', '118 108 114 96 109');
+  assert.equal(preferH264High(jaHigh), jaHigh);
+  const semHigh = respostaServidor.replace('profile-level-id=64001f', 'profile-level-id=4d001f');
+  assert.equal(preferH264High(semHigh), semHigh);
+  const soVp8 = ['v=0', 'm=video 9 UDP/TLS/RTP/SAVPF 96', 'a=rtpmap:96 VP8/90000', ''].join(CRLF);
+  assert.equal(preferH264High(soVp8), soVp8);
+  const vp8Primeiro = respostaServidor.replace('108 114 118 96 109', '96 108 114 118 109');
+  const out = preferH264High(vp8Primeiro);
+  assert.ok(out.includes('m=video 9 UDP/TLS/RTP/SAVPF 96 118 108 114 109'));   // VP8 continua sendo o primeiro (a escolha de codec é do servidor)
+  for(const lixo of ['', 'qualquer coisa', null, undefined, 5]) assert.equal(preferH264High(lixo), lixo);
+});
+
+test('perfil H.264 High: duas seções de vídeo (câmera e tela) são tratadas separadamente', () => {
+  const dois = respostaServidor + ['m=video 9 UDP/TLS/RTP/SAVPF 100 101', 'a=rtpmap:100 H264/90000', 'a=fmtp:100 profile-level-id=42e01f', 'a=rtpmap:101 H264/90000', 'a=fmtp:101 profile-level-id=640028', ''].join(CRLF);
+  const out = preferH264High(dois).split(CRLF).filter((l) => l.startsWith('m=video'));
+  assert.deepEqual(out, ['m=video 9 UDP/TLS/RTP/SAVPF 118 108 114 96 109', 'm=video 9 UDP/TLS/RTP/SAVPF 101 100']);
+});
+
+test('codificação por hardware: nasce DESLIGADA, só no app desktop, só se a placa confirmar, e a opção só aparece onde o app conhece a chave', () => {
+  const main = readFileSync(join(ROOT, 'electron/src/main.js'), 'utf8');
+  const html = readFileSync(join(ROOT, 'public/index.html'), 'utf8');
+  assert.match(main, /hardwareEncode: false\s*\n\};/);                                              // padrão: desligada
+  assert.match(main, /'startMinimized', 'hardwareEncode'\]/);                                    // só booleano passa pela limpeza
+  assert.match(appJs, /if\(!\(window\.sinalElectron && window\.sinalElectron\.isElectron\) \|\| !window\.RTCPeerConnection\) return;/);
+  assert.match(appJs, /RTCPeerConnection\.prototype\.createOffer = async function/);                                       // mexe na OFERTA (a resposta sozinha deixava o espectador sem imagem)
+  assert.match(appJs, /hardwareEncodeReady && electronSettings && electronSettings\.hardwareEncode && offer && typeof offer\.sdp === 'string'/);   // só ligado e só com a placa ok
+  assert.doesNotMatch(appJs, /RTCPeerConnection\.prototype\.setRemoteDescription = /);
+  assert.match(appJs, /profile-level-id=64001f;packetization-mode=1', width: 1920, height: 1080, framerate: 60/);
+  assert.match(appJs, /r\.supported && r\.powerEfficient/);
+  assert.match(appJs, /catch\(e\)\{ \/\* nunca atrapalha a negociação/);                           // erro no ajuste nunca derruba a negociação
+  assert.match(appJs, /'hardwareEncode' in settings\) \|\| !hardwareEncodeReady/);
+  assert.match(html, /id="settingsHardwareSection"[^>]*hidden/);
+  assert.match(html, /id="settingsHardwareEncode"/);
+  assert.match(appJs, /codificador em uso: \$\{outbound\.encoderImplementation\}/);                // o relatório diz qual codificador está em uso
+});
+
+test('gancho de teste do seletor: só existe fora do app empacotado (nunca no instalador)', () => {
+  const main = readFileSync(join(ROOT, 'electron/src/main.js'), 'utf8');
+  assert.match(main, /!app\.isPackaged && process\.env\.SINAL_TEST_AUTOPICK === '1'/);
+});
