@@ -800,3 +800,28 @@ test('opção de codificação por hardware: o texto explica o que é e a verifi
   assert.match(appJs, /sem como saber = sem suporte/);
   assert.match(appJs, /\.catch\(\(\) => \{\s*hardwareEncodeChecked = true;/);
 });
+
+// ---------- Novidades: só as grandes abrem a janela sozinha ----------
+const hasUnseenMajor = new Function(extractFunction(appJs, 'hasUnseenMajor') + '; return hasUnseenMajor;')();
+
+test('novidades: abre sozinha só se alguma entrada nova (mais recente que a vista) for grande', () => {
+  const list = [{ id: 'c' }, { id: 'b', destaque: true }, { id: 'a' }];
+  assert.equal(hasUnseenMajor(list, 'a'), true);   // viu 'a'; 'b' (grande) é novo
+  assert.equal(hasUnseenMajor(list, 'b'), false);  // viu 'b'; só falta 'c', pequena
+  assert.equal(hasUnseenMajor(list, 'c'), false);  // viu tudo
+});
+
+test('novidades: só entradas pequenas novas = não abre (só a bolinha do botão)', () => {
+  assert.equal(hasUnseenMajor([{ id: 'c' }, { id: 'b' }, { id: 'a', destaque: true }], 'a'), false);
+});
+
+test('novidades: sem id visto (ou id desconhecido) considera todas; destaque tem que ser exatamente true', () => {
+  assert.equal(hasUnseenMajor([{ id: 'b' }, { id: 'a', destaque: true }], null), true);
+  assert.equal(hasUnseenMajor([{ id: 'b' }, { id: 'a', destaque: true }], 'velho'), true);
+  assert.equal(hasUnseenMajor([{ id: 'b', destaque: 'sim' }, { id: 'a', destaque: 1 }], null), false);
+  assert.equal(hasUnseenMajor(null, 'a'), false);
+});
+
+test('novidades: a janela só abre sozinha quando há novidade grande não vista', () => {
+  assert.match(appJs, /hasUnseenMajor\(changelogEntries, seen\)\) openChangelog\(\);/);
+});

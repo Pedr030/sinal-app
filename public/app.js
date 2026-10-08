@@ -4020,11 +4020,19 @@ function setupServersUI(){
 // ---------------- Novidades (patch notes / log de versões) ----------------
 // Conteúdo em public/changelog.json (fonte única — a janela de atualização
 // do app e as notas da release do GitHub saem dele também, ver HANDOFF §34).
-// Abre sozinho UMA vez quando entra uma novidade que a pessoa ainda não viu
-// — só na tela inicial, nunca dentro de uma sala, e nunca pra quem está
+// Abre sozinho UMA vez quando entra uma novidade GRANDE (`destaque: true`) que a pessoa ainda não viu
+// (as pequenas só acendem a bolinha do botão) — só na tela inicial, nunca dentro de uma sala, e nunca pra quem está
 // abrindo o Sinal pela primeira vez (não tem "o que mudou" pra quem chegou agora).
 const CHANGELOG_SEEN_KEY = 'sinal:changelogSeen';
 let changelogEntries = null;
+
+// Entre as entradas mais novas que a última vista (`seenId`; sem ela, todas), alguma é grande?
+// É isso que decide se a janela abre sozinha. Pura (testada).
+function hasUnseenMajor(entries, seenId){
+  const list = Array.isArray(entries) ? entries : [];
+  const idx = list.findIndex((e) => e && e.id === seenId);
+  return list.slice(0, idx === -1 ? list.length : idx).some((e) => e && e.destaque === true);
+}
 
 function formatChangelogDate(iso){
   const [y, m, d] = String(iso).split('-').map(Number);
@@ -4127,7 +4135,7 @@ async function setupChangelog(){
   // Link de convite (?sala=) vai direto pra sala — não cobre a entrada com
   // a janela; a bolinha no botão fica avisando.
   const viaInvite = new URLSearchParams(location.search).has('sala');
-  if(!viaInvite && !document.body.classList.contains('in-room')) openChangelog();
+  if(!viaInvite && !document.body.classList.contains('in-room') && hasUnseenMajor(changelogEntries, seen)) openChangelog();
 }
 
 // pré-preenche a preferência de qualidade de compartilhamento salva (§
