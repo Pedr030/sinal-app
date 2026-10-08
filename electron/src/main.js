@@ -201,7 +201,10 @@ const DEFAULT_SETTINGS = {
   // (picker.html) e lembrada — o atalho de "tela inteira direto" usa ela. A
   // existência desse campo é o que avisa o site (app.js) que é o seletor
   // quem escolhe a qualidade, e não mais o botão do site.
-  shareQuality: 'nitido'
+  shareQuality: 'nitido',
+  // Codificar o H.264 pela placa de vídeo (HANDOFF §58): experimental, DESLIGADA por padrão. O app só pede o perfil High na
+  // oferta (a placa codifica High por hardware; o Baseline que o servidor prefere cai no OpenH264, em software).
+  hardwareEncode: false
 };
 const SHARE_QUALITIES = ['leve', 'nitido', 'fluido'];
 
@@ -1035,6 +1038,9 @@ trustedIpc.on('sinal:install-update', () => {
 });
 
 app.whenReady().then(() => {
+  // Segunda instância (perdeu o lock lá em cima e já está saindo): não monta janela, bandeja nem atalho. O relatório de
+  // 2026-10-07 mostrou três "app iniciado" no mesmo instante e o atalho global falhando por conflito entre elas.
+  if(!gotSingleInstanceLock) return;
   console.log(`[sinal] app iniciado — v${app.getVersion()}, Electron ${process.versions.electron}, Windows ${os.release()}`);
   app.getGPUInfo('basic').then((info) => {
     const gpus = (info && info.gpuDevice || []).map((g) => ({ vendorId: g.vendorId, deviceId: g.deviceId, active: g.active, driver: g.driverVersion }));
@@ -1060,8 +1066,17 @@ app.whenReady().then(() => {
   });
 
   session.defaultSession.setDisplayMediaRequestHandler(async (request, callback) => {
+    // O Electron só aceita UMA resposta, e recusar (`{}`) num pedido de vídeo lança "Video was requested, but no video
+    // stream was provided" — o catch abaixo respondia de novo ("callback chamado mais de uma vez") e sobrava uma
+    // rejeição sem tratamento a cada seletor cancelado (visto no relatório de 2026-10-07). Agora responde uma vez só.
+    let answered = false;
+    const answer = (streams) => {
+      if(answered) return;
+      answered = true;
+      try{ callback(streams); }catch(e){ if(streams && streams.video) console.error('[sinal] não consegui entregar a captura:', e); /* recusa: o pedido já foi negado */ }
+    };
     // Captura de tela só pro site do Sinal (nenhuma outra página que algum dia apareça aqui).
-    if(!isSinalUrl(request.securityOrigin || '')){ callback({}); return; }
+    if(!isSinalUrl(request.securityOrigin || '')){ answer({}); return; }
     try{
       const sources = await desktopCapturer.getSources({
         types: ['screen', 'window'],
@@ -1070,7 +1085,8 @@ app.whenReady().then(() => {
       });
 
       let chosen;
-      if(skipPickerOnce){
+      // Só em desenvolvimento (app não empacotado): testes automáticos pulam o seletor e pegam a tela principal.
+      if(skipPickerOnce || (!app.isPackaged && process.env.SINAL_TEST_AUTOPICK === '1')){
         skipPickerOnce = false;
         // desktopCapturer não garante ordem, então casa pelo display_id
         // com o monitor primário de verdade em vez de só pegar sources[0].
@@ -1086,7 +1102,7 @@ app.whenReady().then(() => {
         // Cancelou o seletor — devolve vazio, o getDisplayMedia() do lado do
         // app.js rejeita como se a pessoa tivesse cancelado o seletor nativo do
         // Chrome (mesmo comportamento de hoje no navegador).
-        callback({});
+        answer({});
         return;
       }
       // audio: propositalmente OMITIDO aqui. Áudio isolado por processo (ver
@@ -1099,10 +1115,10 @@ app.whenReady().then(() => {
         if(audioTarget.mode === 'multi') startMultiSourceAudio();
         else startIsolatedAudio(audioTarget);
       }
-      callback({ video: chosen });
+      answer({ video: chosen });
     }catch(e){
       console.error('[sinal] setDisplayMediaRequestHandler falhou:', e);
-      callback({});
+      answer({});
     }
   });
 
@@ -1194,7 +1210,7 @@ function isSafeAccelerator(value){
 function sanitizeSettingsPatch(patch){
   const out = {};
   if(!patch || typeof patch !== 'object' || Array.isArray(patch)) return out;
-  for(const key of ['shortcutEnabled', 'quickShareWholeScreen', 'startWithWindows', 'startMinimized']){
+  for(const key of ['shortcutEnabled', 'quickShareWholeScreen', 'startWithWindows', 'startMinimized', 'hardwareEncode']){
     if(typeof patch[key] === 'boolean') out[key] = patch[key];
   }
   if(isSafeAccelerator(patch.shortcut)) out.shortcut = patch.shortcut;

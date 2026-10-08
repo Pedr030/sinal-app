@@ -1204,6 +1204,69 @@ function teardownElectronIsolatedAudio(){
   }
 }
 
+// ---------------- CODIFICAÇÃO POR HARDWARE (HANDOFF §58) ----------------
+// O servidor negocia o H.264 Baseline (42e01f) primeiro, e o Chromium só codifica Baseline em SOFTWARE (OpenH264: 17–44 ms/quadro
+// no CS2, disputando a CPU com o jogo). O High (64001f) a placa codifica por hardware. Pôr o High na frente na OFERTA do cliente
+// (antes de ir pro servidor) faz o servidor registrar a faixa como High e repassar normalmente; reordenar só a resposta dava
+// codificador de hardware mas o espectador ficava SEM imagem (o servidor não repassa um perfil que não registrou: medido).
+// Só mexe na ordem dos H.264 entre si: a escolha de codec (H.264 x VP8 x H.265) continua a de sempre.
+function preferH264High(sdp){
+  if(typeof sdp !== 'string') return sdp;
+  const CRLF = '\r\n';
+  const lines = sdp.split(CRLF);
+  const starts = [];
+  lines.forEach((l, i) => { if(l.startsWith('m=')) starts.push(i); });
+  let changed = false;
+  starts.forEach((start, n) => {
+    if(!lines[start].startsWith('m=video')) return;
+    const end = n + 1 < starts.length ? starts[n + 1] : lines.length;
+    const codec = {}, profile = {};
+    for(let i = start + 1; i < end; i++){
+      const l = lines[i];
+      if(l.startsWith('a=rtpmap:')){ const sp = l.indexOf(' '); codec[l.slice(9, sp)] = l.slice(sp + 1).split('/')[0].toUpperCase(); }
+      else if(l.startsWith('a=fmtp:')){ const k = l.indexOf('profile-level-id='); if(k > 0) profile[l.slice(7, l.indexOf(' '))] = l.substr(k + 17, 6).toLowerCase(); }
+    }
+    const parts = lines[start].split(' ');
+    const pts = parts.slice(3);
+    const firstH264 = pts.findIndex((pt) => codec[pt] === 'H264');
+    const high = pts.filter((pt) => codec[pt] === 'H264' && (profile[pt] || '').startsWith('64'));
+    if(firstH264 < 0 || !high.length || high.includes(pts[firstH264])) return; // sem H.264, sem High, ou o High já é o primeiro
+    const rest = pts.filter((pt) => !high.includes(pt));
+    const at = rest.indexOf(pts[firstH264]);
+    const next = [...rest.slice(0, at), ...high, ...rest.slice(at)];
+    lines[start] = parts.slice(0, 3).concat(next).join(' ');
+    changed = true;
+  });
+  return changed ? lines.join(CRLF) : sdp;
+}
+
+let hardwareEncodeReady = false; // a placa disse que codifica H.264 High 1080p60 por hardware (mediaCapabilities)
+function setupHardwareEncode(){
+  if(!(window.sinalElectron && window.sinalElectron.isElectron) || !window.RTCPeerConnection) return;
+  const originalCreateOffer = RTCPeerConnection.prototype.createOffer;
+  RTCPeerConnection.prototype.createOffer = async function(...args){
+    const offer = await originalCreateOffer.apply(this, args);
+    try{
+      if(hardwareEncodeReady && electronSettings && electronSettings.hardwareEncode && offer && typeof offer.sdp === 'string'){
+        const sdp = preferH264High(offer.sdp);
+        if(sdp !== offer.sdp){ appLog('[sinal] codificação por hardware: perfil H.264 High na frente da oferta'); return { type: offer.type, sdp }; }
+      }
+    }catch(e){ /* nunca atrapalha a negociação: segue com a oferta original */ }
+    return offer;
+  };
+  if(!navigator.mediaCapabilities || !navigator.mediaCapabilities.encodingInfo) return;
+  navigator.mediaCapabilities.encodingInfo({ type: 'webrtc', video: { contentType: 'video/h264;profile-level-id=64001f;packetization-mode=1', width: 1920, height: 1080, framerate: 60, bitrate: 6000000 } })
+    .then((r) => {
+      hardwareEncodeReady = !!(r && r.supported && r.powerEfficient);
+      appLog('[sinal] codificação por hardware (H.264 High): ' + (hardwareEncodeReady ? 'a placa suporta' : 'a placa não suporta'));
+      if(electronSettings) renderHardwareSection();
+    }).catch(() => {});
+}
+function renderHardwareSection(){
+  const sec = document.getElementById('settingsHardwareSection');
+  if(sec) sec.hidden = !('hardwareEncode' in electronSettings) || !hardwareEncodeReady;
+}
+
 async function toggleShare(){
   if(!room) return;
   const { Track } = LivekitClient;
@@ -1500,11 +1563,18 @@ function shouldLogTrouble(key, now){
 
 // Lado de quem transmite. d = variações no intervalo (frames codificados, ms de codificação, bytes...).
 function senderTroubleLine({ quality, codec, width, height, targetFps, reason, d }){
-  if(!d || !(d.seconds > 0) || !(d.frames >= 0)) return null;
+  if(!d || !(d.seconds > 0) || !(d.frames >= 0) || d.bytes < 0) return null;
+  // Sem resolução e sem nenhum quadro: ninguém está assistindo e o LiveKit pausou o envio (dynacast). Não é problema,
+  // e antes isso enchia o relatório de linhas "0fps" (uma sessão de 26 min encheu o registro e cortou o que importava).
+  if(d.frames === 0 && !width && !height) return null;
   const fps = d.frames / d.seconds;
   const limited = reason && reason !== 'none';
   if(fps >= targetFps * 0.75 && !limited) return null;
-  const parts = [`${quality || '?'} ${codec || '?'} ${width || '?'}x${height || '?'}`, `${Math.round(fps)}fps (meta ${targetFps})`, `${Math.round(d.bytes * 8 / 1000 / d.seconds)}kbps`];
+  const parts = [`${quality || '?'} ${codec || '?'} ${width || '?'}x${height || '?'}`, `${Math.round(fps)}fps (meta ${targetFps})`];
+  // Quadros que a CAPTURA entregou no intervalo: separa "o jogo/a captura entregou pouco" (captura ≈ envio) de
+  // "a captura entregou e o envio perdeu" (captura bem acima do envio).
+  if(typeof d.captured === 'number' && d.captured >= 0) parts.push(`captura ${Math.round(d.captured / d.seconds)}fps`);
+  parts.push(`${Math.round(d.bytes * 8 / 1000 / d.seconds)}kbps`);
   if(d.frames > 0) parts.push(`codificação ${(d.encodeMs / d.frames).toFixed(1)}ms/quadro`);
   parts.push(`limite=${reason || 'none'}`);
   if(d.keyFrames) parts.push(`keyframes+${d.keyFrames}`);
@@ -1516,6 +1586,8 @@ function senderTroubleLine({ quality, codec, width, height, targetFps, reason, d
 // Lado de quem assiste. Separa "o quadro não chegou" (received baixo) de "chegou e não foi mostrado" (dropped).
 function viewerTroubleLine({ codec, width, height, d }){
   if(!d || !(d.seconds > 0)) return null;
+  // Contador que voltou pra trás (faixa nova com o mesmo nome, reconexão): a diferença sai negativa e não quer dizer nada.
+  if(d.received < 0 || d.decoded < 0 || d.bytes < 0 || d.freezes < 0) return null;
   const decodedFps = d.decoded / d.seconds;
   if(decodedFps >= 20 && !d.freezes) return null;
   const parts = [`${codec || '?'} ${width || '?'}x${height || '?'}`, `recebe ${Math.round(d.received / d.seconds)}fps`, `decodifica ${Math.round(decodedFps)}fps`, `${Math.round(d.bytes * 8 / 1000 / d.seconds)}kbps`];
@@ -1601,6 +1673,7 @@ async function sampleTileDetailedStats(tileId, track){
 // fazendo isso e por quê. Com simulcast desligado na tela (ver HANDOFF §28),
 // esse passou a ser o gargalo que sobra pra imagem ruim.
 let sendStatsPrev = null; // { bytes, ts } da última amostra, pra calcular kbps
+let loggedEncoderFor = null; // a publicação cujo codificador já foi registrado
 let senderDetailPrev = null; // última leitura detalhada de quem transmite (diagnóstico de travada)
 
 const SEND_LIMIT_TEXT = {
@@ -1656,6 +1729,11 @@ async function sampleOwnScreenStats(){
   // pro VP8, aparece aqui.
   const outCodec = codecLabel(report, outbound.codecId);
   if(outCodec) parts.push(outCodec);
+  // Uma vez por transmissão: qual codificador (hardware da placa x OpenH264 em software) está em uso de verdade.
+  if(outbound.encoderImplementation && loggedEncoderFor !== pub){
+    loggedEncoderFor = pub;
+    appLog(`[sinal] codificador em uso: ${outbound.encoderImplementation}${outbound.powerEfficientEncoder ? ' (hardware)' : ' (software)'}`);
+  }
   if(outbound.frameWidth && outbound.frameHeight) parts.push(`${outbound.frameWidth}×${outbound.frameHeight}`);
   if(outbound.framesPerSecond != null) parts.push(`${Math.round(outbound.framesPerSecond)}fps`);
   if(sendStatsPrev && outbound.timestamp > sendStatsPrev.ts){
@@ -1665,9 +1743,11 @@ async function sampleOwnScreenStats(){
   sendStatsPrev = { bytes: outbound.bytesSent || 0, ts: outbound.timestamp };
 
   // diagnóstico de travada (ver senderTroubleLine)
+  const source = outbound.mediaSourceId && typeof report.get === 'function' ? report.get(outbound.mediaSourceId) : null;
   const scur = {
     ts: outbound.timestamp, frames: outbound.framesEncoded || 0, encodeS: outbound.totalEncodeTime || 0, bytes: outbound.bytesSent || 0,
-    keyFrames: outbound.keyFramesEncoded || 0, pli: outbound.pliCount || 0, nack: outbound.nackCount || 0
+    keyFrames: outbound.keyFramesEncoded || 0, pli: outbound.pliCount || 0, nack: outbound.nackCount || 0,
+    captured: source && typeof source.frames === 'number' ? source.frames : null // media-source: quadros entregues pela captura
   };
   const sprev = senderDetailPrev;
   senderDetailPrev = scur;
@@ -1677,7 +1757,8 @@ async function sampleOwnScreenStats(){
       targetFps: shareEncodingFor(SHARE_QUALITY_PRESETS[activeShareQuality], activeShareCodec).maxFramerate, reason: outbound.qualityLimitationReason,
       d: {
         seconds: (scur.ts - sprev.ts) / 1000, frames: scur.frames - sprev.frames, encodeMs: (scur.encodeS - sprev.encodeS) * 1000,
-        bytes: scur.bytes - sprev.bytes, keyFrames: scur.keyFrames - sprev.keyFrames, pli: scur.pli - sprev.pli, nack: scur.nack - sprev.nack
+        bytes: scur.bytes - sprev.bytes, keyFrames: scur.keyFrames - sprev.keyFrames, pli: scur.pli - sprev.pli, nack: scur.nack - sprev.nack,
+        captured: scur.captured != null && sprev.captured != null ? scur.captured - sprev.captured : null
       }
     });
     if(line && shouldLogTrouble('send', Date.now())) appLog(line);
@@ -4165,6 +4246,9 @@ function setupSettingsPanel(){
       startMinimizedCb.disabled = !settings.startWithWindows;
       document.getElementById('settingsStartMinimizedRow').classList.toggle('settings-row-disabled', !settings.startWithWindows);
     }
+    // Codificação por hardware: só onde o app conhece a chave `hardwareEncode` E a placa confirmou que codifica H.264 High.
+    document.getElementById('settingsHardwareSection').hidden = !('hardwareEncode' in settings) || !hardwareEncodeReady;
+    document.getElementById('settingsHardwareEncode').checked = !!settings.hardwareEncode;
     const supportsExcluded = Array.isArray(settings.excludedAudioApps);
     audioSection.hidden = !supportsExcluded;
     if(supportsExcluded) renderExcludedList(settings.excludedAudioApps);
@@ -4238,6 +4322,11 @@ function setupSettingsPanel(){
 
   quickShareCb.addEventListener('change', async () => {
     const res = await window.sinalElectron.setSettings({ quickShareWholeScreen: quickShareCb.checked });
+    applySettingsToUI(res.settings);
+  });
+
+  document.getElementById('settingsHardwareEncode').addEventListener('change', async (e) => {
+    const res = await window.sinalElectron.setSettings({ hardwareEncode: e.target.checked });
     applySettingsToUI(res.settings);
   });
 
@@ -4364,6 +4453,7 @@ window.addEventListener('DOMContentLoaded', () => {
   setupServersUI();
   setupAppLogin();
   setupStageFit();
+  setupHardwareEncode();
   setupResumeShare();
   resumeAfterAppRecovery();
 });
@@ -4375,7 +4465,7 @@ window.addEventListener('beforeunload', () => {
 });
 
 // PWA: versão, registro do service worker, detecção de atualização e botão de instalação
-const APP_VERSION = '0.8.66'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
+const APP_VERSION = '0.8.67'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
 // Dentro do Electron, mostra a versão do INSTALADOR (electron/package.json),
 // não a do site — ver preload.js. Fora dele (navegador normal), continua a
 // versão do deploy de sempre.
