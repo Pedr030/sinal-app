@@ -1,5 +1,15 @@
 [
   {
+    "id": "2026-10-13-rodape-relatorio",
+    "date": "2026-10-13",
+    "title": "Relatório de problema pelo site",
+    "site": "0.8.73",
+    "items": [
+      "Encontrou um problema? O ícone de bug no rodapé abre um formulário para avisar direto, sem precisar do app.",
+      "O rodapé agora tem um atalho para o GitHub e os créditos."
+    ]
+  },
+  {
     "id": "2026-10-13-miniaturas",
     "date": "2026-10-13",
     "title": "Destaque maior e miniaturas recolhíveis",
