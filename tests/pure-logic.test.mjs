@@ -1050,3 +1050,158 @@ test('relatório no site: o rótulo diz que é obrigatório e o mínimo, a conta
   assert.match(appJs, /getElementById\('reportText'\)\.addEventListener\('input', refreshReportMin\)/);
   assert.match(appJs, /getElementById\('reportSendBtn'\)\.disabled = missing > 0;/);
 });
+
+// ---------- diagnóstico: resumo por minuto e números de quem transmite (HANDOFF §66) ----------
+const diag = new Function(
+  "const SEND_LIMIT_REASONS = ['none', 'cpu', 'bandwidth', 'other'];" +
+  "function ownerOfTile(t){ return t.endsWith(':cam') ? t.slice(0, -4) : t; }" +
+  ['sumBy', 'summarizeSendSamples', 'dominantLimit', 'limitBreakdown', 'sendSummaryLine', 'sendStatsMessage', 'parseSendStats',
+   'summarizeRecvSamples', 'streamBottleneck', 'streamTag', 'recvSummaryLine'].map((n) => extractFunction(appJs, n)).join('\n') +
+  '; return { summarizeSendSamples, sendSummaryLine, sendStatsMessage, parseSendStats, summarizeRecvSamples, streamBottleneck, streamTag, recvSummaryLine };'
+)();
+
+const sendSample = (o) => ({ seconds: 4, frames: 240, captured: 240, bytes: 3000000, encodeMs: 2400, reason: 'none', paused: false, ...o });
+
+test('resumo do envio: média e mínimo de fps e captura, kbps, codificação e limite em % do tempo', () => {
+  const sum = diag.summarizeSendSamples([
+    sendSample({}),                                                   // 60 fps
+    sendSample({ frames: 80, captured: 84, reason: 'cpu' }),          // 20 fps, captura 21
+    sendSample({ frames: 160, captured: 160 })                        // 40 fps
+  ]);
+  assert.equal(sum.seconds, 12);
+  assert.equal(Math.round(sum.fps), 40);
+  assert.equal(Math.round(sum.fpsMin), 20);
+  assert.equal(Math.round(sum.captureMin), 21);
+  assert.equal(Math.round(sum.kbps), 6000);
+  assert.equal(sum.encodeMs.toFixed(1), (7200 / 480).toFixed(1));
+  assert.deepEqual(sum.limits, { none: 8, cpu: 4 });
+  const line = diag.sendSummaryLine(sum, { quality: 'Fluido', codec: 'H.264', width: 1920, height: 1080, targetFps: 60, encoder: 'OpenH264 (software)' });
+  assert.match(line, /^\[sinal\] resumo do envio \(12s\): Fluido H\.264 1920x1080 · envio 40fps \(mín 20, meta 60\) · captura 40fps \(mín 21\)/); // (240+84+160)/12 = 40,3
+  assert.match(line, /limite none 67%, cpu 33%/);
+  assert.match(line, /OpenH264 \(software\)$/);
+});
+
+test('resumo do envio: tempo pausado (ninguém assistindo) não entra na média; amostra inválida é ignorada', () => {
+  const sum = diag.summarizeSendSamples([sendSample({}), sendSample({ frames: 0, captured: 0, bytes: 0, paused: true }), { seconds: 4, frames: -5, bytes: 1 }, null]);
+  assert.equal(sum.pausedSeconds, 4);
+  assert.equal(Math.round(sum.fps), 60);
+  assert.match(diag.sendSummaryLine(sum, { quality: 'Nítido', codec: 'H.265', targetFps: 30 }), /pausado 4s/);
+  const only = diag.summarizeSendSamples([sendSample({ frames: 0, captured: 0, bytes: 0, paused: true })]);
+  assert.match(diag.sendSummaryLine(only, { quality: 'Nítido', codec: 'H.265' }), /pausado \(ninguém assistindo\)$/);
+  assert.equal(diag.sendSummaryLine(diag.summarizeSendSamples([]), {}), null);
+});
+
+test('números de quem transmite: só números e o codificador; quem assiste aceita só da própria tela de quem mandou', () => {
+  const sum = diag.summarizeSendSamples([sendSample({ frames: 100, captured: 100, reason: 'cpu' }), sendSample({ frames: 120, captured: 124, reason: 'cpu' })]);
+  const msg = diag.sendStatsMessage(sum, { tile: 'd123-abc123', quality: 'Fluido', codec: 'H.264', targetFps: 60, hw: false, encoderName: 'OpenH264' });
+  assert.deepEqual(Object.keys(msg).sort(), ['cap', 'capMin', 'codec', 'enc', 'fps', 'fpsMin', 'hw', 'kbps', 'lim', 'q', 'target', 'tile', 'type', 'v'].sort());
+  assert.equal(msg.lim, 'cpu');
+  const parsed = diag.parseSendStats(JSON.parse(JSON.stringify(msg)), 'd123-abc123');
+  assert.equal(parsed.fps, 27.5);
+  assert.equal(parsed.enc, 'OpenH264');
+  // outra pessoa não fala pela tela de ninguém
+  assert.equal(diag.parseSendStats(msg, 'd999-zzz999'), null);
+  // lixo, números absurdos e texto perigoso
+  assert.equal(diag.parseSendStats({ ...msg, fps: 'muito' }, 'd123-abc123'), null);
+  assert.equal(diag.parseSendStats({ ...msg, v: 2 }, 'd123-abc123'), null);
+  const weird = diag.parseSendStats({ ...msg, kbps: -1, lim: 'hack', enc: '<img src=x onerror=alert(1)>' + 'x'.repeat(200) }, 'd123-abc123');
+  assert.equal(weird.kbps, null);
+  assert.equal(weird.lim, 'none');
+  assert.ok(!/[<>=]/.test(weird.enc) && weird.enc.length <= 60);
+  assert.equal(diag.sendStatsMessage(diag.summarizeSendSamples([]), {}), null);
+});
+
+const recvSample = (o) => ({ seconds: 4, received: 120, decoded: 120, bytes: 2500000, lost: 0, packets: 2000, freezes: 0, freezeSeconds: 0, ...o });
+
+test('resumo da recepção: fps recebido (médio e mínimo), perda em %, congelamentos', () => {
+  const sum = diag.summarizeRecvSamples([recvSample({}), recvSample({ received: 40, decoded: 40, lost: 20, packets: 980, freezes: 1, freezeSeconds: 0.6 })]);
+  assert.equal(Math.round(sum.recvFps), 20);
+  assert.equal(Math.round(sum.recvMin), 10);
+  assert.equal(sum.lossPct.toFixed(1), (20 / 3000 * 100).toFixed(1));
+  assert.equal(sum.freezes, 1);
+  assert.equal(diag.summarizeRecvSamples([{ seconds: 4, received: -3, decoded: 0, bytes: 0 }]), null);
+});
+
+test('gargalo provável: separa captura de quem transmite, CPU/upload dele, rede e o PC de quem assiste', () => {
+  const recvLow = { recvFps: 18, decodedFps: 18, lossPct: 0, freezeSeconds: 0 };
+  assert.equal(diag.streamBottleneck({ recvFps: 58, decodedFps: 58, lossPct: 0, freezeSeconds: 0 }, { target: 60, fps: 58 }), 'ok');
+  assert.equal(diag.streamBottleneck(recvLow, { target: 60, fps: 19, cap: 20, lim: 'none' }), 'captura no PC de quem transmite');
+  assert.equal(diag.streamBottleneck(recvLow, { target: 60, fps: 19, cap: 58, lim: 'cpu' }), 'CPU de quem transmite');
+  assert.equal(diag.streamBottleneck(recvLow, { target: 60, fps: 19, cap: 58, lim: 'bandwidth' }), 'upload de quem transmite');
+  assert.equal(diag.streamBottleneck({ ...recvLow, lossPct: 4 }, { target: 60, fps: 58, cap: 59, lim: 'none' }), 'rede (perda de pacotes)');
+  assert.equal(diag.streamBottleneck({ recvFps: 40, decodedFps: 20, lossPct: 0, freezeSeconds: 0 }, { target: 60, fps: 58 }), 'decodificação no seu PC');
+  assert.equal(diag.streamBottleneck(recvLow, null), 'sem dados de quem transmite'); // site antigo: meta assumida 30
+  assert.equal(diag.streamBottleneck(recvLow, { target: 60, fps: 58, cap: 58 }), 'rede ou servidor');
+});
+
+test('linha de recepção junta o lado de quem transmite e o palpite; marca curta e estável, sem nome', () => {
+  assert.equal(diag.streamTag('d123-abc123'), diag.streamTag('d123-abc123'));
+  assert.match(diag.streamTag('d123-abc123'), /^[0-9a-f]{4}$/);
+  const sum = diag.summarizeRecvSamples([recvSample({ received: 80, decoded: 80 })]);
+  const sender = { quality: 'Fluido', codec: 'H.264', target: 60, fps: 20, fpsMin: 9, cap: 21, capMin: 10, lim: 'none', hw: false, enc: 'OpenH264' };
+  const line = diag.recvSummaryLine('ab12', sum, { codec: 'H.264', width: 1920, height: 1080 }, sender);
+  assert.match(line, /^\[sinal\] resumo da recepção \(4s\) #ab12: H\.264 1920x1080 · recebe 20fps \(mín 20\)/);
+  assert.match(line, /\| quem transmite: Fluido H\.264 · envio 20fps \(mín 9, meta 60\) · captura 21fps \(mín 10\) · limite none · OpenH264 \(software\)/);
+  assert.match(line, /\| gargalo provável: captura no PC de quem transmite$/);
+  assert.match(diag.recvSummaryLine('ab12', sum, {}, null), /quem transmite: sem dados/);
+});
+
+test('ligações: amostras alimentam os resumos, números vão por tópico próprio e sem garantia, e tudo zera ao sair', () => {
+  assert.match(appJs, /noteRecvSample\(tileId, \{/);
+  assert.match(appJs, /noteSendSample\(\{/);
+  assert.match(appJs, /topic: SEND_STATS_TOPIC \}/);
+  assert.match(appJs, /reliable: false, topic: SEND_STATS_TOPIC/);
+  assert.match(appJs, /msg\.type === 'send-stats' && participant\)\{\s*const stats = parseSendStats\(msg, participant\.identity\);/);
+  assert.match(appJs, /flushRecvSummary\(tileId, 20\);\s*remoteSendStats\.delete\(tileId\);/);
+  assert.match(appJs, /recvSummaryWin\.clear\(\);\s*remoteSendStats\.clear\(\);/);
+  assert.equal((appJs.match(/flushSendSummary\(20\);/g) || []).length, 2); // trocar de qualidade e parar de transmitir
+});
+
+test('resumo do envio: "captura sem quadros" (tela parada / captura falhando) é diferente de "ninguém assistindo"', () => {
+  const stalledOnly = diag.summarizeSendSamples([sendSample({ frames: 0, captured: 0, bytes: 0, paused: true, stalled: true })]);
+  assert.match(diag.sendSummaryLine(stalledOnly, { quality: 'Fluido', codec: 'H.264' }), /captura sem quadros \(tela parada ou captura falhando\)$/);
+  const pausedOnly = diag.summarizeSendSamples([sendSample({ frames: 0, captured: 240, bytes: 0, paused: true })]);
+  assert.match(diag.sendSummaryLine(pausedOnly, { quality: 'Fluido', codec: 'H.264' }), /pausado \(ninguém assistindo\)$/);
+  // no meio de uma transmissão: não puxa a média pra baixo, mas aparece no fim da linha
+  const mixed = diag.summarizeSendSamples([sendSample({}), sendSample({ frames: 0, captured: 0, bytes: 0, stalled: true })]);
+  assert.equal(Math.round(mixed.fps), 60);
+  assert.match(diag.sendSummaryLine(mixed, { quality: 'Fluido', codec: 'H.264', targetFps: 60 }), /captura sem quadros 4s/);
+  assert.match(appJs, /stalled: frames === 0 && captured === 0,/);
+});
+
+// ---------- congelamento de ~3 s: rtx-time na descrição local de quem recebe (HANDOFF §67) ----------
+const addRtxTime = new Function(extractFunction(appJs, 'addRtxTime') + '; return addRtxTime;')();
+const SDP_RTX = [
+  'v=0', 'o=- 1 2 IN IP4 127.0.0.1', 's=-', 't=0 0',
+  'm=audio 9 UDP/TLS/RTP/SAVPF 111 63', 'a=mid:0', 'a=rtpmap:111 opus/48000/2', 'a=rtpmap:63 red/48000/2', 'a=fmtp:63 111/111',
+  'm=video 9 UDP/TLS/RTP/SAVPF 96 97 108 109', 'a=mid:1', 'a=rtpmap:96 VP8/90000', 'a=rtpmap:97 rtx/90000', 'a=fmtp:97 apt=96',
+  'a=rtpmap:108 H264/90000', 'a=fmtp:108 level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f',
+  'a=rtpmap:109 rtx/90000', 'a=fmtp:109 apt=108',
+  'm=video 9 UDP/TLS/RTP/SAVPF 96 97', 'a=mid:2', 'a=rtpmap:96 VP8/90000', 'a=rtpmap:97 rtx/90000', 'a=fmtp:97 apt=96;rtx-time=200', ''
+].join('\r\n');
+
+test('rtx-time: entra só nas linhas de retransmissão (RTX) de vídeo; o resto da descrição fica igual', () => {
+  const out = addRtxTime(SDP_RTX, 500);
+  assert.match(out, /a=fmtp:97 apt=96;rtx-time=500\r\n/);
+  assert.match(out, /a=fmtp:109 apt=108;rtx-time=500\r\n/);
+  assert.match(out, /a=fmtp:108 level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f\r\n/); // codec de vídeo não muda
+  assert.match(out, /a=fmtp:63 111\/111\r\n/);                                                             // áudio não muda
+  assert.match(out, /a=fmtp:97 apt=96;rtx-time=200\r\n/);                                                   // quem já tem fica como está
+  assert.equal(out.split('\r\n').length, SDP_RTX.split('\r\n').length);
+});
+
+test('rtx-time: sem RTX, valor inválido ou entrada estranha, devolve a descrição original (idempotente)', () => {
+  const noRtx = 'v=0\r\nm=video 9 UDP/TLS/RTP/SAVPF 96\r\na=rtpmap:96 VP8/90000\r\n';
+  assert.equal(addRtxTime(noRtx, 500), noRtx);
+  assert.equal(addRtxTime(SDP_RTX, 0), SDP_RTX);
+  assert.equal(addRtxTime(null, 500), null);
+  const once = addRtxTime(SDP_RTX, 500);
+  assert.equal(addRtxTime(once, 500), once);
+});
+
+test('rtx-time: vale pra oferta e resposta, roda depois do ajuste do perfil High e cai na descrição original se der erro', () => {
+  assert.match(appJs, /const RTX_TIME_MS = 500;/);
+  assert.match(appJs, /\['createOffer', 'createAnswer'\]\.forEach\(\(method\) => \{/);
+  assert.match(appJs, /setupHardwareEncode\(\);\s*setupFasterFreezeRecovery\(\);/);
+  assert.match(appJs, /catch\(e\)\{ \/\* qualquer problema: segue com a descrição original \*\/ \}/);
+});
