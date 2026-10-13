@@ -205,7 +205,7 @@
         <button class="icon-btn" id="sideToggleBtn" title="Salas do servidor" aria-label="Salas do servidor" hidden>
           <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="9" y1="3" x2="9" y2="21"/></svg>
         </button>
-        <button class="icon-btn" id="closedToggleBtn" title="Ocultar as transmissões fechadas" aria-label="Ocultar as transmissões fechadas" hidden></button>
+        <button class="icon-btn" id="closedToggleBtn" title="Transmissões ocultas" aria-label="Transmissões ocultas" aria-expanded="false" hidden></button>
         <button class="icon-btn" id="muteAllBtn" title="Silenciar todas as transmissões" aria-label="Silenciar todas as transmissões" hidden></button>
         <button class="icon-btn" id="rosterBtn" title="Ver quem está na sala" aria-label="Ver quem está na sala">
           <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
@@ -228,6 +228,17 @@
       </div>
       <div class="knock-list" id="knockList"></div>
       <div class="knock-empty" id="knockEmpty">Ninguém está pedindo para entrar agora.</div>
+    </div>
+
+    <!-- Transmissões ocultas pelo X do card "clique pra assistir" — ver applyClosedVisibility() em app.js -->
+    <div class="knock-panel" id="hiddenPanel" hidden>
+      <div class="knock-head">
+        <span>Transmissões ocultas</span>
+        <button type="button" id="hiddenPanelClose" class="settings-close" aria-label="Fechar">&times;</button>
+      </div>
+      <div class="knock-list" id="hiddenList"></div>
+      <div class="knock-empty">Nenhuma transmissão oculta.</div>
+      <div class="hidden-foot"><button type="button" id="hideUnwatchedBtn" class="hidden-all-btn">Ocultar as que não estou assistindo</button></div>
     </div>
 
     <div class="resume-share" id="resumeShare" hidden>
@@ -385,6 +396,17 @@
         Abrir as transmissões sem som
       </label>
       <div class="settings-note">Ao começar a assistir uma transmissão, ela abre muda e você liga o som quando quiser, no botão de volume do vídeo. Vale para as próximas que você abrir.</div>
+    </div>
+
+    <div class="settings-section" id="settingsGpuCaptureSection" hidden>
+      <div class="settings-section-title">Captura da tela (experimental)</div>
+      <label class="settings-row" id="settingsGpuCaptureRow">
+        <input type="checkbox" id="settingsGpuCapture">
+        Capturar a tela pela placa de vídeo
+      </label>
+      <div class="settings-note">Em jogos que usam muito a placa de vídeo, a captura da tela pode entregar menos quadros do que o jogo mostra, e a transmissão fica travada para quem assiste. Com esta opção, a imagem é pega direto da placa, sem esperar o jogo. Vale depois de reiniciar o app. É experimental: se algo der errado, desligue aqui.</div>
+      <div class="settings-note settings-hardware-status" id="settingsGpuCaptureStatus" hidden></div>
+      <button type="button" id="settingsGpuCaptureRestart" class="settings-restart-btn" hidden>Reiniciar o app agora</button>
     </div>
 
     <div class="settings-section" id="settingsHardwareSection" hidden>

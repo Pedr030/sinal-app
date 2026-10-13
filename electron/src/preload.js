@@ -78,6 +78,7 @@ contextBridge.exposeInMainWorld('sinalElectron', {
   // SETTINGS_PATH sobre o porquê).
   getSettings: () => ipcRenderer.invoke('sinal:get-settings'),
   setSettings: (partial) => ipcRenderer.invoke('sinal:set-settings', partial),
+  relaunchApp: () => ipcRenderer.send('sinal:relaunch'),
 
   // Chamado logo antes de toggleShare() quando o atalho disparou começando
   // um compartilhamento com "tela inteira direto" ligado — main.js pula o

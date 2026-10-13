@@ -1361,7 +1361,7 @@ function setupHardwareEncode(){
   RTCPeerConnection.prototype.createOffer = async function(...args){
     const offer = await originalCreateOffer.apply(this, args);
     try{
-      if(hardwareEncodeReady && electronSettings && electronSettings.hardwareEncode && offer && typeof offer.sdp === 'string'){
+      if(hardwareEncodeReady && electronSettings && electronSettings.hardwareEncode && !electronSettings.gpuCaptureActive && offer && typeof offer.sdp === 'string'){
         const sdp = preferH264High(offer.sdp);
         if(sdp !== offer.sdp){ appLog('[sinal] codificação por hardware: perfil H.264 High na frente da oferta'); return { type: offer.type, sdp }; }
       }
@@ -1382,6 +1382,29 @@ function setupHardwareEncode(){
 }
 // A opção aparece pra todo mundo que tem um app que a conhece (chave `hardwareEncode`). Placa sem suporte: fica cinza, sem
 // poder marcar, com o aviso; enquanto a verificação da placa não termina também fica cinza ("Verificando…").
+// Captura pela placa de vídeo (HANDOFF §68): aparece onde o app conhece a chave `gpuCapture`; cinza se o Windows não
+// suporta; se a escolha ainda não está valendo (muda só ao reabrir), mostra o aviso e o botão "Reiniciar o app agora".
+function renderGpuCaptureSection(settings){
+  const sec = document.getElementById('settingsGpuCaptureSection');
+  if(!sec) return;
+  const known = !!settings && 'gpuCapture' in settings;
+  sec.hidden = !known;
+  if(!known) return;
+  const supported = settings.gpuCaptureSupported === true;
+  const cb = document.getElementById('settingsGpuCapture');
+  const status = document.getElementById('settingsGpuCaptureStatus');
+  const restart = document.getElementById('settingsGpuCaptureRestart');
+  cb.disabled = !supported;
+  cb.checked = supported && settings.gpuCapture === true;
+  document.getElementById('settingsGpuCaptureRow').classList.toggle('settings-row-disabled', !supported);
+  const pending = supported && (settings.gpuCapture === true) !== (settings.gpuCaptureActive === true);
+  restart.hidden = !pending;
+  if(!supported) status.textContent = 'Precisa do Windows 11, versão 24H2 ou mais nova.';
+  else if(pending) status.textContent = 'Reinicie o app para aplicar.';
+  else status.textContent = '';
+  status.hidden = !status.textContent;
+}
+
 function renderHardwareSection(settings){
   const sec = document.getElementById('settingsHardwareSection');
   if(!sec) return;
@@ -1390,11 +1413,17 @@ function renderHardwareSection(settings){
   if(!known) return;
   const cb = document.getElementById('settingsHardwareEncode');
   const status = document.getElementById('settingsHardwareStatus');
-  cb.disabled = !hardwareEncodeReady;
-  cb.checked = hardwareEncodeReady && !!settings.hardwareEncode; // sem suporte nunca aparece marcada
-  document.getElementById('settingsHardwareRow').classList.toggle('settings-row-disabled', !hardwareEncodeReady);
-  status.hidden = hardwareEncodeReady;
-  status.textContent = hardwareEncodeChecked ? 'Sua placa de vídeo não suporta este método de codificação.' : 'Verificando a sua placa de vídeo…';
+  // Com a captura pela placa valendo (HANDOFF §68), o Fluido já é codificado pela placa (PlatformH264CbpEncoding): esta
+  // opção não acrescenta nada, então fica cinza com o aviso. Continua útil pra quem não usa a captura pela placa
+  // (Windows 10 / 11 antes do 24H2, ou quem a deixou desligada).
+  const covered = settings.gpuCaptureActive === true;
+  const usable = hardwareEncodeReady && !covered;
+  cb.disabled = !usable;
+  cb.checked = usable && !!settings.hardwareEncode; // sem suporte (ou já incluída) nunca aparece marcada
+  document.getElementById('settingsHardwareRow').classList.toggle('settings-row-disabled', !usable);
+  status.hidden = usable;
+  status.textContent = covered ? 'Já incluída na captura pela placa de vídeo.'
+    : hardwareEncodeChecked ? 'Sua placa de vídeo não suporta este método de codificação.' : 'Verificando a sua placa de vídeo…';
 }
 
 async function toggleShare(){
@@ -2313,6 +2342,9 @@ function addPendingTile(tileId, participant, isCamera){
   const tile = document.createElement('div');
   tile.className = 'tile pending-tile';
   tile.dataset.id = tileId;
+  tile.dataset.name = displayName;
+  tile.dataset.owner = participant.identity;
+  tile.dataset.camera = isCamera ? '1' : '0';
   tile.innerHTML = `
     <div class="pending-watch">
       ${ICON_PLAY}
@@ -2636,50 +2668,96 @@ function toggleMuteAll(){
   refreshMuteAllBtn();
 }
 
-// ---------------- Transmissões fechadas ("clique pra assistir"): nunca em destaque, ocultar uma ou todas ----------------
+// ---------------- Transmissões fechadas ("clique pra assistir"): nunca em destaque; ocultar e mostrar de novo ----------------
 // Um card "clique pra assistir" é uma transmissão que a pessoa ainda não abriu (ou fechou com "parar de assistir").
-// Ele nunca ocupa o destaque (antes, sendo o primeiro, nascia grande e era preciso abrir a live pra poder diminuir e
-// fechar). Dá pra ocultar um card (X no canto, só nesta visita à sala) ou todos de uma vez (botão do olho na barra da
-// sala, lembrado entre visitas). Ocultar não desinscreve nem muda nada na transmissão: só esconde o card.
-const HIDE_CLOSED_KEY = 'sinal:hideClosed';
-const ICON_CLOSED_SHOWN = '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>';
+// Ele nunca ocupa o destaque. O X no canto do card oculta aquela transmissão (só nesta visita à sala; se ela acabar e
+// voltar, volta a aparecer). As ocultas ficam listadas no painel "Transmissões ocultas" (botão do olho na barra da sala,
+// igual ao de pedidos para entrar), onde dá pra mostrar cada uma de novo. Ocultar não desinscreve nem muda nada na
+// transmissão: só esconde o card.
 const ICON_CLOSED_HIDDEN = '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>';
 const ICON_PENDING_DISMISS = '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>';
-let hideClosedPref = false;
-try{ hideClosedPref = localStorage.getItem(HIDE_CLOSED_KEY) === '1'; }catch(e){ /* sem localStorage: começa mostrando */ }
-const dismissedPending = new Set(); // ids de cards ocultados individualmente (só nesta visita à sala)
+try{ localStorage.removeItem('sinal:hideClosed'); }catch(e){ /* era a opção antiga "ocultar todas" (0.8.71–0.8.75) */ }
+const dismissedPending = new Set(); // ids de cards ocultados (só nesta visita à sala)
 
 function pendingTiles(){ return [...tiles.values()].filter((t) => t.classList.contains('pending-tile')); }
 function applyClosedVisibility(){
   const list = pendingTiles();
-  list.forEach((t) => t.classList.toggle('pending-hidden', hideClosedPref || dismissedPending.has(t.dataset.id)));
-  const hiddenCount = list.filter((t) => t.classList.contains('pending-hidden')).length;
+  list.forEach((t) => t.classList.toggle('pending-hidden', dismissedPending.has(t.dataset.id)));
+  const hidden = list.filter((t) => t.classList.contains('pending-hidden'));
+  const visibleUnwatched = list.length - hidden.length;
+  const panel = document.getElementById('hiddenPanel');
+  if(panel && !list.length) panel.hidden = true; // nenhuma transmissão que você não esteja assistindo: nada pra mostrar
+  const hideAll = document.getElementById('hideUnwatchedBtn');
+  if(hideAll){
+    hideAll.hidden = visibleUnwatched === 0;
+    hideAll.textContent = visibleUnwatched > 1 ? `Ocultar as ${visibleUnwatched} que não estou assistindo` : 'Ocultar a que não estou assistindo';
+  }
   const btn = document.getElementById('closedToggleBtn');
   if(btn){
-    btn.hidden = list.length === 0 && !hideClosedPref; // sem nada fechado não há o que mostrar (mas, ligado, precisa poder desligar)
-    btn.classList.toggle('active', hideClosedPref);
-    btn.innerHTML = hideClosedPref ? ICON_CLOSED_HIDDEN : ICON_CLOSED_SHOWN;
-    const label = hideClosedPref ? 'Mostrar as transmissões fechadas' : 'Ocultar as transmissões fechadas';
-    btn.title = label;
-    btn.setAttribute('aria-label', label);
-    if(list.length){
+    btn.hidden = list.length === 0; // aparece quando há alguma transmissão que você não está assistindo (oculta ou não)
+    btn.innerHTML = ICON_CLOSED_HIDDEN;
+    if(hidden.length){
       const badge = document.createElement('span');
       badge.className = 'chat-badge show';
-      badge.textContent = String(list.length);
+      badge.textContent = String(hidden.length);
       btn.appendChild(badge);
     }
+    const open = !!panel && !panel.hidden;
+    btn.classList.toggle('active', open);
+    btn.setAttribute('aria-expanded', String(open));
+    const label = hidden.length ? `Transmissões ocultas (${hidden.length})` : 'Transmissões ocultas';
+    btn.title = label;
+    btn.setAttribute('aria-label', label);
   }
+  renderHiddenPanel(hidden);
   const note = document.getElementById('emptyClosedNote');
   if(note){
-    note.hidden = hiddenCount === 0;
-    note.textContent = hiddenCount === 1 ? '1 transmissão fechada está oculta.' : `${hiddenCount} transmissões fechadas estão ocultas.`;
+    note.hidden = hidden.length === 0;
+    note.textContent = hidden.length === 1 ? '1 transmissão está oculta.' : `${hidden.length} transmissões estão ocultas.`;
   }
 }
-function toggleHideClosed(){
-  hideClosedPref = !hideClosedPref;
-  if(!hideClosedPref) dismissedPending.clear(); // "mostrar" traz de volta todos, inclusive os ocultados um a um
-  try{ localStorage.setItem(HIDE_CLOSED_KEY, hideClosedPref ? '1' : '0'); }catch(e){ /* só não lembra */ }
+
+// Lista do painel. Nome e avatar vêm de outros participantes: montado via DOM (textContent/src), nunca innerHTML.
+function renderHiddenPanel(hidden){
+  const listEl = document.getElementById('hiddenList');
+  if(!listEl) return;
+  listEl.textContent = '';
+  hidden.forEach((t) => {
+    const row = mk('div', 'hidden-row');
+    const av = mk('span', 'knock-avatar');
+    const owner = room && t.dataset.owner ? room.remoteParticipants.get(t.dataset.owner) : null;
+    const avatarUrl = owner ? participantAvatarUrl(owner) : null;
+    if(avatarUrl){ const img = document.createElement('img'); img.src = avatarUrl; img.alt = ''; av.appendChild(img); }
+    else av.textContent = initials(t.dataset.name || '?');
+    const text = mk('span', 'hidden-who');
+    text.appendChild(mk('small', '', t.dataset.camera === '1' ? 'Câmera de' : 'Transmissão de'));
+    text.appendChild(mk('strong', '', t.dataset.name || 'alguém'));
+    const show = mk('button', 'primary', 'Mostrar');
+    show.type = 'button';
+    show.addEventListener('click', () => unhidePending(t.dataset.id));
+    row.append(av, text, show);
+    listEl.appendChild(row);
+  });
+}
+
+function unhidePending(tileId){
+  dismissedPending.delete(tileId);
   updateStageVisibility();
+}
+
+// Rodapé do painel: oculta de uma vez todas as transmissões que você não está assistindo agora (as que chegarem
+// depois aparecem normalmente).
+function hideAllUnwatched(){
+  pendingTiles().forEach((t) => dismissedPending.add(t.dataset.id));
+  updateStageVisibility();
+}
+
+function setHiddenPanel(open){
+  const panel = document.getElementById('hiddenPanel');
+  if(!panel) return;
+  if(open && document.getElementById('knockPanel') && !document.getElementById('knockPanel').hidden) setKnockPanel(false, false);
+  panel.hidden = !open;
+  applyClosedVisibility();
 }
 
 // ---------------- Aba da fileira de miniaturas: recolher / mostrar ----------------
@@ -3051,6 +3129,7 @@ function leaveRoom(){
   tiles.forEach(el => el.remove());
   tiles.clear();
   dismissedPending.clear();
+  document.getElementById('hiddenPanel').hidden = true;
   muteAllNew = false;
   pinnedOrder = [];
   document.getElementById('spotlightGrid').innerHTML = '';
@@ -4157,6 +4236,8 @@ function updateKnockButton(){
 
 function setKnockPanel(open, byUser){
   const panel = document.getElementById('knockPanel');
+  const hiddenPanel = document.getElementById('hiddenPanel');
+  if(open && hiddenPanel && !hiddenPanel.hidden){ hiddenPanel.hidden = true; applyClosedVisibility(); }
   panel.hidden = !open;
   knockOpenedByUser = open && !!byUser;
   renderKnockUI();
@@ -4497,6 +4578,9 @@ function setupServersUI(){
     if(row) hopToRoom(row.dataset.room);
   });
   document.getElementById('knockBtn').addEventListener('click', () => setKnockPanel(document.getElementById('knockPanel').hidden, true));
+  document.getElementById('hiddenPanelClose').addEventListener('click', () => setHiddenPanel(false));
+  document.getElementById('hideUnwatchedBtn').addEventListener('click', hideAllUnwatched);
+  document.addEventListener('keydown', (e) => { if(e.key === 'Escape' && !document.getElementById('hiddenPanel').hidden) setHiddenPanel(false); });
   document.getElementById('knockPanelClose').addEventListener('click', () => setKnockPanel(false, false));
   document.getElementById('manageBtn').addEventListener('click', openManage);
   document.getElementById('manageClose').addEventListener('click', closeManage);
@@ -4981,6 +5065,7 @@ function setupSettingsPanel(){
     }
     // Codificação por hardware: aparece onde o app conhece a chave `hardwareEncode`; cinza se a placa não suporta.
     renderHardwareSection(settings);
+    renderGpuCaptureSection(settings);
     const supportsExcluded = Array.isArray(settings.excludedAudioApps);
     audioSection.hidden = !supportsExcluded;
     if(supportsExcluded) renderExcludedList(settings.excludedAudioApps);
@@ -5061,6 +5146,19 @@ function setupSettingsPanel(){
     const res = await window.sinalElectron.setSettings({ hardwareEncode: e.target.checked });
     applySettingsToUI(res.settings);
   });
+  document.getElementById('settingsGpuCapture').addEventListener('change', async (e) => {
+    const res = await window.sinalElectron.setSettings({ gpuCapture: e.target.checked });
+    applySettingsToUI(res.settings);
+  });
+  document.getElementById('settingsGpuCaptureRestart').addEventListener('click', async () => {
+    if(!window.sinalElectron.relaunchApp) return;
+    if(room){
+      const ok = await askConfirm({ title: 'Reiniciar o app?', message: 'Você vai sair da sala. Depois que o app abrir de novo, é só entrar outra vez.', okText: 'Reiniciar' });
+      if(!ok) return;
+    }
+    appLog('[sinal] reiniciando o app pra aplicar a captura pela placa de vídeo');
+    window.sinalElectron.relaunchApp();
+  });
 
   startWithWindowsCb.addEventListener('change', async () => {
     const res = await window.sinalElectron.setSettings({ startWithWindows: startWithWindowsCb.checked });
@@ -5140,7 +5238,7 @@ function setupSettingsPanel(){
   ['copyCodeBtn',     (btn) => copyRoomCode(btn)],   // recebiam o `this` do onclick — agora vem do próprio listener
   ['copyLinkBtn',     (btn) => copyRoomLink(btn)],
   ['filmTab',         () => toggleFilmCollapsed()],
-  ['closedToggleBtn', () => toggleHideClosed()],
+  ['closedToggleBtn', () => setHiddenPanel(document.getElementById('hiddenPanel').hidden)],
   ['muteAllBtn',      () => toggleMuteAll()],
   ['rosterBtn',       () => toggleRosterPanel()],
   ['rosterCloseBtn',  () => toggleRosterPanel(false)],
@@ -5203,7 +5301,7 @@ window.addEventListener('beforeunload', () => {
 });
 
 // PWA: versão, registro do service worker, detecção de atualização e botão de instalação
-const APP_VERSION = '0.8.75'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
+const APP_VERSION = '0.8.76'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
 // Dentro do Electron, mostra a versão do INSTALADOR (electron/package.json),
 // não a do site — ver preload.js. Fora dele (navegador normal), continua a
 // versão do deploy de sempre.

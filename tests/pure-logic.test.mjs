@@ -734,11 +734,11 @@ test('perfil H.264 High: duas seções de vídeo (câmera e tela) são tratadas 
 test('codificação por hardware: nasce DESLIGADA, só no app desktop, só se a placa confirmar, e a opção só aparece onde o app conhece a chave', () => {
   const main = readFileSync(join(ROOT, 'electron/src/main.js'), 'utf8');
   const html = readFileSync(join(ROOT, 'public/index.html'), 'utf8');
-  assert.match(main, /hardwareEncode: false\s*\n\};/);                                              // padrão: desligada
-  assert.match(main, /'startMinimized', 'hardwareEncode'\]/);                                    // só booleano passa pela limpeza
+  assert.match(main, /hardwareEncode: false,/);                                              // padrão: desligada
+  assert.match(main, /'startMinimized', 'hardwareEncode', 'gpuCapture'\]/);                                    // só booleano passa pela limpeza
   assert.match(appJs, /if\(!\(window\.sinalElectron && window\.sinalElectron\.isElectron\) \|\| !window\.RTCPeerConnection\) return;/);
   assert.match(appJs, /RTCPeerConnection\.prototype\.createOffer = async function/);                                       // mexe na OFERTA (a resposta sozinha deixava o espectador sem imagem)
-  assert.match(appJs, /hardwareEncodeReady && electronSettings && electronSettings\.hardwareEncode && offer && typeof offer\.sdp === 'string'/);   // só ligado e só com a placa ok
+  assert.match(appJs, /hardwareEncodeReady && electronSettings && electronSettings\.hardwareEncode && !electronSettings\.gpuCaptureActive && offer && typeof offer\.sdp === 'string'/);   // só ligado e só com a placa ok
   assert.doesNotMatch(appJs, /RTCPeerConnection\.prototype\.setRemoteDescription = /);
   assert.match(appJs, /profile-level-id=64001f;packetization-mode=1', width: 1920, height: 1080, framerate: 60/);
   assert.match(appJs, /r\.supported && r\.powerEfficient/);
@@ -907,7 +907,7 @@ test('silenciar tudo: botão na sala, ligado ao toggle; some sem transmissões e
   assert.match(indexHtml, /id="muteAllBtn"[^>]*hidden/);
   assert.match(appJs, /\['muteAllBtn',\s*\(\) => toggleMuteAll\(\)\]/);
   assert.match(appJs, /btn\.hidden = list\.length === 0;/);
-  assert.match(appJs, /tiles\.clear\(\);\s*dismissedPending\.clear\(\);\s*muteAllNew = false;/);
+  assert.match(appJs, /tiles\.clear\(\);\s*dismissedPending\.clear\(\);\s*document\.getElementById\('hiddenPanel'\)\.hidden = true;\s*muteAllNew = false;/);
 });
 // ---------- transmissões fechadas ("clique pra assistir"): fora do destaque, ocultar uma ou todas ----------
 test('card "clique pra assistir" nunca ocupa o destaque: vai sempre pra fileira', () => {
@@ -923,14 +923,29 @@ test('ocultar um card: o X não abre a transmissão (para a propagação) e só 
   assert.match(styleCss, /\.tile\.pending-hidden\{ display:none; \}/);
 });
 
-test('ocultar todas: botão na sala, lembrado entre visitas, e "mostrar" também traz de volta os ocultados um a um', () => {
+test('transmissões ocultas: o botão do olho abre um painel (como o de pedidos) que lista cada oculta e mostra de novo', () => {
   assert.match(indexHtml, /id="closedToggleBtn"[^>]*hidden/);
-  assert.match(appJs, /const HIDE_CLOSED_KEY = 'sinal:hideClosed';/);
-  assert.match(appJs, /\['closedToggleBtn', \(\) => toggleHideClosed\(\)\]/);
-  assert.match(appJs, /if\(!hideClosedPref\) dismissedPending\.clear\(\);/);
-  // o palco só conta o que aparece: card oculto não deixa a fileira vazia à mostra nem esconde o "sem sinal"
+  assert.match(indexHtml, /<div class="knock-panel" id="hiddenPanel" hidden>/);
+  assert.match(indexHtml, /Nenhuma transmissão oculta\./);
+  assert.match(appJs, /\['closedToggleBtn', \(\) => setHiddenPanel\(document\.getElementById\('hiddenPanel'\)\.hidden\)\]/);
+  assert.match(appJs, /btn\.hidden = list\.length === 0;/);                   // aparece quando há transmissão que você não assiste
+  // rodapé: oculta de uma vez todas as que você não está assistindo; some quando não sobra nenhuma visível
+  assert.match(indexHtml, /<button type="button" id="hideUnwatchedBtn" class="hidden-all-btn">/);
+  assert.match(appJs, /function hideAllUnwatched\(\)\{\s*pendingTiles\(\)\.forEach\(\(t\) => dismissedPending\.add\(t\.dataset\.id\)\);/);
+  assert.match(appJs, /hideAll\.hidden = visibleUnwatched === 0;/);
+  assert.match(appJs, /function unhidePending\(tileId\)\{\s*dismissedPending\.delete\(tileId\);\s*updateStageVisibility\(\);/);
+  assert.match(appJs, /'Câmera de' : 'Transmissão de'/);
+  // nome e avatar vêm de outras pessoas: montados via DOM, nunca innerHTML
+  const body = appJs.slice(appJs.indexOf('function renderHiddenPanel'), appJs.indexOf('function unhidePending'));
+  assert.doesNotMatch(body, /innerHTML/);
+  assert.match(body, /mk\('strong', '', t\.dataset\.name \|\| 'alguém'\)/);
+  // um painel por vez: abrir o de pedidos fecha o de ocultas e vice-versa
+  assert.match(appJs, /if\(open && hiddenPanel && !hiddenPanel\.hidden\)\{ hiddenPanel\.hidden = true; applyClosedVisibility\(\); \}/);
+  assert.match(appJs, /if\(open && document\.getElementById\('knockPanel'\) && !document\.getElementById\('knockPanel'\)\.hidden\) setKnockPanel\(false, false\);/);
+  // a opção antiga "ocultar todas" saiu
+  assert.doesNotMatch(appJs, /hideClosedPref|toggleHideClosed/);
+  // o palco só conta o que aparece; transmissão que acabou limpa o "ocultado" (se voltar, volta a aparecer)
   assert.match(appJs, /const total = \[\.\.\.tiles\.values\(\)\]\.filter\(\(t\) => !t\.classList\.contains\('pending-hidden'\)\)\.length;/);
-  // transmissão que acabou limpa o "ocultado" (se voltar, volta a aparecer)
   assert.match(appJs, /tiles\.delete\(id\);\s*dismissedPending\.delete\(id\);/);
 });
 
@@ -1204,4 +1219,62 @@ test('rtx-time: vale pra oferta e resposta, roda depois do ajuste do perfil High
   assert.match(appJs, /\['createOffer', 'createAnswer'\]\.forEach\(\(method\) => \{/);
   assert.match(appJs, /setupHardwareEncode\(\);\s*setupFasterFreezeRecovery\(\);/);
   assert.match(appJs, /catch\(e\)\{ \/\* qualquer problema: segue com a descrição original \*\/ \}/);
+});
+
+// ---------- captura pela placa de vídeo (HANDOFF §68) ----------
+test('captura pela placa: nasce desligada, só booleano, liga as duas opções do Chromium ANTES do app ficar pronto, só no Windows 11 24H2+', () => {
+  const main = readFileSync(join(ROOT, 'electron/src/main.js'), 'utf8');
+  assert.match(main, /gpuCapture: false\s*\n\};/);
+  assert.match(main, /const GPU_CAPTURE_FEATURES = \['WebRtcAllowWgcUsingTexture', 'PlatformH264CbpEncoding'\];/);
+  assert.match(main, /const GPU_CAPTURE_MIN_BUILD = 26100;/);
+  assert.match(main, /const gpuCaptureActive = gpuCaptureSupported && appSettings\.gpuCapture === true;/);
+  assert.match(main, /if\(gpuCaptureActive\) app\.commandLine\.appendSwitch\('enable-features', GPU_CAPTURE_FEATURES\.join\(','\)\);/);
+  // tem que vir antes do whenReady (opções do Chromium só valem antes do app ficar pronto)
+  assert.ok(main.indexOf("app.commandLine.appendSwitch('enable-features'") < main.indexOf('app.whenReady().then('));
+  assert.match(main, /trustedIpc\.handle\('sinal:get-settings', \(\) => settingsForSite\(\)\);/);
+  assert.match(main, /return \{ \.\.\.appSettings, gpuCaptureSupported, gpuCaptureActive \};/);
+  assert.match(main, /captura pela placa de vídeo: \$\{gpuCaptureActive \? 'ligada' : 'desligada'\}/); // o registro diz se está valendo
+  assert.match(main, /trustedIpc\.on\('sinal:relaunch', \(\) => \{\s*isQuitting = true;\s*app\.relaunch\(\);\s*app\.quit\(\);/);
+  const preload = readFileSync(join(ROOT, 'electron/src/preload.js'), 'utf8');
+  assert.match(preload, /relaunchApp: \(\) => ipcRenderer\.send\('sinal:relaunch'\),/);
+});
+
+test('captura pela placa nas Configurações: só onde o app conhece a chave; cinza sem suporte; avisa e oferece reiniciar quando ainda não vale', () => {
+  const els = {};
+  const el = (id) => (els[id] = els[id] || { id, hidden: true, disabled: false, checked: false, textContent: '', classList: { on: false, toggle(_, v){ this.on = v; } } });
+  const render = new Function('document', extractFunction(appJs, 'renderGpuCaptureSection') + '; return renderGpuCaptureSection;')({ getElementById: el });
+  render({ shortcutEnabled: true });                                               // instalador antigo: não conhece a chave
+  assert.equal(els.settingsGpuCaptureSection.hidden, true);
+  render({ gpuCapture: false, gpuCaptureSupported: false, gpuCaptureActive: false }); // Windows 10 / 11 antigo
+  assert.equal(els.settingsGpuCaptureSection.hidden, false);
+  assert.equal(els.settingsGpuCapture.disabled, true);
+  assert.equal(els.settingsGpuCaptureRow.classList.on, true);
+  assert.match(els.settingsGpuCaptureStatus.textContent, /Windows 11, versão 24H2/);
+  assert.equal(els.settingsGpuCaptureRestart.hidden, true);
+  render({ gpuCapture: true, gpuCaptureSupported: true, gpuCaptureActive: false });  // acabou de ligar
+  assert.equal(els.settingsGpuCapture.checked, true);
+  assert.equal(els.settingsGpuCaptureRestart.hidden, false);
+  assert.equal(els.settingsGpuCaptureStatus.textContent, 'Reinicie o app para aplicar.');
+  render({ gpuCapture: true, gpuCaptureSupported: true, gpuCaptureActive: true });   // já valendo
+  assert.equal(els.settingsGpuCaptureRestart.hidden, true);
+  assert.equal(els.settingsGpuCaptureStatus.hidden, true);
+  render({ gpuCapture: false, gpuCaptureSupported: true, gpuCaptureActive: true });  // desligou: precisa reiniciar pra desligar de verdade
+  assert.equal(els.settingsGpuCaptureRestart.hidden, false);
+  // reiniciar dentro de uma sala pede confirmação
+  assert.match(appJs, /if\(room\)\{\s*const ok = await askConfirm\(\{ title: 'Reiniciar o app\?'/);
+});
+
+test('codificação pela placa (opção antiga): com a captura pela placa valendo fica cinza com "Já incluída"; sem ela, segue igual', () => {
+  const els = {};
+  const el = (id) => (els[id] = els[id] || { id, hidden: true, disabled: false, checked: false, textContent: '', classList: { on: false, toggle(_, v){ this.on = v; } } });
+  const render = new Function('document', 'hardwareEncodeReady', 'hardwareEncodeChecked', extractFunction(appJs, 'renderHardwareSection') + '; return renderHardwareSection;')({ getElementById: el }, true, true);
+  render({ hardwareEncode: true, gpuCaptureActive: true });
+  assert.equal(els.settingsHardwareEncode.disabled, true);
+  assert.equal(els.settingsHardwareEncode.checked, false);
+  assert.equal(els.settingsHardwareRow.classList.on, true);
+  assert.equal(els.settingsHardwareStatus.textContent, 'Já incluída na captura pela placa de vídeo.');
+  render({ hardwareEncode: true, gpuCaptureActive: false });  // sem a captura pela placa: funciona como antes
+  assert.equal(els.settingsHardwareEncode.disabled, false);
+  assert.equal(els.settingsHardwareEncode.checked, true);
+  assert.equal(els.settingsHardwareStatus.hidden, true);
 });

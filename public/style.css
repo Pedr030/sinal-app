@@ -182,6 +182,8 @@ body.electron-app #settingsBtn{display:inline-flex;}
 .settings-hint{font-size:12px; color:var(--fog); margin-top:-8px;}
 .settings-error{font-size:12.5px; color:var(--rec);}
 .settings-row-disabled{opacity:.4; pointer-events:none;}
+.settings-restart-btn{ align-self:flex-start; height:auto; padding:8px 14px; font-size:12.5px; }
+.settings-restart-btn[hidden]{ display:none; }
 .settings-row-disabled .mono{color:var(--fog);}
 
 /* display só quando não tiver [hidden] — mesma pegadinha do overlay acima
@@ -889,6 +891,23 @@ body.in-room footer .credits, body.electron-app footer .credits{ margin-top:2px;
 .knock-deny:hover{ color:var(--ink); border-color:var(--fog); }
 .knock-error{ font-size:12px; color:var(--rec); min-height:0; }
 .knock-error:empty{ display:none; }
+/* Painel "Transmissões ocultas" (mesmo molde do de pedidos): uma linha por transmissão, com "Mostrar" */
+.hidden-row{
+  display:flex; align-items:center; gap:10px; background:var(--panel-2); border:1px solid var(--line);
+  border-radius:10px; padding:10px 10px 10px 12px;
+}
+.hidden-who{ flex:1; min-width:0; display:flex; flex-direction:column; line-height:1.3; }
+.hidden-who small{ font-size:11.5px; color:var(--fog); }
+.hidden-who strong{ font-size:13.5px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.hidden-row button{ height:auto; padding:7px 14px; font-size:13px; flex-shrink:0; }
+.hidden-foot{ padding:10px 12px 12px; border-top:1px solid var(--line); }
+.hidden-foot:has(> button[hidden]){ display:none; }
+.hidden-all-btn{
+  width:100%; height:auto; padding:9px 12px; font-size:13px;
+  background:transparent; color:var(--ink); border:1px solid var(--line);
+}
+.hidden-all-btn:hover{ border-color:var(--tune); color:var(--tune); }
+.hidden-all-btn[hidden]{ display:none; }
 
 /* ---------- Janela de confirmação (askConfirm em app.js) ---------- */
 .confirm-overlay{ z-index:300; } /* acima das outras janelas (servidores, relatório, Novidades) */
