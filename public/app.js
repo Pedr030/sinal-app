@@ -866,8 +866,37 @@ function setupQualityMenu(){
 // exatamente o que vai junto ("Ver o que vai junto") antes de enviar.
 let reportLogCache = null;
 
+// Erros que a própria página anotou (só pra o relatório do navegador): sem endereço, sem o que a pessoa fez.
+const recentPageErrors = [];
+function notePageError(text){
+  const clean = String(text || '').replace(/https?:\/\/\S+/g, '<endereço>').replace(/\s+/g, ' ').slice(0, 220);
+  recentPageErrors.push(new Date().toLocaleTimeString('pt-BR') + ' ' + clean);
+  if(recentPageErrors.length > 20) recentPageErrors.shift();
+}
+window.addEventListener('error', (e) => notePageError(`${e.message} (${String(e.filename || '').split('?')[0].split('/').pop()}:${e.lineno})`));
+window.addEventListener('unhandledrejection', (e) => notePageError('promessa recusada: ' + ((e.reason && e.reason.message) || e.reason)));
+// O que vai junto no relatório feito pelo navegador (no app desktop vai o registro do app). Nada de sala, conversa ou tela.
+function buildWebReportInfo(){
+  const lines = [
+    `Site v${APP_VERSION}`,
+    `Navegador: ${navigator.userAgent}`,
+    `Idioma: ${navigator.language || '?'}`,
+    `Janela: ${window.innerWidth}x${window.innerHeight} (tela ${screen.width}x${screen.height})`,
+    `Dentro de uma sala: ${room ? 'sim' : 'não'}`,
+    `Compartilhando: ${document.getElementById('shareBtn') && document.getElementById('shareBtn').classList.contains('active-share') ? 'sim' : 'não'}`,
+    '',
+    recentPageErrors.length ? 'Erros anotados pela página:' : 'Nenhum erro anotado pela página.',
+    ...recentPageErrors
+  ];
+  return lines.join('\n');
+}
+const REPORT_NOTE_APP = 'Vai junto: seu nome no Sinal, as versões e o registro do app — o que o próprio app anotou (atualizações, conexão, transmissões, falhas). Nada de conversa, sala ou o que aparece na sua tela.';
+const REPORT_NOTE_WEB = 'Vai junto: seu nome no Sinal, a versão do site, o seu navegador e os erros que a página anotou. Nada de conversa, sala ou o que aparece na sua tela.';
+function isDesktopApp(){ return !!(window.sinalElectron && window.sinalElectron.isElectron); }
+
 async function loadReportLog(){
   if(reportLogCache === null){
+    if(!isDesktopApp()){ reportLogCache = buildWebReportInfo(); return reportLogCache; }
     try{ reportLogCache = await window.sinalElectron.getLogTail(); }catch(e){ reportLogCache = ''; }
   }
   return reportLogCache;
@@ -875,6 +904,7 @@ async function loadReportLog(){
 
 function openReportDialog(){
   reportLogCache = null;
+  document.getElementById('reportWhatGoes').textContent = isDesktopApp() ? REPORT_NOTE_APP : REPORT_NOTE_WEB;
   document.getElementById('reportText').value = '';
   document.getElementById('reportStatus').textContent = '';
   document.getElementById('reportPreview').hidden = true;
@@ -898,6 +928,11 @@ function setupReportDialog(){
     pre.hidden = !pre.hidden;
   });
   sendBtn.addEventListener('click', async () => {
+    // No navegador não há registro do app: sem descrição não há o que enviar (e evita relatório vazio).
+    if(!isDesktopApp() && document.getElementById('reportText').value.trim().length < 5){
+      status.textContent = 'Conta em poucas palavras o que aconteceu.';
+      return;
+    }
     sendBtn.disabled = true;
     status.textContent = 'Enviando…';
     let savedName = '';
@@ -4820,6 +4855,7 @@ window.addEventListener('DOMContentLoaded', () => {
   setupGlobalShareShortcut();
   setupSettingsPanel();
   setupReportDialog();
+  document.getElementById('reportBugBtn').addEventListener('click', openReportDialog);
   setupServersUI();
   setupAppLogin();
   setupStageFit();

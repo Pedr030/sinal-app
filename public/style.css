@@ -683,6 +683,18 @@ body.in-room .update-bar{ bottom:auto; top:12px; }
   .avatars{order:3;}
 }
 
+/* Ícones do rodapé: GitHub e "encontrou um problema?" (relatório). Mesma pílula discreta do botão Novidades. */
+.footer-icon{
+  display:inline-flex; align-items:center; justify-content:center; width:26px; height:22px; padding:0; margin-left:6px;
+  vertical-align:middle; border-radius:20px; background:transparent; border:1px solid var(--line); color:var(--fog);
+  cursor:pointer; text-decoration:none; transition:.15s all;
+}
+.footer-icon:hover{ color:var(--tune); border-color:var(--tune); }
+/* Créditos embaixo da versão: "Feito por Pedro Henrique" (o nome leva ao LinkedIn). */
+footer .credits{ margin-top:8px; font-size:11.5px; color:#4c5157; }
+footer .credits a{ color:var(--fog); border-bottom:1px solid transparent; transition:.15s all; }
+footer .credits a:hover{ color:var(--tune); border-bottom-color:var(--tune); }
+body.in-room footer .credits, body.electron-app footer .credits{ margin-top:2px; }
 /* ---------- Novidades (patch notes, log de versões) ---------- */
 .changelog-btn{
   margin-left:8px; height:auto; padding:3px 9px; border-radius:20px; position:relative;

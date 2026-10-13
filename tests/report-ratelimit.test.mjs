@@ -96,3 +96,14 @@ test('IP do cliente: primeiro do x-forwarded-for, depois x-real-ip, senão valor
   assert.equal(clientIp(req({})), 'desconhecido');
   assert.equal(clientIp(req({ 'x-forwarded-for': 'a'.repeat(500) })).length, 64);
 });
+
+test('relatório feito pelo navegador (sem versão de app): a mensagem diz "no navegador" e leva o texto', async () => {
+  const before = sent.length;
+  const res = await send({ description: 'o botao de silenciar nao some', name: 'Visitante', siteVersion: '0.8.73', log: 'Site v0.8.73 | Navegador: teste' });
+  assert.equal(res.status, 200);
+  const payload = JSON.parse(sent[before].body.get('payload_json'));
+  assert.ok(payload.content.includes('no navegador'));
+  assert.ok(!payload.content.includes('app v?'));
+  assert.ok(payload.content.includes('site v0.8.73'));
+  assert.ok(payload.content.includes('o botao de silenciar nao some'));
+});
