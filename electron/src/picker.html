@@ -132,7 +132,8 @@
   const QUALITIES = [
     { key: 'leve', name: 'Leve', desc: '720p · 30fps — upload fraco' },
     { key: 'nitido', name: 'Nítido', desc: '1080p · 30fps — texto e vídeo' },
-    { key: 'fluido', name: 'Fluido', desc: '1080p · 60fps — jogos', requiresH265: true }
+    { key: 'fluido', name: 'Fluido', desc: '1080p · 60fps — vídeos e sites', requiresH265: true },
+    { key: 'jogos', name: 'Jogos', desc: '720p · 60fps — jogos' }
   ];
   // Fluido só com codificador H.265 por hardware — o Chromium só lista H.265
   // nos codecs de envio quando existe (mesma checagem do supportsH265() do
