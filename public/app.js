@@ -460,7 +460,11 @@ function wireRoomEvents(liveRoom){
         handleWatchMessage(msg, participant);
       } else if(msg && msg.type === 'send-stats' && participant){
         const stats = parseSendStats(msg, participant.identity);
-        if(stats) remoteSendStats.set(stats.tile, { ...stats, at: Date.now() });
+        if(stats){
+          remoteSendStats.set(stats.tile, { ...stats, at: Date.now() });
+          const win = recvSummaryWin.get(stats.tile);
+          if(win) win.senders.push(stats); // média do minuto no resumo da recepção (mergeSendStats)
+        }
       }
     }catch(e){ /* payload em formato inesperado, ignora */ }
   });
@@ -1843,6 +1847,20 @@ function sendStatsMessage(sum, meta){
   };
 }
 
+// Junta os números de quem transmite que chegaram durante um resumo de 1 min (um a cada ~12 s), pra comparar com o
+// recebido no MESMO minuto (antes usava só o último: o dono viu "recebe 18" x "envio 11" no mesmo resumo). Médias
+// simples (cada mensagem cobre ~12 s), mínimos do minuto, limite mais frequente; o resto vem do último. Pura (testada).
+function mergeSendStats(list){
+  const valid = (list || []).filter((s) => s && typeof s.fps === 'number');
+  if(!valid.length) return null;
+  const last = valid[valid.length - 1];
+  const avg = (key) => { const v = valid.filter((s) => typeof s[key] === 'number'); return v.length ? sumBy(v, (s) => s[key]) / v.length : null; };
+  const min = (key) => { const v = valid.filter((s) => typeof s[key] === 'number').map((s) => s[key]); return v.length ? Math.min(...v) : null; };
+  const lims = {};
+  valid.forEach((s) => { lims[s.lim] = (lims[s.lim] || 0) + 1; });
+  return { ...last, fps: avg('fps'), fpsMin: min('fpsMin'), cap: avg('cap'), capMin: min('capMin'), kbps: avg('kbps'), lim: dominantLimit(lims), count: valid.length };
+}
+
 // Quem assiste recebe isso de outro navegador: valida tudo (fronteira de confiança). Só vale pra transmissão da
 // própria pessoa que mandou (ninguém fala pela tela de outro).
 function parseSendStats(msg, senderIdentity){
@@ -1931,7 +1949,7 @@ function recvSummaryLine(tag, sum, meta, sender){
 let sendSummaryWin = { since: 0, samples: [] }; // resumo de 1 min do envio (registro)
 let sendStatsWin = { since: 0, samples: [] };   // números mandados a quem assiste (~12 s)
 let lastSendMeta = null;
-const recvSummaryWin = new Map(); // tileId -> { since, samples, meta }
+const recvSummaryWin = new Map(); // tileId -> { since, samples, meta, senders }
 const remoteSendStats = new Map(); // tileId -> números de quem transmite + quando chegaram
 
 // ---- Sugestão da captura pela placa (HANDOFF §69) ----
@@ -2035,7 +2053,7 @@ function flushRecvSummary(tileId, minSeconds){
   const sum = summarizeRecvSamples(win.samples);
   if(!sum || sum.seconds < minSeconds) return;
   const s = remoteSendStats.get(tileId);
-  const sender = s && Date.now() - s.at <= SEND_STATS_MAX_AGE_MS ? s : null;
+  const sender = mergeSendStats(win.senders) || (s && Date.now() - s.at <= SEND_STATS_MAX_AGE_MS ? s : null);
   const line = recvSummaryLine(streamTag(tileId), sum, win.meta || {}, sender);
   if(line) appLog(line);
 }
@@ -2043,7 +2061,7 @@ function flushRecvSummary(tileId, minSeconds){
 function noteRecvSample(tileId, sample, meta){
   const now = Date.now();
   let win = recvSummaryWin.get(tileId);
-  if(!win){ win = { since: now, samples: [], meta }; recvSummaryWin.set(tileId, win); }
+  if(!win){ win = { since: now, samples: [], meta, senders: [] }; recvSummaryWin.set(tileId, win); }
   win.samples.push(sample);
   win.meta = meta;
   if(now - win.since >= SUMMARY_EVERY_MS) flushRecvSummary(tileId, 0);
@@ -2265,29 +2283,35 @@ function setStartMutedPref(on){
 // ---- Estatísticas no tile (HANDOFF §69) ----
 // Botão de barras nos controles do tile: liga um painel no canto do vídeo, atualizado a cada segundo, com o que está
 // chegando, os números de quem transmite (canal `send-stats`, §66) e o gargalo provável. É o mesmo diagnóstico do
-// registro, só que visível na hora. Janela de 3 s (média curta) pra não piscar a cada segundo.
+// registro, só que visível na hora. "Recebendo agora" = média de 3 s (não pisca a cada segundo). Os números de quem
+// transmite chegam a cada 12 s (SEND_STATS_EVERY_MS) e são a média desse período; o gargalo compara com o recebido nos
+// mesmos ~12 s, senão uma queda de 3 s parecia contradizer a captura (print do dono, 2026-10-13: recebendo 14 x captura 30).
 const ICON_STATS = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="6" y1="20" x2="6" y2="13"></line><line x1="12" y1="20" x2="12" y2="6"></line><line x1="18" y1="20" x2="18" y2="10"></line></svg>';
 const TILE_STATS_EVERY_MS = 1000;
+const TILE_STATS_NOW_SAMPLES = 3;      // "Recebendo agora"
+const TILE_STATS_VERDICT_SAMPLES = 12; // gargalo: mesma janela dos números de quem transmite
 const tileStatsState = new Map(); // tileId -> { timer, prev, samples }
 
 function fmtMbps(kbps){ return (kbps / 1000).toFixed(1).replace('.', ','); }
 
-// recv = summarizeRecvSamples dos últimos ~3 s (+ width/height/decoderHw); sender = números de quem transmite ou null.
-// Pura (testada): devolve as linhas do painel.
-function tileStatsLines(recv, sender){
+// recv = summarizeRecvSamples dos últimos ~3 s (+ width/height); sender = números de quem transmite ou null;
+// recvLong = recebido nos últimos ~12 s (pro gargalo; sem ele, usa recv). Pura (testada): devolve as linhas do painel.
+function tileStatsLines(recv, sender, recvLong){
   if(!recv) return ['Medindo…'];
   const lines = [];
   const res = recv.width && recv.height ? ` · ${recv.width}×${recv.height}` : '';
-  lines.push(`Recebendo ${Math.round(recv.recvFps)} fps${res} · ${fmtMbps(recv.kbps)} Mbps · perda ${recv.lossPct.toFixed(1).replace('.', ',')}%`);
+  lines.push(`Recebendo agora: ${Math.round(recv.recvFps)} fps${res} · ${fmtMbps(recv.kbps)} Mbps · perda ${recv.lossPct.toFixed(1).replace('.', ',')}%`);
   if(sender && typeof sender.fps === 'number'){
     const target = sender.target ? ` de ${sender.target}` : '';
-    const capture = typeof sender.cap === 'number' ? `captura ${Math.round(sender.cap)}${target} fps` : `envio ${Math.round(sender.fps)}${target} fps`;
-    lines.push(`Quem transmite: ${capture} · codificando ${sender.hw ? 'pela placa' : 'pelo processador'}`);
+    const capture = typeof sender.cap === 'number' ? `captura ${Math.round(sender.cap)} · ` : '';
+    lines.push(`Quem transmite (média de 12 s): ${capture}envio ${Math.round(sender.fps)}${target} fps`);
+    lines.push(`Codificando ${sender.hw ? 'pela placa de vídeo' : 'pelo processador'}`);
   }else{
     lines.push('Quem transmite: sem dados (versão antiga do Sinal)');
   }
-  const verdict = streamBottleneck(recv, sender);
-  lines.push(verdict === 'ok' ? 'Tudo certo' : `Gargalo provável: ${verdict}`);
+  const verdict = streamBottleneck(recvLong || recv, sender);
+  if(verdict === 'ok' && recvLong && streamBottleneck(recv, sender) !== 'ok') lines.push('Queda rápida agora; nos últimos 12 s, tudo certo');
+  else lines.push(verdict === 'ok' ? 'Tudo certo' : `Gargalo provável: ${verdict}`);
   return lines;
 }
 
@@ -2308,16 +2332,17 @@ async function refreshTileStats(tileId){
   if(prev && cur.ts > prev.ts){
     st.samples.push({ seconds: (cur.ts - prev.ts) / 1000, received: cur.received - prev.received, decoded: cur.decoded - prev.decoded, bytes: cur.bytes - prev.bytes,
       lost: cur.lost - prev.lost, packets: cur.packets - prev.packets, freezes: cur.freezes - prev.freezes, freezeSeconds: cur.freezeSeconds - prev.freezeSeconds });
-    if(st.samples.length > 3) st.samples.shift();
+    if(st.samples.length > TILE_STATS_VERDICT_SAMPLES) st.samples.shift();
   }
-  const sum = summarizeRecvSamples(st.samples);
+  const sum = summarizeRecvSamples(st.samples.slice(-TILE_STATS_NOW_SAMPLES));
   if(sum){ sum.width = inbound.frameWidth; sum.height = inbound.frameHeight; }
+  const sumLong = summarizeRecvSamples(st.samples);
   const s = remoteSendStats.get(tileId);
   const sender = s && Date.now() - s.at <= SEND_STATS_MAX_AGE_MS ? s : null;
   const box = tile.querySelector('.tile-stats');
   if(!box) return;
   box.textContent = '';
-  tileStatsLines(sum, sender).forEach((l, i, all) => {
+  tileStatsLines(sum, sender, sumLong).forEach((l, i, all) => {
     const row = mk('div', i === all.length - 1 ? 'tile-stats-verdict' : '', l);
     box.appendChild(row);
   });
@@ -5469,7 +5494,7 @@ window.addEventListener('beforeunload', () => {
 });
 
 // PWA: versão, registro do service worker, detecção de atualização e botão de instalação
-const APP_VERSION = '0.8.77'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
+const APP_VERSION = '0.8.78'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
 // Dentro do Electron, mostra a versão do INSTALADOR (electron/package.json),
 // não a do site — ver preload.js. Fora dele (navegador normal), continua a
 // versão do deploy de sempre.

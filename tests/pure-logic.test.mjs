@@ -1321,15 +1321,56 @@ test('estatísticas no tile: o que chega, o lado de quem transmite e o gargalo, 
   const recv = { recvFps: 18.6, decodedFps: 18.4, kbps: 3420, lossPct: 0, freezeSeconds: 0, width: 1920, height: 1080 };
   const sender = { target: 30, fps: 18, cap: 18, hw: true };
   assert.deepEqual(tileStatsLines(recv, sender), [
-    'Recebendo 19 fps · 1920×1080 · 3,4 Mbps · perda 0,0%',
-    'Quem transmite: captura 18 de 30 fps · codificando pela placa',
+    'Recebendo agora: 19 fps · 1920×1080 · 3,4 Mbps · perda 0,0%',
+    'Quem transmite (média de 12 s): captura 18 · envio 18 de 30 fps',
+    'Codificando pela placa de vídeo',
     'Gargalo provável: captura no PC de quem transmite'
   ]);
   const ok = tileStatsLines({ ...recv, recvFps: 59, decodedFps: 59 }, { target: 60, fps: 59, cap: 60, hw: false });
-  assert.equal(ok[1], 'Quem transmite: captura 60 de 60 fps · codificando pelo processador');
-  assert.equal(ok[2], 'Tudo certo');
+  assert.equal(ok[1], 'Quem transmite (média de 12 s): captura 60 · envio 59 de 60 fps');
+  assert.equal(ok[2], 'Codificando pelo processador');
+  assert.equal(ok[3], 'Tudo certo');
+  assert.equal(tileStatsLines(recv, { target: 30, fps: 18, cap: null, hw: true })[1], 'Quem transmite (média de 12 s): envio 18 de 30 fps');
   assert.equal(tileStatsLines(recv, null)[1], 'Quem transmite: sem dados (versão antiga do Sinal)');
   assert.deepEqual(tileStatsLines(null, null), ['Medindo…']);
+});
+
+test('estatísticas no tile: o gargalo usa os ~12 s recebidos (mesma janela de quem transmite), não a queda de 3 s', () => {
+  // print do dono: recebendo 14 agora, mas nos 12 s chegou o que foi enviado; quem transmite: tudo certo
+  const now = { recvFps: 14, decodedFps: 14, kbps: 3800, lossPct: 0, freezeSeconds: 0.4 };
+  const long = { recvFps: 58, decodedFps: 58, kbps: 3800, lossPct: 0, freezeSeconds: 0.4 };
+  const sender = { target: 60, fps: 58, cap: 59, hw: true };
+  assert.equal(tileStatsLines(now, sender, long)[3], 'Queda rápida agora; nos últimos 12 s, tudo certo');
+  assert.equal(tileStatsLines(long, sender, long)[3], 'Tudo certo');
+  assert.equal(tileStatsLines(now, sender)[3], 'Gargalo provável: rede ou servidor'); // sem a janela longa, culparia a rede
+  assert.match(appJs, /summarizeRecvSamples\(st\.samples\.slice\(-TILE_STATS_NOW_SAMPLES\)\)/);
+  assert.match(appJs, /tileStatsLines\(sum, sender, sumLong\)/);
+});
+
+// ---------- resumo de 1 min: números de quem transmite do mesmo minuto ----------
+const mergeSendStats = new Function(
+  ['sumBy', 'dominantLimit', 'mergeSendStats'].map((n) => extractFunction(appJs, n)).join('\n') + '; return mergeSendStats;'
+)();
+
+test('resumo da recepção: junta os números de quem transmite que chegaram no minuto (médias, mínimos, limite mais frequente)', () => {
+  const list = [
+    { fps: 26, fpsMin: 24, cap: 26, capMin: 24, kbps: 4600, lim: 'none', target: 60, enc: 'A' },
+    { fps: 8, fpsMin: 7, cap: 8, capMin: 7, kbps: 5400, lim: 'none', target: 60, enc: 'A' },
+    { fps: 11, fpsMin: 9, cap: null, capMin: null, kbps: 5000, lim: 'cpu', target: 60, enc: 'B' }
+  ];
+  const m = mergeSendStats(list);
+  assert.equal(m.fps, 15);
+  assert.equal(m.fpsMin, 7);
+  assert.equal(m.cap, 17);         // só as que têm captura
+  assert.equal(m.capMin, 7);
+  assert.equal(m.kbps, 5000);
+  assert.equal(m.lim, 'none');
+  assert.equal(m.enc, 'B');        // o resto vem do último
+  assert.equal(m.count, 3);
+  assert.equal(mergeSendStats([]), null);
+  assert.equal(mergeSendStats(null), null);
+  assert.match(appJs, /const sender = mergeSendStats\(win\.senders\) \|\| /);
+  assert.match(appJs, /if\(win\) win\.senders\.push\(stats\);/);
 });
 
 test('estatísticas no tile: botão nos controles, painel montado via DOM, relógio parado quando o tile sai', () => {
