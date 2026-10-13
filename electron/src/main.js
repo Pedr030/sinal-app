@@ -204,7 +204,10 @@ const DEFAULT_SETTINGS = {
   shareQuality: 'nitido',
   // Codificar o H.264 pela placa de vídeo (HANDOFF §58): experimental, DESLIGADA por padrão. O app só pede o perfil High na
   // oferta (a placa codifica High por hardware; o Baseline que o servidor prefere cai no OpenH264, em software).
-  hardwareEncode: false
+  hardwareEncode: false,
+  // Captura pela placa de vídeo (HANDOFF §68): experimental, DESLIGADA por padrão. Liga opções do Chromium que só valem
+  // a partir da próxima abertura do app (ver GPU_CAPTURE_FEATURES).
+  gpuCapture: false
 };
 const SHARE_QUALITIES = ['leve', 'nitido', 'fluido'];
 
@@ -226,6 +229,28 @@ function saveSettings(settings){
 }
 
 let appSettings = loadSettings();
+
+// ---- Captura pela placa de vídeo (HANDOFF §66 e §68) ----
+// No Chromium 152, a captura de tela/janela (WGC) copia cada quadro da placa pra memória e ESPERA a placa terminar o que
+// o jogo mandou (Map síncrono); e a próxima captura só vem depois de 2x o tempo da anterior. Com o jogo enchendo a placa,
+// a transmissão sai a ~1/3 do fps do jogo (o monitor mostrou "captura 18fps" num PC que roda o jogo bem acima disso).
+// WebRtcAllowWgcUsingTexture entrega o quadro como textura da placa, sem cópia nem espera (só Windows 11 24H2+, que é
+// onde o WGC pula quadros repetidos sozinho); PlatformH264CbpEncoding deixa o H.264 Baseline (o que o servidor negocia)
+// ser codificado pela placa, então o quadro não precisa voltar pro processador. Opções do Chromium só valem se ligadas
+// ANTES do app ficar pronto: por isso a escolha vale na próxima abertura (o site oferece "Reiniciar agora").
+const GPU_CAPTURE_FEATURES = ['WebRtcAllowWgcUsingTexture', 'PlatformH264CbpEncoding'];
+const GPU_CAPTURE_MIN_BUILD = 26100; // Windows 11 24H2
+function windowsBuild(){
+  const m = /^\d+\.\d+\.(\d+)/.exec(os.release());
+  return m ? Number(m[1]) : 0;
+}
+const gpuCaptureSupported = process.platform === 'win32' && windowsBuild() >= GPU_CAPTURE_MIN_BUILD;
+const gpuCaptureActive = gpuCaptureSupported && appSettings.gpuCapture === true;
+if(gpuCaptureActive) app.commandLine.appendSwitch('enable-features', GPU_CAPTURE_FEATURES.join(','));
+// O que o site recebe: as configurações + se a captura pela placa é possível e se está valendo AGORA (desde a abertura).
+function settingsForSite(){
+  return { ...appSettings, gpuCaptureSupported, gpuCaptureActive };
+}
 
 // Iniciar com o Windows: entrada na chave Run do registro, com `--hidden`
 // sempre nos argumentos — quem decide se abre escondido é a preferência
@@ -1042,6 +1067,7 @@ app.whenReady().then(() => {
   // 2026-10-07 mostrou três "app iniciado" no mesmo instante e o atalho global falhando por conflito entre elas.
   if(!gotSingleInstanceLock) return;
   console.log(`[sinal] app iniciado — v${app.getVersion()}, Electron ${process.versions.electron}, Windows ${os.release()}`);
+  console.log(`[sinal] captura pela placa de vídeo: ${gpuCaptureActive ? 'ligada' : 'desligada'}${gpuCaptureSupported ? '' : ' (este Windows não suporta)'} · opções do Chromium: ${app.commandLine.getSwitchValue('enable-features') || 'nenhuma'}`);
   app.getGPUInfo('basic').then((info) => {
     const gpus = (info && info.gpuDevice || []).map((g) => ({ vendorId: g.vendorId, deviceId: g.deviceId, active: g.active, driver: g.driverVersion }));
     console.log('[sinal] placa de vídeo:', gpus);
@@ -1188,7 +1214,7 @@ app.on('web-contents-created', (event, contents) => {
 
 // Settings da aba de configurações (ver public/app.js) — só o necessário
 // pra essa feature, nada pessoal (ver comentário em SETTINGS_PATH).
-trustedIpc.handle('sinal:get-settings', () => appSettings);
+trustedIpc.handle('sinal:get-settings', () => settingsForSite());
 
 // Valida o que o site manda: só as chaves conhecidas, com o tipo certo. Antes qualquer chave era
 // gravada em settings.json e o atalho aceitava qualquer combinação — um site comprometido poderia
@@ -1210,7 +1236,7 @@ function isSafeAccelerator(value){
 function sanitizeSettingsPatch(patch){
   const out = {};
   if(!patch || typeof patch !== 'object' || Array.isArray(patch)) return out;
-  for(const key of ['shortcutEnabled', 'quickShareWholeScreen', 'startWithWindows', 'startMinimized', 'hardwareEncode']){
+  for(const key of ['shortcutEnabled', 'quickShareWholeScreen', 'startWithWindows', 'startMinimized', 'hardwareEncode', 'gpuCapture']){
     if(typeof patch[key] === 'boolean') out[key] = patch[key];
   }
   if(isSafeAccelerator(patch.shortcut)) out.shortcut = patch.shortcut;
@@ -1229,7 +1255,14 @@ trustedIpc.handle('sinal:set-settings', (event, partial) => {
   saveSettings(appSettings);
   const shortcutRegistered = registerShareShortcut();
   applyLoginItemSetting();
-  return { settings: appSettings, shortcutRegistered };
+  return { settings: settingsForSite(), shortcutRegistered };
+});
+
+// "Reiniciar agora" (Configurações, depois de ligar/desligar a captura pela placa): fecha e abre o app de novo.
+trustedIpc.on('sinal:relaunch', () => {
+  isQuitting = true;
+  app.relaunch();
+  app.quit();
 });
 
 // Chamado pelo renderer bem antes de toggleShare() quando o atalho disparou
