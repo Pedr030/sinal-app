@@ -1,5 +1,17 @@
 [
   {
+    "id": "2026-10-13-captura-pela-placa",
+    "date": "2026-10-13",
+    "title": "Captura pela placa de vídeo",
+    "destaque": true,
+    "site": "0.8.76",
+    "app": "0.3.20",
+    "items": [
+      "No app, nova opção experimental nas Configurações: capturar a tela pela placa de vídeo. Em jogos pesados, a captura comum pode entregar menos quadros do que o jogo mostra; com a opção ligada, a transmissão tende a ficar mais fluida para quem assiste. Precisa do Windows 11, versão 24H2 ou mais nova, e vale depois de reiniciar o app.",
+      "As transmissões que você oculta agora ficam num painel próprio, onde dá para mostrar cada uma de novo. Lá também tem um botão para ocultar de uma vez as que você não está assistindo."
+    ]
+  },
+  {
     "id": "2026-10-13-diagnostico",
     "date": "2026-10-13",
     "title": "Menos travadas ao assistir",
