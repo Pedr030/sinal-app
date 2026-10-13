@@ -1168,3 +1168,40 @@ test('resumo do envio: "captura sem quadros" (tela parada / captura falhando) é
   assert.match(diag.sendSummaryLine(mixed, { quality: 'Fluido', codec: 'H.264', targetFps: 60 }), /captura sem quadros 4s/);
   assert.match(appJs, /stalled: frames === 0 && captured === 0,/);
 });
+
+// ---------- congelamento de ~3 s: rtx-time na descrição local de quem recebe (HANDOFF §67) ----------
+const addRtxTime = new Function(extractFunction(appJs, 'addRtxTime') + '; return addRtxTime;')();
+const SDP_RTX = [
+  'v=0', 'o=- 1 2 IN IP4 127.0.0.1', 's=-', 't=0 0',
+  'm=audio 9 UDP/TLS/RTP/SAVPF 111 63', 'a=mid:0', 'a=rtpmap:111 opus/48000/2', 'a=rtpmap:63 red/48000/2', 'a=fmtp:63 111/111',
+  'm=video 9 UDP/TLS/RTP/SAVPF 96 97 108 109', 'a=mid:1', 'a=rtpmap:96 VP8/90000', 'a=rtpmap:97 rtx/90000', 'a=fmtp:97 apt=96',
+  'a=rtpmap:108 H264/90000', 'a=fmtp:108 level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f',
+  'a=rtpmap:109 rtx/90000', 'a=fmtp:109 apt=108',
+  'm=video 9 UDP/TLS/RTP/SAVPF 96 97', 'a=mid:2', 'a=rtpmap:96 VP8/90000', 'a=rtpmap:97 rtx/90000', 'a=fmtp:97 apt=96;rtx-time=200', ''
+].join('\r\n');
+
+test('rtx-time: entra só nas linhas de retransmissão (RTX) de vídeo; o resto da descrição fica igual', () => {
+  const out = addRtxTime(SDP_RTX, 500);
+  assert.match(out, /a=fmtp:97 apt=96;rtx-time=500\r\n/);
+  assert.match(out, /a=fmtp:109 apt=108;rtx-time=500\r\n/);
+  assert.match(out, /a=fmtp:108 level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f\r\n/); // codec de vídeo não muda
+  assert.match(out, /a=fmtp:63 111\/111\r\n/);                                                             // áudio não muda
+  assert.match(out, /a=fmtp:97 apt=96;rtx-time=200\r\n/);                                                   // quem já tem fica como está
+  assert.equal(out.split('\r\n').length, SDP_RTX.split('\r\n').length);
+});
+
+test('rtx-time: sem RTX, valor inválido ou entrada estranha, devolve a descrição original (idempotente)', () => {
+  const noRtx = 'v=0\r\nm=video 9 UDP/TLS/RTP/SAVPF 96\r\na=rtpmap:96 VP8/90000\r\n';
+  assert.equal(addRtxTime(noRtx, 500), noRtx);
+  assert.equal(addRtxTime(SDP_RTX, 0), SDP_RTX);
+  assert.equal(addRtxTime(null, 500), null);
+  const once = addRtxTime(SDP_RTX, 500);
+  assert.equal(addRtxTime(once, 500), once);
+});
+
+test('rtx-time: vale pra oferta e resposta, roda depois do ajuste do perfil High e cai na descrição original se der erro', () => {
+  assert.match(appJs, /const RTX_TIME_MS = 500;/);
+  assert.match(appJs, /\['createOffer', 'createAnswer'\]\.forEach\(\(method\) => \{/);
+  assert.match(appJs, /setupHardwareEncode\(\);\s*setupFasterFreezeRecovery\(\);/);
+  assert.match(appJs, /catch\(e\)\{ \/\* qualquer problema: segue com a descrição original \*\/ \}/);
+});

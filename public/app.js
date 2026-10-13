@@ -1295,6 +1295,64 @@ function preferH264High(sdp){
   return changed ? lines.join(CRLF) : sdp;
 }
 
+// ---- Congelamento de ~3 s de quem assiste depois de uma perda pequena (HANDOFF §67) ----
+// Quando um quadro se perde de vez (a retransmissão não chegou a tempo), quem assiste fica sem quadro decodificável e
+// o WebRTC espera `kMaxWaitForFrame` = 3 s antes de pedir um quadro inteiro novo (keyframe): é o "congelamento de 3,2 s
+// + pedido de keyframe" que aparece no registro. Essa espera é 3x o tempo de retransmissão (`rtx-time`) que o lado que
+// RECEBE declara na própria descrição LOCAL (é dela que o WebRTC tira os parâmetros de recepção); sem ele vale o padrão
+// de 1000 ms (3 x 1000 = 3 s). Com o LiveKit 2.22 numa conexão só, quem assiste é quem faz a OFERTA (o servidor
+// responde), então o ajuste vai na oferta; a resposta também é coberta, caso a negociação venha do servidor.
+// Declarando rtx-time=500, a espera cai pra 1,5 s e o pedido de keyframe sai mais cedo. Só acrescenta o parâmetro nas
+// linhas de retransmissão (RTX) de vídeo que ainda não têm; qualquer erro mantém a descrição original.
+const RTX_TIME_MS = 500;
+function addRtxTime(sdp, ms){
+  if(typeof sdp !== 'string' || !(ms > 0)) return sdp;
+  const CRLF = '\r\n';
+  const lines = sdp.split(CRLF);
+  const starts = [];
+  lines.forEach((l, i) => { if(l.startsWith('m=')) starts.push(i); });
+  let changed = false;
+  starts.forEach((start, n) => {
+    if(!lines[start].startsWith('m=video')) return;
+    const end = n + 1 < starts.length ? starts[n + 1] : lines.length;
+    const rtx = new Set();
+    for(let i = start + 1; i < end; i++){
+      const m = /^a=rtpmap:(\d+) rtx\/\d+/i.exec(lines[i]);
+      if(m) rtx.add(m[1]);
+    }
+    for(let i = start + 1; i < end; i++){
+      const m = /^a=fmtp:(\d+) (.*)$/.exec(lines[i]);
+      if(!m || !rtx.has(m[1]) || /(^|;)\s*rtx-time=/i.test(m[2])) continue;
+      lines[i] = `${lines[i]};rtx-time=${ms}`;
+      changed = true;
+    }
+  });
+  return changed ? lines.join(CRLF) : sdp;
+}
+
+let rtxTimeLogged = false;
+// Roda DEPOIS de setupHardwareEncode (que também embrulha createOffer): os dois ajustes se somam.
+function setupFasterFreezeRecovery(){
+  if(!window.RTCPeerConnection) return;
+  ['createOffer', 'createAnswer'].forEach((method) => {
+    const original = RTCPeerConnection.prototype[method];
+    if(typeof original !== 'function') return;
+    RTCPeerConnection.prototype[method] = async function(...args){
+      const desc = await original.apply(this, args);
+      try{
+        if(desc && typeof desc.sdp === 'string'){
+          const sdp = addRtxTime(desc.sdp, RTX_TIME_MS);
+          if(sdp !== desc.sdp){
+            if(!rtxTimeLogged){ rtxTimeLogged = true; appLog(`[sinal] recuperação de quadro perdido: rtx-time=${RTX_TIME_MS}ms (espera máx. ${RTX_TIME_MS * 3}ms)`); }
+            return { type: desc.type, sdp };
+          }
+        }
+      }catch(e){ /* qualquer problema: segue com a descrição original */ }
+      return desc;
+    };
+  });
+}
+
 let hardwareEncodeReady = false;   // a placa disse que codifica H.264 High 1080p60 por hardware (mediaCapabilities)
 let hardwareEncodeChecked = false; // a verificação da placa já terminou (com ou sem suporte)
 function setupHardwareEncode(){
@@ -5133,6 +5191,7 @@ window.addEventListener('DOMContentLoaded', () => {
   setupAppLogin();
   setupStageFit();
   setupHardwareEncode();
+  setupFasterFreezeRecovery();
   setupResumeShare();
   resumeAfterAppRecovery();
 });
