@@ -2206,6 +2206,7 @@ function updateStageVisibility(){
   document.getElementById('emptyState').style.display = total === 0 ? 'flex' : 'none';
   document.getElementById('spotlightGrid').style.display = pinnedOrder.length > 0 ? 'flex' : 'none';
   document.getElementById('filmstrip').style.display = (total - pinnedOrder.length) > 0 ? 'flex' : 'none';
+  refreshFilmTab(total - pinnedOrder.length);
   document.getElementById('stageArea').classList.toggle('has-spotlight', pinnedOrder.length > 0);
   refreshMuteAllBtn();
   scheduleFitSpotlight();
@@ -2319,6 +2320,29 @@ function toggleHideClosed(){
   updateStageVisibility();
 }
 
+// ---------------- Aba da fileira de miniaturas: recolher / mostrar ----------------
+// Uma alça na própria fileira (#filmTab) esconde as miniaturas e deixa só uma aba com a contagem; o destaque ganha o espaço
+// todo. É só visual: as transmissões continuam como estavam (nada é desinscrito). A escolha fica lembrada.
+const FILM_COLLAPSED_KEY = 'sinal:filmCollapsed';
+let filmCollapsed = false;
+try{ filmCollapsed = localStorage.getItem(FILM_COLLAPSED_KEY) === '1'; }catch(e){ /* sem localStorage: começa aberta */ }
+function refreshFilmTab(count){
+  const strip = document.getElementById('filmstrip');
+  const tab = document.getElementById('filmTab');
+  if(!tab) return;
+  strip.classList.toggle('collapsed', filmCollapsed);
+  tab.setAttribute('aria-expanded', String(!filmCollapsed));
+  const label = filmCollapsed ? 'Mostrar as miniaturas' : 'Recolher as miniaturas';
+  tab.title = label;
+  tab.setAttribute('aria-label', label);
+  tab.querySelector('.film-tab-count').textContent = String(count);
+}
+function toggleFilmCollapsed(){
+  filmCollapsed = !filmCollapsed;
+  try{ localStorage.setItem(FILM_COLLAPSED_KEY, filmCollapsed ? '1' : '0'); }catch(e){ /* só não lembra */ }
+  updateStageVisibility();
+}
+
 // ---------------- ENCAIXE DOS DESTAQUES (HANDOFF §43) ----------------
 // Os tiles em destaque (no máximo MAX_PINNED) são sempre 16:9. Antes a largura de cada um vinha de uma regra
 // fixa de CSS e sobrava muito espaço vazio embaixo (duas transmissões numa tela de 1920x1060 ficavam
@@ -2345,6 +2369,33 @@ function bestSpotlightLayout(n, W, H, gap){
   return { cols: best.cols, width: Math.floor(best.width) };
 }
 
+// A faixa de miniaturas (fileira) toma espaço dos destaques. Embaixo ela custa ALTURA, e o destaque 16:9 é quase sempre
+// limitado pela altura (janela larga e baixa): um destaque só encolhia bastante por causa de uma miniatura. Ao lado ela custa
+// LARGURA, que sobra. Então o encaixe compara as duas posições e usa a que deixa o destaque maior; empate ou diferença
+// pequena fica com "embaixo" (o comportamento de sempre). Medidas da fileira: miniatura 200 px (16:9 = 113 px de altura).
+const FILM_TILE_W = 200;
+const FILM_TILE_H = 113;
+const FILM_BELOW_H = FILM_TILE_H + 6;   // miniatura + folga de rolagem (padding-bottom da fileira)
+const FILM_GAP = 14;                    // espaço entre o palco e a fileira
+const FILM_TILE_GAP = 10;               // espaço entre miniaturas
+const FILM_SIDE_MARGIN = 8;             // vantagem mínima (px de largura do destaque) pra trocar de lugar
+const FILM_TAB_H = 34;                  // fileira RECOLHIDA embaixo: só a aba (28) + folga (6)
+const FILM_TAB_SIDE_W = 34;             // fileira RECOLHIDA ao lado: só a aba
+const FILM_TAB_BAR = 34;                // aba no topo da coluna ao lado (24) + espaço (10)
+function chooseStripPlacement(n, W, H, gap, stripCount, collapsed){
+  if(!stripCount) return { side: false, layout: bestSpotlightLayout(n, W, H, gap) };
+  const below = bestSpotlightLayout(n, W, H - ((collapsed ? FILM_TAB_H : FILM_BELOW_H) + FILM_GAP), gap);
+  let sideW;
+  if(collapsed){
+    sideW = FILM_TAB_SIDE_W + FILM_GAP;
+  }else{
+    const columnH = FILM_TAB_BAR + stripCount * FILM_TILE_H + (stripCount - 1) * FILM_TILE_GAP;
+    sideW = FILM_TILE_W + 6 + FILM_GAP + (columnH > H ? 10 : 0); // + barra de rolagem quando a coluna não cabe
+  }
+  const side = bestSpotlightLayout(n, W - sideW, H, gap);
+  return side.width > below.width + FILM_SIDE_MARGIN ? { side: true, layout: side } : { side: false, layout: below };
+}
+
 function fitSpotlight(){
   const grid = document.getElementById('spotlightGrid');
   const stage = document.getElementById('stageArea');
@@ -2352,6 +2403,8 @@ function fitSpotlight(){
   const props = ['--spot-w', '--tile-w', '--tile-max', '--tile-max-w'];
   if(!n || grid.style.display === 'none' || !stage.offsetParent){
     props.forEach((p) => grid.style.removeProperty(p)); // sem destaque (ou sala fechada): volta ao padrão
+    stage.classList.remove('strip-side');
+    stage.style.removeProperty('--strip-h');
     return;
   }
   // Espaço livre: o palco ocupa (flex:1) o que sobra entre a barra da sala e os controles. Mede com os
@@ -2362,8 +2415,10 @@ function fitSpotlight(){
   const W = stage.clientWidth;
   grid.style.display = keep;
   const strip = document.getElementById('filmstrip');
-  const stripH = strip.style.display === 'none' ? 0 : strip.offsetHeight + 14;
-  const layout = bestSpotlightLayout(n, W, freeH - stripH, SPOTLIGHT_GAP);
+  const stripCount = strip.style.display === 'none' ? 0 : [...strip.children].filter((t) => t.classList.contains('tile') && !t.classList.contains('pending-hidden')).length;
+  const { side, layout } = chooseStripPlacement(n, W, freeH, SPOTLIGHT_GAP, stripCount, filmCollapsed);
+  stage.classList.toggle('strip-side', side);
+  stage.style.setProperty('--strip-h', `${freeH}px`); // a coluna lateral rola dentro do palco, não empurra a página
   // Largura da fileira = só o que as colunas ocupam; assim a última linha (ex.: o 3º de 3 destaques) fica centralizada.
   grid.style.setProperty('--spot-w', `${layout.cols * layout.width + (layout.cols - 1) * SPOTLIGHT_GAP}px`);
   grid.style.setProperty('--tile-w', `${layout.width}px`);
@@ -2633,7 +2688,7 @@ function leaveRoom(){
   muteAllNew = false;
   pinnedOrder = [];
   document.getElementById('spotlightGrid').innerHTML = '';
-  document.getElementById('filmstrip').innerHTML = '';
+  document.querySelectorAll('#filmstrip .tile').forEach((t) => t.remove()); // a aba (#filmTab) fica
   document.getElementById('avatarsRow').innerHTML = '';
   updateStageVisibility();
 
@@ -4718,6 +4773,7 @@ function setupSettingsPanel(){
   ['joinRoomBtn',     () => joinRoom()],
   ['copyCodeBtn',     (btn) => copyRoomCode(btn)],   // recebiam o `this` do onclick — agora vem do próprio listener
   ['copyLinkBtn',     (btn) => copyRoomLink(btn)],
+  ['filmTab',         () => toggleFilmCollapsed()],
   ['closedToggleBtn', () => toggleHideClosed()],
   ['muteAllBtn',      () => toggleMuteAll()],
   ['rosterBtn',       () => toggleRosterPanel()],
@@ -4779,7 +4835,7 @@ window.addEventListener('beforeunload', () => {
 });
 
 // PWA: versão, registro do service worker, detecção de atualização e botão de instalação
-const APP_VERSION = '0.8.71'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
+const APP_VERSION = '0.8.72'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
 // Dentro do Electron, mostra a versão do INSTALADOR (electron/package.json),
 // não a do site — ver preload.js. Fora dele (navegador normal), continua a
 // versão do deploy de sempre.
