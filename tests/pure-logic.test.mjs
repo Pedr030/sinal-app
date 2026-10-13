@@ -1013,7 +1013,7 @@ test('rodapé: ícone do GitHub abre em outra aba sem vazar a página, e o do re
 });
 
 test('relatório pelo navegador: sem descrição não envia; o que vai junto é só ambiente e erros da página (sem sala, sem tela)', () => {
-  assert.match(appJs, /if\(!isDesktopApp\(\) && document\.getElementById\('reportText'\)\.value\.trim\(\)\.length < 5\)/);
+  assert.match(appJs, /if\(reportMissingChars\(\) > 0\)\{ refreshReportMin\(\); return; \}/);
   const body = appJs.slice(appJs.indexOf('function buildWebReportInfo'), appJs.indexOf('const REPORT_NOTE_APP'));
   assert.doesNotMatch(body, /roomCode|location\.(href|search)|chatMessages|getDisplayMedia/);
   assert.ok(appJs.includes(String.raw`replace(/https?:\/\/\S+/g, '<endereço>')`)); // endereços (que poderiam levar o código da sala) saem dos erros
@@ -1022,4 +1022,31 @@ test('relatório pelo navegador: sem descrição não envia; o que vai junto é 
 
 test('rodapé: créditos "Feito por Pedro Henrique" com o nome levando ao LinkedIn, em outra aba e sem vazar a página', () => {
   assert.match(indexHtml, /<div class="credits">Feito por <a href="https:\/\/www\.linkedin\.com\/in\/pedro-fernandes-436b682bb\/" target="_blank" rel="noopener noreferrer"[^>]*>Pedro Henrique<\/a><\/div>/);
+});
+
+test('rodapé do app: frase própria na tela de entrada (sem "Chrome/Edge"), escondida na sala e no site', () => {
+  const m = indexHtml.match(/<span class="footer-desc-app">([^<]*)<\/span>/);
+  assert.ok(m, 'frase do app existe');
+  assert.doesNotMatch(m[1], /Chrome|Edge|navegador/);
+  assert.match(styleCss, /\.footer-desc-app\{display:none;\}/);                                 // no site normal não aparece
+  assert.match(styleCss, /body\.electron-app:not\(\.in-room\) \.footer-desc-app\{display:inline;\}/); // no app, só fora da sala
+  assert.match(styleCss, /body\.electron-app \.footer-desc\{display:none;\}/);                  // a frase do site continua escondida no app
+});
+
+const reportMin = (isApp, text) => new Function('isDesktopApp', 'document', 'REPORT_MIN_WEB',
+  extractFunction(appJs, 'reportMissingChars') + '; return reportMissingChars();')(() => isApp, { getElementById: () => ({ value: text }) }, 5);
+test('relatório no site: mínimo de 5 caracteres (espaços não contam); no app a descrição é opcional', () => {
+  assert.equal(reportMin(false, ''), 5);
+  assert.equal(reportMin(false, 'a'), 4);
+  assert.equal(reportMin(false, '   a  '), 4);
+  assert.equal(reportMin(false, 'abcde'), 0);
+  assert.equal(reportMin(true, ''), 0);
+});
+
+test('relatório no site: o rótulo diz que é obrigatório e o mínimo, a contagem é ao vivo e o botão só habilita no mínimo', () => {
+  assert.match(indexHtml, /<span id="reportLabelHint">\(opcional, mas ajuda muito\)<\/span>/);
+  assert.match(appJs, /\(obrigatório, mínimo de \$\{REPORT_MIN_WEB\} caracteres\)/);
+  assert.match(appJs, /faltam \$\{missing\}\)/);
+  assert.match(appJs, /getElementById\('reportText'\)\.addEventListener\('input', refreshReportMin\)/);
+  assert.match(appJs, /getElementById\('reportSendBtn'\)\.disabled = missing > 0;/);
 });

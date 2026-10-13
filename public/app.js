@@ -893,6 +893,20 @@ function buildWebReportInfo(){
 const REPORT_NOTE_APP = 'Vai junto: seu nome no Sinal, as versões e o registro do app — o que o próprio app anotou (atualizações, conexão, transmissões, falhas). Nada de conversa, sala ou o que aparece na sua tela.';
 const REPORT_NOTE_WEB = 'Vai junto: seu nome no Sinal, a versão do site, o seu navegador e os erros que a página anotou. Nada de conversa, sala ou o que aparece na sua tela.';
 function isDesktopApp(){ return !!(window.sinalElectron && window.sinalElectron.isElectron); }
+// No site (sem o registro do app) a descrição é obrigatória: o mínimo aparece no rótulo, a contagem muda ao vivo e o botão
+// só habilita quando chega lá. No app continua opcional.
+const REPORT_MIN_WEB = 5;
+function reportMissingChars(){
+  if(isDesktopApp()) return 0;
+  return Math.max(0, REPORT_MIN_WEB - document.getElementById('reportText').value.trim().length);
+}
+function refreshReportMin(){
+  const missing = reportMissingChars();
+  const status = document.getElementById('reportStatus');
+  document.getElementById('reportSendBtn').disabled = missing > 0;
+  if(isDesktopApp()) return;
+  status.textContent = missing > 0 ? `Escreva pelo menos ${REPORT_MIN_WEB} caracteres (faltam ${missing}).` : '';
+}
 
 async function loadReportLog(){
   if(reportLogCache === null){
@@ -905,10 +919,12 @@ async function loadReportLog(){
 function openReportDialog(){
   reportLogCache = null;
   document.getElementById('reportWhatGoes').textContent = isDesktopApp() ? REPORT_NOTE_APP : REPORT_NOTE_WEB;
+  document.getElementById('reportLabelHint').textContent = isDesktopApp() ? '(opcional, mas ajuda muito)' : `(obrigatório, mínimo de ${REPORT_MIN_WEB} caracteres)`;
   document.getElementById('reportText').value = '';
   document.getElementById('reportStatus').textContent = '';
   document.getElementById('reportPreview').hidden = true;
   document.getElementById('reportSendBtn').disabled = false;
+  refreshReportMin();
   document.getElementById('reportOverlay').hidden = false;
   document.getElementById('reportText').focus();
 }
@@ -920,6 +936,7 @@ function setupReportDialog(){
   const status = document.getElementById('reportStatus');
   const sendBtn = document.getElementById('reportSendBtn');
   document.getElementById('reportCloseBtn').addEventListener('click', closeReportDialog);
+  document.getElementById('reportText').addEventListener('input', refreshReportMin);
   overlay.addEventListener('click', (e) => { if(e.target === overlay) closeReportDialog(); });
   document.addEventListener('keydown', (e) => { if(e.key === 'Escape' && !overlay.hidden) closeReportDialog(); });
   document.getElementById('reportPreviewBtn').addEventListener('click', async () => {
@@ -929,10 +946,7 @@ function setupReportDialog(){
   });
   sendBtn.addEventListener('click', async () => {
     // No navegador não há registro do app: sem descrição não há o que enviar (e evita relatório vazio).
-    if(!isDesktopApp() && document.getElementById('reportText').value.trim().length < 5){
-      status.textContent = 'Conta em poucas palavras o que aconteceu.';
-      return;
-    }
+    if(reportMissingChars() > 0){ refreshReportMin(); return; }
     sendBtn.disabled = true;
     status.textContent = 'Enviando…';
     let savedName = '';
@@ -4871,7 +4885,7 @@ window.addEventListener('beforeunload', () => {
 });
 
 // PWA: versão, registro do service worker, detecção de atualização e botão de instalação
-const APP_VERSION = '0.8.73'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
+const APP_VERSION = '0.8.74'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
 // Dentro do Electron, mostra a versão do INSTALADOR (electron/package.json),
 // não a do site — ver preload.js. Fora dele (navegador normal), continua a
 // versão do deploy de sempre.
