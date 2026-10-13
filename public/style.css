@@ -584,6 +584,15 @@ body.picker-quality.sharing .quality-wrap{ display:inline-flex; }
   display:flex; align-items:center; justify-content:center; border-radius:50%; cursor:pointer; flex-shrink:0;
 }
 .tile-controls .ctl-btn:hover{ background:rgba(255,255,255,.15); }
+.tile-controls .ctl-btn.stats-btn.active{ color:var(--tune); }
+/* Estatísticas no tile (setTileStats em app.js): fica abaixo dos controles, sem bloquear cliques no vídeo */
+.tile-stats{
+  position:absolute; top:46px; left:8px; z-index:2; max-width:calc(100% - 16px); pointer-events:none;
+  background:rgba(0,0,0,.72); border-radius:6px; padding:6px 9px; font-size:11px; line-height:1.55; color:var(--ink);
+}
+.tile-stats[hidden]{ display:none; }
+.tile-stats .tile-stats-verdict{ color:var(--tune); }
+.filmstrip .tile-stats{ display:none; }
 .mod-menu{
   position:absolute; top:100%; left:0; margin-top:6px; min-width:150px;
   background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:4px;
