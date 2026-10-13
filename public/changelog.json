@@ -1,5 +1,15 @@
 [
   {
+    "id": "2026-10-13-relatorio-minimo",
+    "date": "2026-10-13",
+    "title": "Ajustes no relatório e no rodapé do app",
+    "site": "0.8.74",
+    "items": [
+      "No formulário de relatório pelo site, agora fica claro que a descrição é obrigatória, com o mínimo de caracteres e a contagem enquanto você escreve.",
+      "A tela inicial do app ganhou uma frase no rodapé."
+    ]
+  },
+  {
     "id": "2026-10-13-rodape-relatorio",
     "date": "2026-10-13",
     "title": "Relatório de problema pelo site",
