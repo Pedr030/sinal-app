@@ -2,9 +2,10 @@
   {
     "id": "2026-10-13-diagnostico",
     "date": "2026-10-13",
-    "title": "Diagnóstico das transmissões",
+    "title": "Menos travadas ao assistir",
     "site": "0.8.75",
     "items": [
+      "Quando a imagem de uma transmissão trava por causa da internet, ela volta bem mais rápido.",
       "O relatório de problema agora traz mais detalhes sobre as transmissões, para achar mais rápido a causa de travadas e quedas de fps."
     ]
   },
