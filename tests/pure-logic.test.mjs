@@ -933,3 +933,74 @@ test('ocultar todas: botão na sala, lembrado entre visitas, e "mostrar" também
   // transmissão que acabou limpa o "ocultado" (se voltar, volta a aparecer)
   assert.match(appJs, /tiles\.delete\(id\);\s*dismissedPending\.delete\(id\);/);
 });
+
+// ---------- fileira de miniaturas ao lado ou embaixo (a que deixa o destaque maior) ----------
+const chooseStripPlacement = new Function(
+  'const SPOTLIGHT_MIN_WIDTH = 200;' +
+  'const FILM_TILE_W = 200, FILM_TILE_H = 113, FILM_BELOW_H = 119, FILM_GAP = 14, FILM_TILE_GAP = 10, FILM_SIDE_MARGIN = 8, FILM_TAB_H = 34, FILM_TAB_SIDE_W = 34, FILM_TAB_BAR = 34;' +
+  extractFunction(appJs, 'bestSpotlightLayout') + '\n' + extractFunction(appJs, 'chooseStripPlacement') + '; return chooseStripPlacement;'
+)();
+
+test('fileira: janela larga e baixa com 1 destaque e 1 miniatura põe a fileira AO LADO (destaque bem maior)', () => {
+  const r = chooseStripPlacement(1, 988, 405, 16, 1); // o caso do print (1024x768): antes 483 de largura embaixo
+  assert.equal(r.side, true);
+  assert.equal(r.layout.width, 720);
+  assert.ok(r.layout.width > 483 + 100);
+});
+
+test('fileira: janela alta e estreita fica EMBAIXO (o comportamento de sempre)', () => {
+  const r = chooseStripPlacement(1, 864, 780, 16, 2);
+  assert.equal(r.side, false);
+  assert.equal(r.layout.width, 864);
+});
+
+test('fileira: sem miniaturas, ou ao lado sem ganho real, nada muda (sem troca por diferença pequena)', () => {
+  assert.deepEqual(chooseStripPlacement(1, 1884, 620, 16, 0), { side: false, layout: { cols: 1, width: 1102 } });
+  const r = chooseStripPlacement(2, 988, 405, 16, 1); // 2 destaques lado a lado: ao lado não ajuda
+  assert.equal(r.side, false);
+  assert.equal(r.layout.width, 483);
+});
+
+test('fileira: 4 destaques com 1 miniatura na janela baixa ganham muito com a fileira ao lado', () => {
+  const r = chooseStripPlacement(4, 988, 405, 16, 1);
+  assert.equal(r.side, true);
+  assert.equal(r.layout.width, 345);
+});
+
+test('fileira: nunca escolhe uma opção cujo destaque seja menor que a outra (mais a margem)', () => {
+  for(const [n, W, H, c] of [[1, 988, 405, 3], [2, 900, 780, 2], [3, 1884, 780, 1], [1, 600, 500, 5], [4, 1500, 700, 2]]){
+    const r = chooseStripPlacement(n, W, H, 16, c);
+    const below = chooseStripPlacement(n, W, H - 133, 16, 0).layout.width; // a posição "embaixo" é o mesmo cálculo sem a fileira
+    if(r.side) assert.ok(r.layout.width > below + 8, `${n},${W},${H},${c}`);
+    else assert.equal(r.layout.width, below, `${n},${W},${H},${c}`);
+  }
+});
+
+test('fileira ao lado: o palco vira linha e a coluna rola por dentro (CSS), e o encaixe liga a classe', () => {
+  assert.match(styleCss, /#stageArea\.strip-side\{ flex-direction:row;/);
+  assert.match(styleCss, /#stageArea\.strip-side \.filmstrip\{[^}]*flex-direction:column;[^}]*overflow-y:auto/);
+  assert.match(appJs, /stage\.classList\.toggle\('strip-side', side\);/);
+  assert.match(appJs, /stage\.classList\.remove\('strip-side'\);/); // sem destaque: volta ao normal
+});
+
+test('aba da fileira recolhida: o destaque ganha o espaço todo (só a aba fica)', () => {
+  // 1024x768 com 1 destaque: aberta = fileira ao lado (720); recolhida = só uma aba estreita, o destaque cresce
+  const aberta = chooseStripPlacement(1, 988, 405, 16, 3, false);
+  const recolhida = chooseStripPlacement(1, 988, 405, 16, 3, true);
+  assert.equal(aberta.layout.width, 720);
+  assert.ok(recolhida.layout.width >= aberta.layout.width, 'recolher nunca deixa o destaque menor');
+  // janela alta: recolhida embaixo custa só 34+14 px de altura (aberta custa 119+14)
+  const alta = chooseStripPlacement(1, 864, 600, 16, 2, true);
+  assert.equal(alta.side, false);
+  assert.equal(alta.layout.width, Math.min(864, Math.floor((600 - 48) * 16 / 9)));
+});
+
+test('aba da fileira: alça na própria fileira, contagem, escolha lembrada, só os tiles saem ao sair da sala', () => {
+  assert.match(indexHtml, /<div class="filmstrip" id="filmstrip">\s*<button type="button" class="film-tab" id="filmTab" aria-expanded="true"/);
+  assert.match(appJs, /const FILM_COLLAPSED_KEY = 'sinal:filmCollapsed';/);
+  assert.match(appJs, /\['filmTab',\s*\(\) => toggleFilmCollapsed\(\)\]/);
+  assert.match(appJs, /refreshFilmTab\(total - pinnedOrder\.length\);/);
+  assert.match(appJs, /document\.querySelectorAll\('#filmstrip \.tile'\)\.forEach\(\(t\) => t\.remove\(\)\);/); // a aba não é apagada
+  assert.match(appJs, /t\.classList\.contains\('tile'\) && !t\.classList\.contains\('pending-hidden'\)/); // a aba não conta como miniatura
+  assert.match(styleCss, /\.filmstrip\.collapsed \.tile\{ display:none; \}/);
+});
