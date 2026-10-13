@@ -1399,7 +1399,7 @@ function renderGpuCaptureSection(settings){
   document.getElementById('settingsGpuCaptureRow').classList.toggle('settings-row-disabled', !supported);
   const pending = supported && (settings.gpuCapture === true) !== (settings.gpuCaptureActive === true);
   restart.hidden = !pending;
-  if(!supported) status.textContent = 'Precisa do Windows 11, versão 24H2 ou mais nova.';
+  if(!supported) status.textContent = 'Seu Windows não tem os requisitos mínimos (Windows 11, versão 24H2 ou mais nova).';
   else if(pending) status.textContent = 'Reinicie o app para aplicar.';
   else status.textContent = '';
   status.hidden = !status.textContent;
@@ -1934,6 +1934,65 @@ let lastSendMeta = null;
 const recvSummaryWin = new Map(); // tileId -> { since, samples, meta }
 const remoteSendStats = new Map(); // tileId -> números de quem transmite + quando chegaram
 
+// ---- Sugestão da captura pela placa (HANDOFF §69) ----
+// Quem transmite com a captura do Chromium "faminta" (o jogo enche a placa e a captura entrega bem menos quadros que a
+// meta) ganha um aviso discreto sugerindo a opção "Capturar a tela pela placa de vídeo". Só aparece quando parece MESMO
+// esse caso, e não uma tela parada: 2 minutos seguidos com a captura abaixo de 70% da meta, sem buracos de tela parada,
+// com a imagem mudando o tempo todo (bitrate alto); só no app, com Windows que suporta a opção e ela ainda desligada;
+// no máximo uma vez por abertura do app, e dá pra não mostrar mais.
+const GPU_HINT_OFF_KEY = 'sinal:gpuHintOff';
+const GPU_HINT_MINUTES = 2;
+let gpuHintStarvedMinutes = 0;
+let gpuHintShown = false;
+
+// sum = summarizeSendSamples de ~1 minuto. Pura (testada).
+function captureLooksStarved(sum, targetFps){
+  if(!sum || !(sum.activeSeconds >= 40) || !(targetFps > 0)) return false;
+  if(sum.captureFps == null || sum.captureMin == null) return false;
+  if((sum.stalledSeconds || 0) > 8) return false;    // trechos sem quadro nenhum = tela parada, não é a captura faminta
+  if(!(sum.kbps >= 1500)) return false;               // pouca informação mudando: não parece jogo
+  if(sum.captureMin < 5) return false;                // caiu a quase zero em algum trecho: tela parando, não faminta
+  return sum.captureFps < targetFps * 0.7;
+}
+
+function gpuHintAllowed(){
+  if(gpuHintShown || !electronSettings) return false;
+  if(electronSettings.gpuCaptureSupported !== true || electronSettings.gpuCaptureActive === true || electronSettings.gpuCapture === true) return false;
+  try{ if(localStorage.getItem(GPU_HINT_OFF_KEY) === '1') return false; }catch(e){ /* sem localStorage: segue */ }
+  return true;
+}
+
+// Chamado a cada resumo de 1 minuto do envio.
+function noteCaptureForGpuHint(sum, targetFps){
+  gpuHintStarvedMinutes = captureLooksStarved(sum, targetFps) ? gpuHintStarvedMinutes + 1 : 0;
+  if(gpuHintStarvedMinutes < GPU_HINT_MINUTES || !gpuHintAllowed()) return;
+  gpuHintShown = true;
+  document.getElementById('gpuHint').hidden = false; // fica esperando quando a pessoa voltar pro Sinal
+  // Quem está no jogo não olha pro Sinal: o app (0.3.21+) mostra um aviso no canto superior da tela, sem roubar o
+  // foco e nunca por cima de jogo em tela cheia exclusiva (ver electron/src/main.js).
+  const toast = !document.hasFocus() && !!(window.sinalElectron && window.sinalElectron.showGpuHint);
+  if(toast) window.sinalElectron.showGpuHint();
+  appLog(`[sinal] sugestão mostrada: captura pela placa de vídeo (captura ${Math.round(sum.captureFps)} de ${targetFps} fps)${toast ? ' · aviso na tela' : ''}`);
+}
+
+function setupGpuHint(){
+  const bar = document.getElementById('gpuHint');
+  document.getElementById('gpuHintOpen').addEventListener('click', () => {
+    bar.hidden = true;
+    appLog('[sinal] sugestão da captura pela placa: abriu as Configurações');
+    document.getElementById('settingsBtn').click();
+    setTimeout(() => {
+      const sec = document.getElementById('settingsGpuCaptureSection');
+      if(sec && !sec.hidden) sec.scrollIntoView({ block: 'center' });
+    }, 350);
+  });
+  document.getElementById('gpuHintLater').addEventListener('click', () => { bar.hidden = true; });
+  document.getElementById('gpuHintNever').addEventListener('click', () => {
+    bar.hidden = true;
+    try{ localStorage.setItem(GPU_HINT_OFF_KEY, '1'); }catch(e){ /* só não lembra */ }
+  });
+}
+
 function flushSendSummary(minSeconds){
   const sum = summarizeSendSamples(sendSummaryWin.samples);
   if(lastSendMeta && sum.seconds >= minSeconds){
@@ -1942,6 +2001,7 @@ function flushSendSummary(minSeconds){
   }
   sendSummaryWin = { since: 0, samples: [] };
   sendStatsWin = { since: 0, samples: [] };
+  gpuHintStarvedMinutes = 0;
 }
 
 function noteSendSample(sample, meta){
@@ -1952,8 +2012,10 @@ function noteSendSample(sample, meta){
   sendSummaryWin.samples.push(sample);
   sendStatsWin.samples.push(sample);
   if(now - sendSummaryWin.since >= SUMMARY_EVERY_MS){
-    const line = sendSummaryLine(summarizeSendSamples(sendSummaryWin.samples), meta);
+    const minuteSum = summarizeSendSamples(sendSummaryWin.samples);
+    const line = sendSummaryLine(minuteSum, meta);
     if(line) appLog(line);
+    noteCaptureForGpuHint(minuteSum, meta.targetFps);
     sendSummaryWin = { since: now, samples: [] };
   }
   if(now - sendStatsWin.since >= SEND_STATS_EVERY_MS){
@@ -2200,6 +2262,82 @@ function setStartMutedPref(on){
   try{ localStorage.setItem(START_MUTED_KEY, on ? '1' : '0'); }catch(e){ /* sem localStorage: só não lembra */ }
 }
 
+// ---- Estatísticas no tile (HANDOFF §69) ----
+// Botão de barras nos controles do tile: liga um painel no canto do vídeo, atualizado a cada segundo, com o que está
+// chegando, os números de quem transmite (canal `send-stats`, §66) e o gargalo provável. É o mesmo diagnóstico do
+// registro, só que visível na hora. Janela de 3 s (média curta) pra não piscar a cada segundo.
+const ICON_STATS = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="6" y1="20" x2="6" y2="13"></line><line x1="12" y1="20" x2="12" y2="6"></line><line x1="18" y1="20" x2="18" y2="10"></line></svg>';
+const TILE_STATS_EVERY_MS = 1000;
+const tileStatsState = new Map(); // tileId -> { timer, prev, samples }
+
+function fmtMbps(kbps){ return (kbps / 1000).toFixed(1).replace('.', ','); }
+
+// recv = summarizeRecvSamples dos últimos ~3 s (+ width/height/decoderHw); sender = números de quem transmite ou null.
+// Pura (testada): devolve as linhas do painel.
+function tileStatsLines(recv, sender){
+  if(!recv) return ['Medindo…'];
+  const lines = [];
+  const res = recv.width && recv.height ? ` · ${recv.width}×${recv.height}` : '';
+  lines.push(`Recebendo ${Math.round(recv.recvFps)} fps${res} · ${fmtMbps(recv.kbps)} Mbps · perda ${recv.lossPct.toFixed(1).replace('.', ',')}%`);
+  if(sender && typeof sender.fps === 'number'){
+    const target = sender.target ? ` de ${sender.target}` : '';
+    const capture = typeof sender.cap === 'number' ? `captura ${Math.round(sender.cap)}${target} fps` : `envio ${Math.round(sender.fps)}${target} fps`;
+    lines.push(`Quem transmite: ${capture} · codificando ${sender.hw ? 'pela placa' : 'pelo processador'}`);
+  }else{
+    lines.push('Quem transmite: sem dados (versão antiga do Sinal)');
+  }
+  const verdict = streamBottleneck(recv, sender);
+  lines.push(verdict === 'ok' ? 'Tudo certo' : `Gargalo provável: ${verdict}`);
+  return lines;
+}
+
+async function refreshTileStats(tileId){
+  const st = tileStatsState.get(tileId);
+  const tile = tiles.get(tileId);
+  const track = tileVideoTracks.get(tileId);
+  if(!st || !tile || !track || typeof track.getRTCStatsReport !== 'function') return;
+  let report;
+  try{ report = await track.getRTCStatsReport(); }catch(e){ return; }
+  let inbound = null;
+  if(report) report.forEach((s) => { if(s.type === 'inbound-rtp' && s.kind === 'video') inbound = s; });
+  if(!inbound || !tileStatsState.has(tileId)) return;
+  const cur = { ts: inbound.timestamp, received: inbound.framesReceived || 0, decoded: inbound.framesDecoded || 0, bytes: inbound.bytesReceived || 0,
+    lost: inbound.packetsLost || 0, packets: inbound.packetsReceived || 0, freezes: inbound.freezeCount || 0, freezeSeconds: inbound.totalFreezesDuration || 0 };
+  const prev = st.prev;
+  st.prev = cur;
+  if(prev && cur.ts > prev.ts){
+    st.samples.push({ seconds: (cur.ts - prev.ts) / 1000, received: cur.received - prev.received, decoded: cur.decoded - prev.decoded, bytes: cur.bytes - prev.bytes,
+      lost: cur.lost - prev.lost, packets: cur.packets - prev.packets, freezes: cur.freezes - prev.freezes, freezeSeconds: cur.freezeSeconds - prev.freezeSeconds });
+    if(st.samples.length > 3) st.samples.shift();
+  }
+  const sum = summarizeRecvSamples(st.samples);
+  if(sum){ sum.width = inbound.frameWidth; sum.height = inbound.frameHeight; }
+  const s = remoteSendStats.get(tileId);
+  const sender = s && Date.now() - s.at <= SEND_STATS_MAX_AGE_MS ? s : null;
+  const box = tile.querySelector('.tile-stats');
+  if(!box) return;
+  box.textContent = '';
+  tileStatsLines(sum, sender).forEach((l, i, all) => {
+    const row = mk('div', i === all.length - 1 ? 'tile-stats-verdict' : '', l);
+    box.appendChild(row);
+  });
+}
+
+function setTileStats(tileId, open){
+  const tile = tiles.get(tileId);
+  const box = tile && tile.querySelector('.tile-stats');
+  const btn = tile && tile.querySelector('.stats-btn');
+  const st = tileStatsState.get(tileId);
+  if(st){ clearInterval(st.timer); tileStatsState.delete(tileId); }
+  if(!box) return;
+  box.hidden = !open;
+  if(btn) btn.classList.toggle('active', open);
+  if(!open) return;
+  box.textContent = 'Medindo…';
+  tileStatsState.set(tileId, { timer: setInterval(() => refreshTileStats(tileId), TILE_STATS_EVERY_MS), prev: null, samples: [] });
+  refreshTileStats(tileId);
+}
+
 // ---------------- UI: palco (destaque) + fileira (minimizados) ----------------
 let tiles = new Map();     // id -> elemento .tile
 const MAX_PINNED = 4;      // máximo de transmissões em destaque ao mesmo tempo
@@ -2420,12 +2558,14 @@ function addTile(id, name, stream){
     <video autoplay playsinline></video>
     <div class="tile-hidden-overlay"><span class="mono">Vídeo desativado</span></div>
     <div class="pip-overlay"><span class="mono">Em janela flutuante</span></div>
+    <div class="tile-stats mono" hidden></div>
     <button class="fs-btn" title="Tela cheia" aria-label="Tela cheia">${ICON_FULLSCREEN_SVG}</button>
     ${!isSelf && document.pictureInPictureEnabled ? `<button class="pip-btn" title="Janela flutuante">${ICON_PIP}</button>` : ''}
     ${isSelf ? '' : `
     <div class="tile-controls">
       <button type="button" class="ctl-btn mute-btn" title="Mutar/desmutar">${ICON_VOLUME}</button>
       <input type="range" class="vol-slider" min="0" max="100" value="100" title="Volume">
+      <button type="button" class="ctl-btn stats-btn" title="Estatísticas">${ICON_STATS}</button>
       <button type="button" class="ctl-btn hide-btn" title="Parar de assistir">${ICON_EYE_OFF}</button>
       ${owner && canModerateParticipant(owner) ? `
       <button type="button" class="ctl-btn mod-btn" title="Opções de moderação">${ICON_DOTS}</button>
@@ -2495,6 +2635,10 @@ function addTile(id, name, stream){
       refreshMuteAllBtn();
     });
     volSlider.addEventListener('click', (e) => e.stopPropagation());
+    tile.querySelector('.stats-btn').addEventListener('click', (e) => {
+      e.stopPropagation();
+      setTileStats(id, !tileStatsState.has(id));
+    });
     volSlider.addEventListener('change', () => saveVolume(volKey, Number(volSlider.value)));
     volSlider.addEventListener('input', () => {
       const linear = volSlider.value / 100;
@@ -2559,6 +2703,8 @@ function removeTile(id){
   if(el && document.pictureInPictureElement && el.contains(document.pictureInPictureElement)){
     exitPip();
   }
+  const statsState = tileStatsState.get(id);
+  if(statsState){ clearInterval(statsState.timer); tileStatsState.delete(id); }
   if(el) el.remove();
   tiles.delete(id);
   dismissedPending.delete(id); // a transmissão acabou (ou virou ao vivo): se voltar, volta a aparecer
@@ -5111,8 +5257,17 @@ function setupSettingsPanel(){
       else window.sinalElectron.checkForUpdates().then(renderUpdateState);
     });
     // Item "Procurar atualização" da bandeja abre direto aqui.
-    window.sinalElectron.onOpenSettings(() => {
+    window.sinalElectron.onOpenSettings((section) => {
       if(overlay.hidden) btn.click();
+      // 'gpu-capture' = clicou na notificação da sugestão da captura pela placa; o resto (bandeja) = atualizações
+      if(section === 'gpu-capture'){
+        document.getElementById('gpuHint').hidden = true;
+        setTimeout(() => {
+          const sec = document.getElementById('settingsGpuCaptureSection');
+          if(sec && !sec.hidden) sec.scrollIntoView({ block: 'center' });
+        }, 350);
+        return;
+      }
       updatesSection.scrollIntoView({ block: 'nearest' });
     });
   }
@@ -5149,6 +5304,18 @@ function setupSettingsPanel(){
   document.getElementById('settingsGpuCapture').addEventListener('change', async (e) => {
     const res = await window.sinalElectron.setSettings({ gpuCapture: e.target.checked });
     applySettingsToUI(res.settings);
+    // Só vale ao reabrir o app: pergunta na hora se quer reiniciar (o botão "Reiniciar o app agora" fica pra depois).
+    const s = res.settings;
+    if(!window.sinalElectron.relaunchApp || s.gpuCaptureSupported !== true || (s.gpuCapture === true) === (s.gpuCaptureActive === true)) return;
+    const ok = await askConfirm({
+      title: 'Reiniciar o app?',
+      message: (s.gpuCapture ? 'A captura pela placa de vídeo só começa a valer depois que o app reiniciar.' : 'A captura volta ao modo normal depois que o app reiniciar.')
+        + (room ? ' Você vai sair da sala; depois é só entrar outra vez.' : ''),
+      okText: 'Reiniciar agora', cancelText: 'Depois'
+    });
+    if(!ok) return;
+    appLog('[sinal] reiniciando o app pra aplicar a captura pela placa de vídeo');
+    window.sinalElectron.relaunchApp();
   });
   document.getElementById('settingsGpuCaptureRestart').addEventListener('click', async () => {
     if(!window.sinalElectron.relaunchApp) return;
@@ -5284,6 +5451,7 @@ window.addEventListener('DOMContentLoaded', () => {
   setupGlobalShareShortcut();
   setupSettingsPanel();
   setupReportDialog();
+  setupGpuHint();
   document.getElementById('reportBugBtn').addEventListener('click', openReportDialog);
   setupServersUI();
   setupAppLogin();
@@ -5301,7 +5469,7 @@ window.addEventListener('beforeunload', () => {
 });
 
 // PWA: versão, registro do service worker, detecção de atualização e botão de instalação
-const APP_VERSION = '0.8.76'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
+const APP_VERSION = '0.8.77'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
 // Dentro do Electron, mostra a versão do INSTALADOR (electron/package.json),
 // não a do site — ver preload.js. Fora dele (navegador normal), continua a
 // versão do deploy de sempre.

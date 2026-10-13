@@ -110,6 +110,9 @@ contextBridge.exposeInMainWorld('sinalElectron', {
   // fecha a janelinha mas não traz o app de volta — o site pede aqui (HANDOFF §52).
   focusWindow: () => ipcRenderer.send('sinal:focus-window'),
 
+  // Sugestão da captura pela placa como aviso no canto da tela (texto fixo no app, ver main.js).
+  showGpuHint: () => ipcRenderer.send('sinal:show-gpu-hint'),
+
   // Item "Procurar atualização" da bandeja abre as configurações nessa seção.
   onOpenSettings: (callback) => {
     ipcRenderer.on('sinal:open-settings', (_event, section) => callback(section));

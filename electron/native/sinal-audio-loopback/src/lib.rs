@@ -99,6 +99,35 @@ pub fn get_window_process_id(hwnd: i64) -> Option<u32> {
     }
 }
 
+/// Estado do Windows pra avisos (SHQueryUserNotificationState): 1 = ninguém
+/// presente/tela bloqueada, 2 = app em tela cheia (inclui jogo em janela sem
+/// bordas), 3 = jogo Direct3D em tela cheia EXCLUSIVA, 4 = modo apresentação,
+/// 5 = aceita avisos, 6 = horário silencioso, 7 = app da loja em tela cheia.
+/// `None` se a chamada falhar. Usado pelo aviso da captura pela placa
+/// (main.js, HANDOFF §69) pra NUNCA desenhar janela por cima de jogo em tela
+/// cheia exclusiva (isso pode minimizar o jogo).
+#[napi]
+pub fn user_notification_state() -> Option<i32> {
+    use windows::Win32::UI::Shell::SHQueryUserNotificationState;
+    unsafe { SHQueryUserNotificationState() }.ok().map(|state| state.0)
+}
+
+/// Retângulo [esquerda, topo, direita, base] da janela em primeiro plano, em
+/// pixels físicos — pra saber em qual monitor está o jogo. `None` se não
+/// houver janela em primeiro plano.
+#[napi]
+pub fn foreground_window_rect() -> Option<Vec<i32>> {
+    use windows::Win32::Foundation::RECT;
+    use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowRect};
+    let hwnd = unsafe { GetForegroundWindow() };
+    if hwnd.0.is_null() {
+        return None;
+    }
+    let mut rect = RECT::default();
+    unsafe { GetWindowRect(hwnd, &mut rect) }.ok()?;
+    Some(vec![rect.left, rect.top, rect.right, rect.bottom])
+}
+
 /// Acha o PID "raiz" do Discord (o processo que não é filho de outro
 /// Discord.exe) — usado no modo "compartilhar tela inteira", onde a gente
 /// sempre exclui o Discord em vez de incluir um app específico. Discord roda

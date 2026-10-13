@@ -12,7 +12,7 @@
 //  4. No Windows não existe seletor nativo pro Electron (useSystemPicker só
 //     funciona no macOS 15+), então a gente mostra nosso próprio seletor
 //     (picker.html) com os thumbnails do desktopCapturer.
-const { app, BrowserWindow, Tray, Menu, session, desktopCapturer, ipcMain, nativeImage, globalShortcut, screen, crashReporter, shell } = require('electron');
+const { app, BrowserWindow, Tray, Menu, session, desktopCapturer, ipcMain, nativeImage, globalShortcut, screen, crashReporter, shell, Notification } = require('electron');
 const { buildLoginUrl, parseAuthUrl } = require('./auth-url');
 const path = require('node:path');
 const fs = require('node:fs');
@@ -954,6 +954,111 @@ function setupAutoUpdater(){
   });
 }
 
+// Sugestão da captura pela placa como aviso no canto superior da tela (HANDOFF §69): o site pede quando a captura de
+// quem transmite está "faminta" e a janela do Sinal não está em foco (a pessoa está no jogo). Uma janelinha própria
+// (hint.html): transparente, sem foco (focusable:false + showInactive, o jogo continua com teclado e mouse), some
+// sozinha em ~8 s, texto FIXO no app (o site não manda conteúdo), uma vez por abertura do app.
+// Regra de ouro: NUNCA atrapalhar o jogo. Antes de mostrar, pergunta ao Windows (addon nativo,
+// SHQueryUserNotificationState) se dá: jogo em tela cheia EXCLUSIVA (3), tela bloqueada (1), apresentação (4) ou
+// horário silencioso (6) = espera e tenta de novo a cada 5 s, por até 10 min (a faixa dentro do Sinal continua lá).
+// Jogo em janela sem bordas (2) aparece normal. Sem o addon, cai na notificação do próprio Windows, que o Windows
+// segura sozinho quando é o caso.
+const GPU_HINT_OK_STATES = new Set([2, 5, 7]);
+const GPU_HINT_RETRY_MS = 5000;
+const GPU_HINT_GIVE_UP_MS = 10 * 60 * 1000;
+let gpuHintRequested = false;
+let gpuHintWindow = null;
+let gpuHintNotification = null; // referência guardada: sem ela a notificação pode ser recolhida antes do clique
+
+function openGpuCaptureSettings(){
+  if(!mainWindow || mainWindow.isDestroyed()) return;
+  if(mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+  mainWindow.webContents.send('sinal:open-settings', 'gpu-capture');
+}
+
+// Monitor onde está a janela em primeiro plano (o jogo); sem isso, o monitor do mouse.
+function gpuHintDisplay(){
+  try{
+    const r = audioAddon && audioAddon.foregroundWindowRect();
+    if(Array.isArray(r) && r.length === 4){
+      const dip = screen.screenToDipRect(null, { x: r[0], y: r[1], width: r[2] - r[0], height: r[3] - r[1] });
+      return screen.getDisplayMatching(dip);
+    }
+  }catch(e){ /* cai no mouse */ }
+  return screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
+}
+
+function showGpuHintNotification(){
+  if(!Notification.isSupported()) return;
+  gpuHintNotification = new Notification({
+    title: 'Sua transmissão está perdendo quadros',
+    body: 'Ligar a captura pela placa de vídeo pode ajudar. Clique para ver.',
+    silent: true
+  });
+  gpuHintNotification.on('click', openGpuCaptureSettings);
+  gpuHintNotification.show();
+  console.log('[sinal] sugestão da captura pela placa: notificação do Windows mostrada (sem o addon nativo)');
+}
+
+function showGpuHintWindow(state){
+  const W = 356, H = 118; // cartão de 328 px + 14 px de folga pra sombra (body do hint.html)
+  const area = gpuHintDisplay().workArea;
+  gpuHintWindow = new BrowserWindow({
+    x: Math.round(area.x + area.width - W - 4), y: Math.round(area.y + 4), width: W, height: H,
+    frame: false, transparent: true, backgroundColor: '#00000000', hasShadow: false, thickFrame: false,
+    resizable: false, movable: false, minimizable: false, maximizable: false, fullscreenable: false,
+    skipTaskbar: true, focusable: false, alwaysOnTop: true, show: false,
+    webPreferences: {
+      preload: path.join(__dirname, 'hint-preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true
+    }
+  });
+  gpuHintWindow.setAlwaysOnTop(true, 'screen-saver');
+  // Os cantos transparentes não seguram clique do jogo: só o cartão recebe o mouse (hint:mouse).
+  gpuHintWindow.setIgnoreMouseEvents(true, { forward: true });
+  gpuHintWindow.once('ready-to-show', () => { if(gpuHintWindow && !gpuHintWindow.isDestroyed()) gpuHintWindow.showInactive(); });
+  gpuHintWindow.on('closed', () => { gpuHintWindow = null; });
+  gpuHintWindow.loadFile(path.join(__dirname, 'hint.html'));
+  console.log(`[sinal] sugestão da captura pela placa: aviso no canto da tela mostrado (estado do Windows ${state})`);
+}
+
+ipcMain.on('hint:mouse', (event, over) => {
+  if(!gpuHintWindow || event.sender !== gpuHintWindow.webContents) return;
+  gpuHintWindow.setIgnoreMouseEvents(over !== true, { forward: true });
+});
+ipcMain.on('hint:choice', (event, choice) => {
+  if(!gpuHintWindow || event.sender !== gpuHintWindow.webContents) return;
+  gpuHintWindow.close();
+  if(choice === 'open'){
+    console.log('[sinal] sugestão da captura pela placa: aviso clicado');
+    openGpuCaptureSettings();
+  }
+});
+
+function tryShowGpuHint(startedAt){
+  // voltou pro Sinal enquanto esperava: a faixa dentro do app já mostra a sugestão
+  if(mainWindow && !mainWindow.isDestroyed() && mainWindow.isFocused()) return;
+  let state = null;
+  try{ state = audioAddon ? audioAddon.userNotificationState() : null; }catch(e){ state = null; }
+  if(state == null){ showGpuHintNotification(); return; }
+  if(GPU_HINT_OK_STATES.has(state)){ showGpuHintWindow(state); return; }
+  if(Date.now() - startedAt >= GPU_HINT_GIVE_UP_MS){
+    console.log(`[sinal] sugestão da captura pela placa: aviso não mostrado (Windows ocupado, estado ${state})`);
+    return;
+  }
+  setTimeout(() => tryShowGpuHint(startedAt), GPU_HINT_RETRY_MS);
+}
+
+trustedIpc.on('sinal:show-gpu-hint', () => {
+  if(gpuHintRequested) return; // uma vez por abertura do app
+  gpuHintRequested = true;
+  tryShowGpuHint(Date.now());
+});
+
 // Botão "expandir" da janela flutuante: traz a janela principal de volta (restaura se estava
 // minimizada, mostra se estava na bandeja). O site só pede depois de saber que foi um clique em
 // "expandir" (e não no X), então não rouba o foco de quem está jogando.
@@ -1063,6 +1168,8 @@ trustedIpc.on('sinal:install-update', () => {
 });
 
 app.whenReady().then(() => {
+  // Notificações do Windows precisam do mesmo id do atalho que o instalador cria (appId do electron-builder).
+  if(process.platform === 'win32') app.setAppUserModelId('app.sinal.desktop');
   // Segunda instância (perdeu o lock lá em cima e já está saindo): não monta janela, bandeja nem atalho. O relatório de
   // 2026-10-07 mostrou três "app iniciado" no mesmo instante e o atalho global falhando por conflito entre elas.
   if(!gotSingleInstanceLock) return;

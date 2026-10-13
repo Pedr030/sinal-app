@@ -1,5 +1,17 @@
 [
   {
+    "id": "2026-10-13-estatisticas",
+    "date": "2026-10-13",
+    "title": "Estatísticas e dicas de desempenho",
+    "site": "0.8.77",
+    "app": "0.3.21",
+    "items": [
+      "Novo botão de estatísticas em cada transmissão, com fps, qualidade e o que pode estar travando.",
+      "Se sua transmissão perder quadros, o app sugere a captura pela placa de vídeo, sem atrapalhar o jogo.",
+      "Ao ligar ou desligar a captura pela placa, o app oferece reiniciar na hora."
+    ]
+  },
+  {
     "id": "2026-10-13-captura-pela-placa",
     "date": "2026-10-13",
     "title": "Captura pela placa de vídeo",
@@ -7,8 +19,8 @@
     "site": "0.8.76",
     "app": "0.3.20",
     "items": [
-      "No app, nova opção experimental nas Configurações: capturar a tela pela placa de vídeo. Em jogos pesados, a captura comum pode entregar menos quadros do que o jogo mostra; com a opção ligada, a transmissão tende a ficar mais fluida para quem assiste. Precisa do Windows 11, versão 24H2 ou mais nova, e vale depois de reiniciar o app.",
-      "As transmissões que você oculta agora ficam num painel próprio, onde dá para mostrar cada uma de novo. Lá também tem um botão para ocultar de uma vez as que você não está assistindo."
+      "Nova opção no app para capturar a tela pela placa de vídeo e deixar jogos mais fluidos (Windows 11 24H2).",
+      "Transmissões ocultas agora ficam num painel próprio, onde dá para mostrar de novo."
     ]
   },
   {
@@ -17,8 +29,8 @@
     "title": "Menos travadas ao assistir",
     "site": "0.8.75",
     "items": [
-      "Quando a imagem de uma transmissão trava por causa da internet, ela volta bem mais rápido.",
-      "O relatório de problema agora traz mais detalhes sobre as transmissões, para achar mais rápido a causa de travadas e quedas de fps."
+      "Travadas por causa da internet passam mais rápido.",
+      "Relatórios de problema mais completos, para achar mais rápido a causa de travadas."
     ]
   },
   {

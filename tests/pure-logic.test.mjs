@@ -1278,3 +1278,93 @@ test('codificação pela placa (opção antiga): com a captura pela placa valend
   assert.equal(els.settingsHardwareEncode.checked, true);
   assert.equal(els.settingsHardwareStatus.hidden, true);
 });
+
+// ---------- sugestão da captura pela placa (HANDOFF §69) ----------
+const captureLooksStarved = new Function(extractFunction(appJs, 'captureLooksStarved') + '; return captureLooksStarved;')();
+const starvedSum = (o) => ({ activeSeconds: 60, captureFps: 18, captureMin: 15, kbps: 3400, stalledSeconds: 0, ...o });
+
+test('sugestão: captura faminta = abaixo de 70% da meta, imagem mudando e sem buracos de tela parada', () => {
+  assert.equal(captureLooksStarved(starvedSum({}), 30), true);                     // o caso do amigo: 18 de 30
+  assert.equal(captureLooksStarved(starvedSum({ captureFps: 25 }), 30), false);    // 25 de 30: aceitável
+  assert.equal(captureLooksStarved(starvedSum({ captureFps: 40 }), 60), true);     // Fluido: 40 de 60
+  assert.equal(captureLooksStarved(starvedSum({ kbps: 400 }), 30), false);         // pouca coisa mudando: não parece jogo
+  assert.equal(captureLooksStarved(starvedSum({ stalledSeconds: 20 }), 30), false); // tela parada em trechos
+  assert.equal(captureLooksStarved(starvedSum({ captureMin: 2 }), 30), false);     // caiu a quase zero: tela parando
+  assert.equal(captureLooksStarved(starvedSum({ activeSeconds: 20 }), 30), false); // pouco tempo transmitindo
+  assert.equal(captureLooksStarved(starvedSum({ captureFps: null }), 30), false);  // sem dado de captura
+  assert.equal(captureLooksStarved(null, 30), false);
+});
+
+test('sugestão: só no app com Windows que suporta e opção desligada, depois de 2 minutos seguidos, uma vez por abertura', () => {
+  assert.match(appJs, /electronSettings\.gpuCaptureSupported !== true \|\| electronSettings\.gpuCaptureActive === true \|\| electronSettings\.gpuCapture === true/);
+  assert.match(appJs, /const GPU_HINT_MINUTES = 2;/);
+  assert.match(appJs, /gpuHintStarvedMinutes = captureLooksStarved\(sum, targetFps\) \? gpuHintStarvedMinutes \+ 1 : 0;/);
+  assert.match(appJs, /if\(gpuHintShown \|\| !electronSettings\) return false;/);
+  assert.match(appJs, /noteCaptureForGpuHint\(minuteSum, meta\.targetFps\);/);
+  assert.match(appJs, /localStorage\.setItem\(GPU_HINT_OFF_KEY, '1'\)/);            // "Não mostrar de novo"
+  assert.match(indexHtml, /<div class="resume-share" id="gpuHint" hidden>/);
+  assert.match(appJs, /gpuHintStarvedMinutes = 0;\s*\}\s*function noteSendSample/);   // parar/trocar qualidade zera
+});
+
+test('captura pela placa: ao ligar/desligar abre a janela "Reiniciar o app?" (Reiniciar agora / Depois), só quando a mudança ainda não vale', () => {
+  assert.match(appJs, /\(s\.gpuCapture === true\) === \(s\.gpuCaptureActive === true\)\) return;/);
+  assert.match(appJs, /okText: 'Reiniciar agora', cancelText: 'Depois'/);
+  assert.match(appJs, /\+ \(room \? ' Você vai sair da sala; depois é só entrar outra vez\.' : ''\)/);
+});
+
+// ---------- estatísticas no tile (HANDOFF §69) ----------
+const tileStatsLines = new Function(
+  ['sumBy', 'streamBottleneck', 'fmtMbps', 'tileStatsLines'].map((n) => extractFunction(appJs, n)).join('\n') + '; return tileStatsLines;'
+)();
+
+test('estatísticas no tile: o que chega, o lado de quem transmite e o gargalo, em português e com vírgula', () => {
+  const recv = { recvFps: 18.6, decodedFps: 18.4, kbps: 3420, lossPct: 0, freezeSeconds: 0, width: 1920, height: 1080 };
+  const sender = { target: 30, fps: 18, cap: 18, hw: true };
+  assert.deepEqual(tileStatsLines(recv, sender), [
+    'Recebendo 19 fps · 1920×1080 · 3,4 Mbps · perda 0,0%',
+    'Quem transmite: captura 18 de 30 fps · codificando pela placa',
+    'Gargalo provável: captura no PC de quem transmite'
+  ]);
+  const ok = tileStatsLines({ ...recv, recvFps: 59, decodedFps: 59 }, { target: 60, fps: 59, cap: 60, hw: false });
+  assert.equal(ok[1], 'Quem transmite: captura 60 de 60 fps · codificando pelo processador');
+  assert.equal(ok[2], 'Tudo certo');
+  assert.equal(tileStatsLines(recv, null)[1], 'Quem transmite: sem dados (versão antiga do Sinal)');
+  assert.deepEqual(tileStatsLines(null, null), ['Medindo…']);
+});
+
+test('estatísticas no tile: botão nos controles, painel montado via DOM, relógio parado quando o tile sai', () => {
+  assert.match(appJs, /<button type="button" class="ctl-btn stats-btn" title="Estatísticas">\$\{ICON_STATS\}<\/button>/);
+  assert.match(appJs, /setTileStats\(id, !tileStatsState\.has\(id\)\);/);
+  const body = appJs.slice(appJs.indexOf('async function refreshTileStats'), appJs.indexOf('function setTileStats'));
+  assert.doesNotMatch(body, /innerHTML/);                      // nada de HTML cru (números vêm de outro navegador)
+  assert.match(appJs, /if\(statsState\)\{ clearInterval\(statsState\.timer\); tileStatsState\.delete\(id\); \}/);
+  assert.match(styleCss, /\.tile-stats\{[^}]*pointer-events:none/);
+  assert.match(styleCss, /\.filmstrip \.tile-stats\{ display:none; \}/);
+});
+
+test('sugestão como aviso no canto da tela: sem foco, nunca sobre jogo em tela cheia exclusiva, uma vez por abertura', () => {
+  const main = readFileSync(join(ROOT, 'electron/src/main.js'), 'utf8');
+  assert.match(main, /trustedIpc\.on\('sinal:show-gpu-hint', \(\) => \{\s*if\(gpuHintRequested\) return;/);
+  assert.match(main, /const GPU_HINT_OK_STATES = new Set\(\[2, 5, 7\]\);/);  // 3 = tela cheia exclusiva: espera
+  assert.match(main, /focusable: false, alwaysOnTop: true, show: false,/);
+  assert.match(main, /gpuHintWindow\.showInactive\(\)/);
+  assert.match(main, /setIgnoreMouseEvents\(true, \{ forward: true \}\)/);
+  assert.match(main, /if\(state == null\)\{ showGpuHintNotification\(\); return; \}/); // sem addon: a do Windows
+  assert.match(main, /silent: true/);
+  assert.match(main, /mainWindow\.webContents\.send\('sinal:open-settings', 'gpu-capture'\);/);
+  // as mensagens da janelinha só valem vindas dela
+  assert.match(main, /ipcMain\.on\('hint:choice', \(event, choice\) => \{\s*if\(!gpuHintWindow \|\| event\.sender !== gpuHintWindow\.webContents\) return;/);
+  const hint = readFileSync(join(ROOT, 'electron/src/hint.html'), 'utf8');
+  assert.match(hint, /Sua transmissão está perdendo quadros/);
+  assert.doesNotMatch(hint, /innerHTML|https?:\/\//);
+  const lib = readFileSync(join(ROOT, 'electron/native/sinal-audio-loopback/src/lib.rs'), 'utf8');
+  assert.match(lib, /pub fn user_notification_state\(\) -> Option<i32>/);
+  assert.match(lib, /pub fn foreground_window_rect\(\) -> Option<Vec<i32>>/);
+  assert.match(main, /app\.setAppUserModelId\('app\.sinal\.desktop'\)/);
+  const pkg = JSON.parse(readFileSync(join(ROOT, 'electron/package.json'), 'utf8'));
+  assert.equal(pkg.build.appId, 'app.sinal.desktop');                        // o id da notificação é o do instalador
+  const preload = readFileSync(join(ROOT, 'electron/src/preload.js'), 'utf8');
+  assert.match(preload, /showGpuHint: \(\) => ipcRenderer\.send\('sinal:show-gpu-hint'\),/); // sem argumento: o site não manda texto
+  assert.match(appJs, /const toast = !document\.hasFocus\(\) && !!\(window\.sinalElectron && window\.sinalElectron\.showGpuHint\);/);
+  assert.match(appJs, /if\(section === 'gpu-capture'\)\{/);
+});
