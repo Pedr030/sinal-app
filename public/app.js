@@ -1956,19 +1956,20 @@ function addPendingTile(tileId, participant, isCamera){
       ${ICON_PLAY}
       <span class="pending-hint mono">Clique pra assistir</span>
     </div>
+    <button type="button" class="pending-dismiss" title="Ocultar esta transmissão" aria-label="Ocultar esta transmissão">${ICON_PENDING_DISMISS}</button>
     <div class="label"><span class="led"></span>${escapeHtml(label)}</div>
   `;
   tile.addEventListener('click', () => watchTile(tileId, isCamera));
+  tile.querySelector('.pending-dismiss').addEventListener('click', (e) => {
+    e.stopPropagation(); // ocultar não é assistir: o clique não pode abrir a transmissão
+    dismissedPending.add(tileId);
+    updateStageVisibility();
+  });
   tiles.set(tileId, tile);
 
-  if(pinnedOrder.length === 0){
-    pinnedOrder.push(tileId);
-    tile.classList.add('pinned');
-    document.getElementById('spotlightGrid').appendChild(tile);
-  } else {
-    tile.classList.add('minimized');
-    document.getElementById('filmstrip').appendChild(tile);
-  }
+  // Um card "clique pra assistir" nunca ocupa o destaque: vai sempre pra fileira. Só vira destaque se a pessoa abrir a live.
+  tile.classList.add('minimized');
+  document.getElementById('filmstrip').appendChild(tile);
   updateStageVisibility();
   renderViewers(tileId);
 }
@@ -2087,18 +2088,20 @@ function addTile(id, name, stream){
     const volSlider = tile.querySelector('.vol-slider');
     const hideBtn = tile.querySelector('.hide-btn');
 
-    if(startMutedPref()){ // preferência das Configurações: a transmissão abre muda e a pessoa liga quando quiser
-      video.muted = true;
-      muteBtn.innerHTML = ICON_VOLUME_MUTED;
-      muteBtn.classList.add('active');
-    }
+    // Volume lembrado dessa pessoa (mesma curva do slider: percentual ao quadrado).
+    const volKey = volumeKey(id);
+    const savedPct = savedVolume(volKey);
+    volSlider.value = savedPct;
+    video.volume = (savedPct / 100) * (savedPct / 100);
+    // Abre muda se a preferência das Configurações ou o "silenciar tudo" estiverem ligados; a pessoa liga quando quiser.
+    if(startMutedPref() || muteAllNew) setTileMuted(tile, true);
     muteBtn.addEventListener('click', (e) => {
       e.stopPropagation();
-      video.muted = !video.muted;
-      muteBtn.innerHTML = video.muted ? ICON_VOLUME_MUTED : ICON_VOLUME;
-      muteBtn.classList.toggle('active', video.muted);
+      setTileMuted(tile, !video.muted);
+      refreshMuteAllBtn();
     });
     volSlider.addEventListener('click', (e) => e.stopPropagation());
+    volSlider.addEventListener('change', () => saveVolume(volKey, Number(volSlider.value)));
     volSlider.addEventListener('input', () => {
       const linear = volSlider.value / 100;
       // Ouvido humano percebe volume em escala logarítmica, não linear —
@@ -2109,9 +2112,8 @@ function addTile(id, name, stream){
       // perceptivelmente mais baixa, não só nos últimos 10-20%.
       video.volume = linear * linear;
       if(linear > 0 && video.muted){
-        video.muted = false;
-        muteBtn.innerHTML = ICON_VOLUME;
-        muteBtn.classList.remove('active');
+        setTileMuted(tile, false);
+        refreshMuteAllBtn();
       }
     });
     hideBtn.addEventListener('click', (e) => {
@@ -2165,6 +2167,7 @@ function removeTile(id){
   }
   if(el) el.remove();
   tiles.delete(id);
+  dismissedPending.delete(id); // a transmissão acabou (ou virou ao vivo): se voltar, volta a aparecer
   const idx = pinnedOrder.indexOf(id);
   if(idx !== -1) pinnedOrder.splice(idx, 1);
   updateStageVisibility();
@@ -2198,12 +2201,122 @@ function moveTileTo(id, where){
   container.appendChild(el); // move sem recriar o <video>, o stream continua tocando
 }
 function updateStageVisibility(){
-  const total = tiles.size;
+  applyClosedVisibility();
+  const total = [...tiles.values()].filter((t) => !t.classList.contains('pending-hidden')).length; // só o que aparece
   document.getElementById('emptyState').style.display = total === 0 ? 'flex' : 'none';
   document.getElementById('spotlightGrid').style.display = pinnedOrder.length > 0 ? 'flex' : 'none';
   document.getElementById('filmstrip').style.display = (total - pinnedOrder.length) > 0 ? 'flex' : 'none';
   document.getElementById('stageArea').classList.toggle('has-spotlight', pinnedOrder.length > 0);
+  refreshMuteAllBtn();
   scheduleFitSpotlight();
+}
+
+// ---------------- Som das transmissões: volume por pessoa e silenciar tudo ----------------
+// Volume lembrado por pessoa (não por transmissão): `d<id do Discord>-xxxxxx` vira `d<id>`; visitante `Nome-xxxxxx` vira `Nome`.
+// Câmera e tela da mesma pessoa compartilham o volume. 100 é o padrão e não é guardado.
+const VOLUMES_KEY = 'sinal:volumes';
+const MAX_SAVED_VOLUMES = 100;
+function volumeKey(tileId){
+  const base = String(tileId).endsWith(':cam') ? String(tileId).slice(0, -4) : String(tileId);
+  return base.replace(/-[a-z0-9]{1,6}$/, '') || base;
+}
+function loadVolumes(){
+  try{
+    const o = JSON.parse(localStorage.getItem(VOLUMES_KEY) || '{}');
+    return o && typeof o === 'object' && !Array.isArray(o) ? o : {};
+  }catch(e){ return {}; }
+}
+function savedVolume(key){
+  const v = loadVolumes()[key];
+  return Number.isFinite(v) && v >= 0 && v <= 100 ? Math.round(v) : 100;
+}
+function saveVolume(key, percent){
+  const all = loadVolumes();
+  delete all[key]; // sai e volta no fim: os mais antigos ficam na frente
+  if(percent < 100) all[key] = Math.max(0, Math.round(percent));
+  const keys = Object.keys(all);
+  while(keys.length > MAX_SAVED_VOLUMES) delete all[keys.shift()];
+  try{ localStorage.setItem(VOLUMES_KEY, JSON.stringify(all)); }catch(e){ /* sem localStorage: só não lembra */ }
+}
+
+// Estado de "mudo" de um tile de quem assiste, sempre pelo mesmo caminho (botão do tile, silenciar tudo, preferência).
+function setTileMuted(tile, muted){
+  const video = tile.querySelector('video');
+  const btn = tile.querySelector('.mute-btn');
+  if(!video || !btn) return; // o tile da própria transmissão não tem controle de som
+  video.muted = muted;
+  btn.innerHTML = muted ? ICON_VOLUME_MUTED : ICON_VOLUME;
+  btn.classList.toggle('active', muted);
+}
+const ICON_MUTE_ALL_ON = '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="3,9 3,15 8,15 13,20 13,4 8,9"></polygon><path d="M16 8a5 5 0 010 8"></path><path d="M19 5a9 9 0 010 14"></path></svg>';
+const ICON_MUTE_ALL_OFF = '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="3,9 3,15 8,15 13,20 13,4 8,9"></polygon><line x1="17" y1="9" x2="23" y2="15"></line><line x1="23" y1="9" x2="17" y2="15"></line></svg>';
+let muteAllNew = false; // "silenciar tudo" ligado: as transmissões que chegarem depois também abrem mudas
+function remoteTiles(){ return [...tiles.values()].filter((t) => t.querySelector('.mute-btn')); }
+function refreshMuteAllBtn(){
+  const btn = document.getElementById('muteAllBtn');
+  if(!btn) return;
+  const list = remoteTiles();
+  btn.hidden = list.length === 0;
+  const allMuted = list.length > 0 && list.every((t) => t.querySelector('video').muted);
+  btn.classList.toggle('active', allMuted);
+  btn.innerHTML = allMuted ? ICON_MUTE_ALL_OFF : ICON_MUTE_ALL_ON;
+  const label = allMuted ? 'Ligar o som de todas as transmissões' : 'Silenciar todas as transmissões';
+  btn.title = label;
+  btn.setAttribute('aria-label', label);
+}
+function toggleMuteAll(){
+  const list = remoteTiles();
+  if(!list.length) return;
+  const mute = !list.every((t) => t.querySelector('video').muted);
+  muteAllNew = mute;
+  list.forEach((t) => setTileMuted(t, mute));
+  refreshMuteAllBtn();
+}
+
+// ---------------- Transmissões fechadas ("clique pra assistir"): nunca em destaque, ocultar uma ou todas ----------------
+// Um card "clique pra assistir" é uma transmissão que a pessoa ainda não abriu (ou fechou com "parar de assistir").
+// Ele nunca ocupa o destaque (antes, sendo o primeiro, nascia grande e era preciso abrir a live pra poder diminuir e
+// fechar). Dá pra ocultar um card (X no canto, só nesta visita à sala) ou todos de uma vez (botão do olho na barra da
+// sala, lembrado entre visitas). Ocultar não desinscreve nem muda nada na transmissão: só esconde o card.
+const HIDE_CLOSED_KEY = 'sinal:hideClosed';
+const ICON_CLOSED_SHOWN = '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>';
+const ICON_CLOSED_HIDDEN = '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>';
+const ICON_PENDING_DISMISS = '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>';
+let hideClosedPref = false;
+try{ hideClosedPref = localStorage.getItem(HIDE_CLOSED_KEY) === '1'; }catch(e){ /* sem localStorage: começa mostrando */ }
+const dismissedPending = new Set(); // ids de cards ocultados individualmente (só nesta visita à sala)
+
+function pendingTiles(){ return [...tiles.values()].filter((t) => t.classList.contains('pending-tile')); }
+function applyClosedVisibility(){
+  const list = pendingTiles();
+  list.forEach((t) => t.classList.toggle('pending-hidden', hideClosedPref || dismissedPending.has(t.dataset.id)));
+  const hiddenCount = list.filter((t) => t.classList.contains('pending-hidden')).length;
+  const btn = document.getElementById('closedToggleBtn');
+  if(btn){
+    btn.hidden = list.length === 0 && !hideClosedPref; // sem nada fechado não há o que mostrar (mas, ligado, precisa poder desligar)
+    btn.classList.toggle('active', hideClosedPref);
+    btn.innerHTML = hideClosedPref ? ICON_CLOSED_HIDDEN : ICON_CLOSED_SHOWN;
+    const label = hideClosedPref ? 'Mostrar as transmissões fechadas' : 'Ocultar as transmissões fechadas';
+    btn.title = label;
+    btn.setAttribute('aria-label', label);
+    if(list.length){
+      const badge = document.createElement('span');
+      badge.className = 'chat-badge show';
+      badge.textContent = String(list.length);
+      btn.appendChild(badge);
+    }
+  }
+  const note = document.getElementById('emptyClosedNote');
+  if(note){
+    note.hidden = hiddenCount === 0;
+    note.textContent = hiddenCount === 1 ? '1 transmissão fechada está oculta.' : `${hiddenCount} transmissões fechadas estão ocultas.`;
+  }
+}
+function toggleHideClosed(){
+  hideClosedPref = !hideClosedPref;
+  if(!hideClosedPref) dismissedPending.clear(); // "mostrar" traz de volta todos, inclusive os ocultados um a um
+  try{ localStorage.setItem(HIDE_CLOSED_KEY, hideClosedPref ? '1' : '0'); }catch(e){ /* só não lembra */ }
+  updateStageVisibility();
 }
 
 // ---------------- ENCAIXE DOS DESTAQUES (HANDOFF §43) ----------------
@@ -2516,6 +2629,8 @@ function leaveRoom(){
   exitPip();
   tiles.forEach(el => el.remove());
   tiles.clear();
+  dismissedPending.clear();
+  muteAllNew = false;
   pinnedOrder = [];
   document.getElementById('spotlightGrid').innerHTML = '';
   document.getElementById('filmstrip').innerHTML = '';
@@ -4603,6 +4718,8 @@ function setupSettingsPanel(){
   ['joinRoomBtn',     () => joinRoom()],
   ['copyCodeBtn',     (btn) => copyRoomCode(btn)],   // recebiam o `this` do onclick — agora vem do próprio listener
   ['copyLinkBtn',     (btn) => copyRoomLink(btn)],
+  ['closedToggleBtn', () => toggleHideClosed()],
+  ['muteAllBtn',      () => toggleMuteAll()],
   ['rosterBtn',       () => toggleRosterPanel()],
   ['rosterCloseBtn',  () => toggleRosterPanel(false)],
   ['chatToggleBtn',   () => toggleChatPanel()],
@@ -4662,7 +4779,7 @@ window.addEventListener('beforeunload', () => {
 });
 
 // PWA: versão, registro do service worker, detecção de atualização e botão de instalação
-const APP_VERSION = '0.8.70'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
+const APP_VERSION = '0.8.71'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
 // Dentro do Electron, mostra a versão do INSTALADOR (electron/package.json),
 // não a do site — ver preload.js. Fora dele (navegador normal), continua a
 // versão do deploy de sempre.

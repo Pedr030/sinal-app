@@ -1,5 +1,16 @@
 [
   {
+    "id": "2026-10-13-som-e-transmissoes",
+    "date": "2026-10-13",
+    "title": "Mais controle sobre o som e as transmissões",
+    "site": "0.8.71",
+    "items": [
+      "O Sinal agora lembra o volume de cada pessoa: ajuste uma vez e ele guarda.",
+      "Novo botão para silenciar todas as transmissões de uma vez.",
+      "As transmissões que você ainda não abriu ficam sempre pequenas, e dá para ocultá-las uma a uma ou todas de uma vez."
+    ]
+  },
+  {
     "id": "2026-10-13-seletor-e-som",
     "date": "2026-10-13",
     "title": "Seletor de acesso e som das transmissões",
