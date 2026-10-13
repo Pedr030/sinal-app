@@ -1,5 +1,15 @@
 [
   {
+    "id": "2026-10-13-miniaturas",
+    "date": "2026-10-13",
+    "title": "Destaque maior e miniaturas recolhíveis",
+    "site": "0.8.72",
+    "items": [
+      "Em janelas largas e baixas, as miniaturas passam para o lado e o vídeo em destaque fica bem maior.",
+      "Nova aba na fileira de miniaturas para recolhê-la e mostrá-la de novo."
+    ]
+  },
+  {
     "id": "2026-10-13-som-e-transmissoes",
     "date": "2026-10-13",
     "title": "Mais controle sobre o som e as transmissões",
