@@ -130,6 +130,11 @@ body.in-room footer .version{margin-top:0;}
 body.electron-app .footer-desc{display:none;}
 body.electron-app footer{margin-top:8px;}
 body.electron-app footer .version{margin-top:0;}
+/* No app o rodapé da tela de entrada tem a própria frase (sem o "Chrome/Edge") pra não ficar vazio; na sala some, como a do site. */
+.footer-desc-app{display:none;}
+body.electron-app:not(.in-room) .footer-desc-app{display:inline;}
+body.electron-app:not(.in-room) footer{margin-top:32px;}
+body.electron-app:not(.in-room) footer .version{margin-top:12px;}
 body.electron-app #installBtn{display:none !important;}
 body.electron-app #downloadDesktopBtn{display:none !important;}
 

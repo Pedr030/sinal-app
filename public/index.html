@@ -315,6 +315,7 @@
 
   <footer>
     <span class="footer-desc">Sala hospedada num SFU próprio (LiveKit) — o vídeo passa por lá pra chegar em todo mundo sem pesar na sua CPU. Funciona melhor no Chrome/Edge.</span>
+    <span class="footer-desc-app">Sala hospedada num SFU próprio (LiveKit) — o vídeo passa por lá pra chegar em todo mundo sem pesar na sua CPU. No app você pode compartilhar com áudio e com consumo de RAM reduzido.</span>
     <div class="version mono">SINAL <span id="versionLabel">—</span>
       <button type="button" id="changelogBtn" class="changelog-btn mono" title="O que mudou em cada versão">Novidades</button>
       <a class="footer-icon" id="githubLink" href="https://github.com/Pedr030" target="_blank" rel="noopener noreferrer" title="Meu GitHub" aria-label="Meu GitHub">
@@ -445,7 +446,7 @@
       <span id="reportTitle">Enviar relatório de problema</span>
       <button type="button" id="reportCloseBtn" class="settings-close" aria-label="Fechar">&times;</button>
     </div>
-    <label class="settings-note" for="reportText">O que aconteceu? (opcional, mas ajuda muito)</label>
+    <label class="settings-note" for="reportText">O que aconteceu? <span id="reportLabelHint">(opcional, mas ajuda muito)</span></label>
     <textarea id="reportText" class="report-text" maxlength="1500" rows="4" placeholder="Ex: compartilhei a janela do jogo em Fluido e a tela do Sinal ficou preta"></textarea>
     <div class="settings-note">
       <span id="reportWhatGoes">Vai junto: seu nome no Sinal, as versões e o registro do app — o que o próprio app anotou (atualizações, conexão, transmissões, falhas). Nada de conversa, sala ou o que aparece na sua tela.</span>
