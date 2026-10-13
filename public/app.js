@@ -750,7 +750,7 @@ const SHARE_QUALITY_PRESETS = {
     contentHint: 'detail'
   },
   fluido: {
-    name: 'Fluido', short: '60fps', desc: '1080p · 60fps — jogos',
+    name: 'Fluido', short: '60fps', desc: '1080p · 60fps — vídeos e sites',
     resolution: { width: 1920, height: 1080, frameRate: 60 },
     h265: { maxBitrate: 6_000_000, maxFramerate: 60 },
     // Fluido sai em H.264 por hardware (experimento, ver FLUIDO_CODEC abaixo). Mesmo teto de antes (6 Mbps/60fps).
@@ -760,8 +760,22 @@ const SHARE_QUALITY_PRESETS = {
     vp8: { maxBitrate: 6_000_000, maxFramerate: 30 },
     contentHint: 'motion',
     requiresH265: true
+  },
+  // Jogos (HANDOFF §70): 720p (menos da metade dos pixels do 1080p: o PC trabalha menos e cada quadro ganha mais bits),
+  // até 60 fps e 8 Mbps, sempre H.264 (60 fps em H.265 derrubou o app, §46). Segura os quadros e baixa a resolução até
+  // um piso (adjustGamesDegradation); no app, pede o perfil High, que a placa codifica por hardware.
+  jogos: {
+    name: 'Jogos', short: '720p60', desc: '720p · 60fps — jogos',
+    resolution: { width: 1280, height: 720, frameRate: 60 },
+    h265: { maxBitrate: 8_000_000, maxFramerate: 60 },
+    h264: { maxBitrate: 8_000_000, maxFramerate: 60 },
+    vp8: { maxBitrate: 6_000_000, maxFramerate: 30 },
+    contentHint: 'motion'
   }
 };
+// Teto da captura: o maior entre as qualidades (1080p do Nítido/Fluido, 60 fps do Fluido/Jogos). Reduzida logo em
+// seguida pra qualidade escolhida (applyCaptureQuality), então dá pra subir de qualidade no meio.
+const CAPTURE_MAX = { width: 1920, height: 1080, frameRate: 60 };
 
 // EXPERIMENTO (2026-10-05, HANDOFF §46): o Fluido em H.265 derrubou o app 3 vezes (o Chromium aborta ao
 // receber a saída do codificador H.265 da placa, em rtc_video_encoder.cc), e o Nítido em H.265 ficou 7 h
@@ -771,6 +785,7 @@ const FLUIDO_CODEC = 'h264';
 
 // Codec principal de uma qualidade. Sem H.265 na placa: VP8 (e o Fluido nem existe, ver effectiveShareQuality).
 function pickShareCodec(q, h265Supported){
+  if(q === 'jogos') return 'h264'; // todo navegador codifica H.264 (na placa ou no processador)
   if(!h265Supported) return 'vp8';
   return q === 'fluido' ? FLUIDO_CODEC : 'h265';
 }
@@ -780,11 +795,11 @@ function shareEncodingFor(preset, codec){
   return codec === 'h265' ? preset.h265 : codec === 'h264' ? preset.h264 : preset.vp8;
 }
 
-// Trocar a qualidade NO MEIO da transmissão não republica, então o codec fica o mesmo. Sair do Fluido pra
-// Nítido/Leve é ok (continua no mesmo codec); entrar no Fluido só dá se a transmissão já saiu no codec dele.
+// Trocar a qualidade NO MEIO da transmissão não republica, então o codec fica o mesmo. Sair do Fluido/Jogos pra
+// Nítido/Leve é ok (continua no mesmo codec); entrar no Fluido ou no Jogos só dá se a transmissão já saiu no codec dele.
 function canSwitchQualityLive(activeCodec, targetQuality, h265Supported){
-  if(targetQuality !== 'fluido') return true;
-  return activeCodec === pickShareCodec('fluido', h265Supported);
+  if(targetQuality !== 'fluido' && targetQuality !== 'jogos') return true;
+  return activeCodec === pickShareCodec(targetQuality, h265Supported);
 }
 const FLUIDO_UNAVAILABLE_TEXT = 'Precisa de uma placa de vídeo com codificador H.265 — este PC/navegador não tem';
 let shareQuality = 'nitido';
@@ -1030,7 +1045,7 @@ async function changeActiveShareQuality(q){
   if(!canSwitchQualityLive(activeShareCodec, q, canSendH265())){
     // O Fluido usa outro codec que o da transmissão em andamento: só dá pra começar nele de novo. A escolha
     // já foi salva (vale na próxima transmissão); a atual segue como está.
-    setRoomStatus('O Fluido usa outro codec: pare e comece a transmissão de novo pra usar.', true);
+    setRoomStatus(`O ${SHARE_QUALITY_PRESETS[q].name} usa outro codec: pare e comece a transmissão de novo pra usar.`, true);
     return;
   }
   const preset = SHARE_QUALITY_PRESETS[q];
@@ -1038,6 +1053,7 @@ async function changeActiveShareQuality(q){
 
   await applyCaptureQuality(track, q);
   activeShareQuality = q;
+  gamesDegradation = null;
   try{
     // Um passo de cada vez: o setDegradationPreference do LiveKit também faz
     // getParameters/setParameters nesse sender — rodando junto, invalidava a
@@ -1358,6 +1374,7 @@ function setupFasterFreezeRecovery(){
 }
 
 let hardwareEncodeReady = false;   // a placa disse que codifica H.264 High 1080p60 por hardware (mediaCapabilities)
+let shareWantsHighProfile = false; // transmissão em Jogos: H.264 High na frente da oferta (ver toggleShare)
 let hardwareEncodeChecked = false; // a verificação da placa já terminou (com ou sem suporte)
 function setupHardwareEncode(){
   if(!(window.sinalElectron && window.sinalElectron.isElectron) || !window.RTCPeerConnection) return;
@@ -1365,7 +1382,8 @@ function setupHardwareEncode(){
   RTCPeerConnection.prototype.createOffer = async function(...args){
     const offer = await originalCreateOffer.apply(this, args);
     try{
-      if(hardwareEncodeReady && electronSettings && electronSettings.hardwareEncode && !electronSettings.gpuCaptureActive && offer && typeof offer.sdp === 'string'){
+      const wantHigh = (electronSettings && electronSettings.hardwareEncode && !electronSettings.gpuCaptureActive) || shareWantsHighProfile;
+      if(hardwareEncodeReady && electronSettings && wantHigh && offer && typeof offer.sdp === 'string'){
         const sdp = preferH264High(offer.sdp);
         if(sdp !== offer.sdp){ appLog('[sinal] codificação por hardware: perfil H.264 High na frente da oferta'); return { type: offer.type, sdp }; }
       }
@@ -1469,12 +1487,11 @@ async function toggleShare(){
   // qualidade no meio da transmissão depois (pedir mais do que foi
   // capturado no começo pode não funcionar). A redução é imediata, não
   // custa nada a mais.
-  const capturePreset = SHARE_QUALITY_PRESETS[effectiveShareQuality('fluido')];
   let localTracks;
   try{
     localTracks = await room.localParticipant.createScreenTracks({
       audio: true, // só disponibiliza a opção; o navegador pergunta de verdade no seletor nativo
-      resolution: capturePreset.resolution,
+      resolution: CAPTURE_MAX,
       // Mostra o botão nativo "Compartilhar esta guia" quando a pessoa troca
       // de aba durante o compartilhamento — dá pra trocar a fonte sem parar
       // e recomeçar. Chrome não garante isso por padrão (pode mudar com o
@@ -1496,6 +1513,10 @@ async function toggleShare(){
   }
   await applyCaptureQuality(videoTrack, quality);
   activeShareQuality = quality;
+  gamesDegradation = null;
+  // Jogos no app: a oferta da publicação (e as próximas, enquanto durar a transmissão) põe o H.264 High na frente,
+  // que a placa codifica por hardware (setupHardwareEncode). Fixo até parar: trocar de perfil no meio reiniciaria o codificador.
+  shareWantsHighProfile = quality === 'jogos';
   const publishOpts = screenPublishOptions(quality);
   activeShareCodec = publishOpts.videoCodec;
   try{
@@ -1576,6 +1597,8 @@ function resetShareButton(){
   sendStatsPrev = null; senderDetailPrev = null;
   activeShareQuality = null;
   activeShareCodec = null;
+  shareWantsHighProfile = false;
+  gamesDegradation = null;
   document.body.classList.remove('sharing');
   toggleQualityMenu(false);
   updateQualityBtn();
@@ -1903,6 +1926,9 @@ function streamBottleneck(recv, sender){
   const low = (v) => typeof v === 'number' && v < target * 0.75;
   if(!low(recv.recvFps) && recv.freezeSeconds < 1) return 'ok';
   if(sender && low(sender.fps)){
+    // "cpu" com codificador da placa: o WebRTC achou o PC sobrecarregado (placa ocupada com o jogo) e cortou os quadros
+    // já na captura; por isso vem antes da captura (§70)
+    if(sender.lim === 'cpu' && sender.hw) return 'corte automático de quadros (placa ocupada com o jogo)';
     if(low(sender.cap)) return 'captura no PC de quem transmite';
     if(sender.lim === 'cpu') return 'CPU de quem transmite';
     if(sender.lim === 'bandwidth') return 'upload de quem transmite';
@@ -1910,6 +1936,9 @@ function streamBottleneck(recv, sender){
   }
   if(recv.lossPct >= 2) return 'rede (perda de pacotes)';
   if(recv.recvFps - recv.decodedFps > 5) return 'decodificação no seu PC';
+  // envio quase na meta, mas o codificador de quem transmite está se limitando (baixa resolução/quadros)
+  if(sender && sender.lim === 'cpu') return 'CPU de quem transmite';
+  if(sender && sender.lim === 'bandwidth') return 'upload de quem transmite';
   return sender ? 'rede ou servidor' : 'sem dados de quem transmite';
 }
 
@@ -2176,6 +2205,35 @@ async function capBackupCodec(track){
   }
 }
 
+// ---- Jogos: o que fazer quando o PC aperta (HANDOFF §70) ----
+// Codificando pela PLACA: nenhum corte automático ('maintain-framerate-and-resolution', o Chromium 152 aceita). O WebRTC
+// mede o tempo de cada quadro e, com a placa ocupada pelo jogo, achava o PC sobrecarregado e cortava os quadros em
+// degraus (Marcelo no Nítido: 29 -> 18 -> 12 -> 9 fps, 2026-10-13); quem segura a qualidade passa a ser só o bitrate.
+// Codificando pelo PROCESSADOR: segura os quadros e baixa a resolução, mas só até o piso; abaixo dele passa a cortar
+// quadros e fica assim até o fim da transmissão (sem ficar trocando). Piso começa em 720p (= a resolução do modo, decisão
+// do dono: "se não prestar, descemos"); o Jean no Fluido segurava 540p a 50 fps, então 540 é o próximo degrau.
+const GAMES_FLOOR_SW = 720;
+let gamesDegradation = null; // regra aplicada nesta transmissão em Jogos (null = a da publicação, maintain-framerate)
+function gamesDegradationFor(current, hw, height){
+  if(hw) return 'maintain-framerate-and-resolution';
+  if(current === 'maintain-resolution') return current;
+  if(height > 0 && height < GAMES_FLOOR_SW) return 'maintain-resolution';
+  return 'maintain-framerate';
+}
+async function adjustGamesDegradation(track, outbound){
+  if(activeShareQuality !== 'jogos' || !track || typeof track.setDegradationPreference !== 'function') return;
+  if(!outbound.frameHeight) return; // pausado (ninguém assistindo): sem dado do codificador
+  const current = gamesDegradation || 'maintain-framerate';
+  const want = gamesDegradationFor(current, outbound.powerEfficientEncoder === true, outbound.frameHeight);
+  if(want === current){ gamesDegradation = current; return; }
+  gamesDegradation = want;
+  try{
+    await track.setDegradationPreference(want);
+    appLog(`[sinal] Jogos: ${want === 'maintain-framerate-and-resolution' ? 'codificando pela placa, sem corte automático'
+      : want === 'maintain-resolution' ? `resolução chegou ao piso (${outbound.frameHeight}p), agora corta quadros` : 'segura os quadros e baixa a resolução'}`);
+  }catch(e){ console.warn('[sinal] Jogos: não consegui trocar a regra de adaptação:', e); }
+}
+
 async function sampleOwnScreenStats(){
   if(!room) return;
   const { Track } = LivekitClient;
@@ -2195,6 +2253,7 @@ async function sampleOwnScreenStats(){
       && (!outbound || (stat.bytesSent || 0) > (outbound.bytesSent || 0))) outbound = stat;
   });
   if(!outbound) return;
+  adjustGamesDegradation(track, outbound);
 
   const parts = [];
   if(activeShareQuality) parts.push(SHARE_QUALITY_PRESETS[activeShareQuality].name);
@@ -5494,7 +5553,7 @@ window.addEventListener('beforeunload', () => {
 });
 
 // PWA: versão, registro do service worker, detecção de atualização e botão de instalação
-const APP_VERSION = '0.8.78'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
+const APP_VERSION = '0.8.79'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
 // Dentro do Electron, mostra a versão do INSTALADOR (electron/package.json),
 // não a do site — ver preload.js. Fora dele (navegador normal), continua a
 // versão do deploy de sempre.

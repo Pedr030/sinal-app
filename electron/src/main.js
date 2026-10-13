@@ -197,7 +197,7 @@ const DEFAULT_SETTINGS = {
   // "não incluir no áudio" no checklist do modo tela inteira — lembrado
   // entre compartilhamentos, removível pela aba de configurações.
   excludedAudioApps: [],
-  // Qualidade da tela ('leve' | 'nitido' | 'fluido'), escolhida no seletor
+  // Qualidade da tela ('leve' | 'nitido' | 'fluido' | 'jogos'), escolhida no seletor
   // (picker.html) e lembrada — o atalho de "tela inteira direto" usa ela. A
   // existência desse campo é o que avisa o site (app.js) que é o seletor
   // quem escolhe a qualidade, e não mais o botão do site.
@@ -209,7 +209,7 @@ const DEFAULT_SETTINGS = {
   // a partir da próxima abertura do app (ver GPU_CAPTURE_FEATURES).
   gpuCapture: false
 };
-const SHARE_QUALITIES = ['leve', 'nitido', 'fluido'];
+const SHARE_QUALITIES = ['leve', 'nitido', 'fluido', 'jogos'];
 
 function loadSettings(){
   try{
@@ -1169,7 +1169,9 @@ trustedIpc.on('sinal:install-update', () => {
 
 app.whenReady().then(() => {
   // Notificações do Windows precisam do mesmo id do atalho que o instalador cria (appId do electron-builder).
-  if(process.platform === 'win32') app.setAppUserModelId('app.sinal.desktop');
+  // Só no app instalado: o Electron de desenvolvimento (testes) com o mesmo id fazia a barra de tarefas guardar o
+  // ícone do Electron pro Sinal instalado (visto no PC do dono, 2026-10-13).
+  if(process.platform === 'win32') app.setAppUserModelId(app.isPackaged ? 'app.sinal.desktop' : 'app.sinal.desktop.dev');
   // Segunda instância (perdeu o lock lá em cima e já está saindo): não monta janela, bandeja nem atalho. O relatório de
   // 2026-10-07 mostrou três "app iniciado" no mesmo instante e o atalho global falhando por conflito entre elas.
   if(!gotSingleInstanceLock) return;

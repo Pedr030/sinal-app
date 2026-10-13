@@ -243,6 +243,54 @@ test('troca de qualidade ao vivo: sair do Fluido é livre; entrar no Fluido só 
   assert.equal(codecFns.canSwitchQualityLive('vp8', 'fluido', false), true);   // sem H.265 o Fluido nem existe (effectiveShareQuality)
 });
 
+// ---------- modo Jogos (HANDOFF §70) ----------
+test('Jogos: 720p, até 60 fps e 8 Mbps, sempre H.264 (mesmo sem H.265), não depende de H.265', () => {
+  const j = SHARE_QUALITY_PRESETS.jogos;
+  assert.deepEqual(j.resolution, { width: 1280, height: 720, frameRate: 60 });
+  assert.deepEqual(codecFns.shareEncodingFor(j, 'h264'), { maxBitrate: 8_000_000, maxFramerate: 60 });
+  assert.equal(j.contentHint, 'motion');
+  assert.ok(!j.requiresH265);
+  assert.equal(codecFns.pickShareCodec('jogos', true), 'h264');
+  assert.equal(codecFns.pickShareCodec('jogos', false), 'h264');
+  assert.equal(SHARE_QUALITY_PRESETS.fluido.desc, '1080p · 60fps — vídeos e sites');
+  // ao vivo: Fluido (H.264) <-> Jogos sem republicar; de Nítido (H.265) ou VP8 pro Jogos, só começando de novo
+  assert.equal(codecFns.canSwitchQualityLive('h264', 'jogos', true), true);
+  assert.equal(codecFns.canSwitchQualityLive('h265', 'jogos', true), false);
+  assert.equal(codecFns.canSwitchQualityLive('vp8', 'jogos', false), false);
+  assert.equal(codecFns.canSwitchQualityLive('h264', 'fluido', true), true);
+  // captura no teto de tudo (1080p60), mesmo sem H.265, pra dar pra subir pro Jogos/Fluido
+  assert.match(appJs, /const CAPTURE_MAX = \{ width: 1920, height: 1080, frameRate: 60 \};/);
+  assert.match(appJs, /resolution: CAPTURE_MAX,/);
+});
+
+const gamesDegradationFor = new Function(
+  appJs.match(/const GAMES_FLOOR_SW = \d+;/)[0] + extractFunction(appJs, 'gamesDegradationFor') + '; return gamesDegradationFor;'
+)();
+
+test('Jogos: pela placa, sem corte automático; pelo processador, piso de 720p e depois corta quadros', () => {
+  assert.match(appJs, /const GAMES_FLOOR_SW = 720;/);
+  assert.equal(gamesDegradationFor('maintain-framerate', true, 720), 'maintain-framerate-and-resolution');
+  assert.equal(gamesDegradationFor('maintain-framerate', false, 720), 'maintain-framerate');
+  assert.equal(gamesDegradationFor('maintain-framerate', false, 576), 'maintain-resolution');   // abaixo do piso
+  assert.equal(gamesDegradationFor('maintain-resolution', false, 720), 'maintain-resolution');  // não fica trocando
+  assert.equal(gamesDegradationFor('maintain-framerate', false, 0), 'maintain-framerate');      // sem dado
+  assert.equal(gamesDegradationFor('maintain-framerate-and-resolution', false, 720), 'maintain-framerate'); // placa caiu pro processador
+  assert.match(appJs, /if\(!outbound\) return;\s*adjustGamesDegradation\(track, outbound\);/);
+  assert.match(appJs, /if\(activeShareQuality !== 'jogos' \|\| !track \|\| typeof track\.setDegradationPreference !== 'function'\) return;/);
+});
+
+test('Jogos no app: perfil H.264 High na oferta durante a transmissão em Jogos, desligado ao parar', () => {
+  assert.match(appJs, /const wantHigh = \(electronSettings && electronSettings\.hardwareEncode && !electronSettings\.gpuCaptureActive\) \|\| shareWantsHighProfile;/);
+  assert.match(appJs, /if\(hardwareEncodeReady && electronSettings && wantHigh && offer && typeof offer\.sdp === 'string'\)\{/);
+  assert.match(appJs, /shareWantsHighProfile = quality === 'jogos';\s*const publishOpts = screenPublishOptions\(quality\);/);
+  assert.match(appJs, /activeShareCodec = null;\s*shareWantsHighProfile = false;/);
+  const main = readFileSync(join(ROOT, 'electron/src/main.js'), 'utf8');
+  assert.match(main, /const SHARE_QUALITIES = \['leve', 'nitido', 'fluido', 'jogos'\];/);
+  const picker = readFileSync(join(ROOT, 'electron/src/picker.html'), 'utf8');
+  assert.match(picker, /\{ key: 'jogos', name: 'Jogos', desc: '720p · 60fps — jogos' \}/);
+  assert.match(picker, /\{ key: 'fluido', name: 'Fluido', desc: '1080p · 60fps — vídeos e sites', requiresH265: true \}/);
+});
+
 // ---------- diagnóstico de travadas (HANDOFF §47) ----------
 const trouble = new Function(
   extractFunction(appJs, 'senderTroubleLine') + extractFunction(appJs, 'viewerTroubleLine') + '; return { senderTroubleLine, viewerTroubleLine };'
@@ -738,7 +786,8 @@ test('codificação por hardware: nasce DESLIGADA, só no app desktop, só se a 
   assert.match(main, /'startMinimized', 'hardwareEncode', 'gpuCapture'\]/);                                    // só booleano passa pela limpeza
   assert.match(appJs, /if\(!\(window\.sinalElectron && window\.sinalElectron\.isElectron\) \|\| !window\.RTCPeerConnection\) return;/);
   assert.match(appJs, /RTCPeerConnection\.prototype\.createOffer = async function/);                                       // mexe na OFERTA (a resposta sozinha deixava o espectador sem imagem)
-  assert.match(appJs, /hardwareEncodeReady && electronSettings && electronSettings\.hardwareEncode && !electronSettings\.gpuCaptureActive && offer && typeof offer\.sdp === 'string'/);   // só ligado e só com a placa ok
+  assert.match(appJs, /const wantHigh = \(electronSettings && electronSettings\.hardwareEncode && !electronSettings\.gpuCaptureActive\) \|\| shareWantsHighProfile;/);   // só ligado (ou Jogos)
+  assert.match(appJs, /if\(hardwareEncodeReady && electronSettings && wantHigh && offer && typeof offer\.sdp === 'string'\)\{/); // e só com a placa ok
   assert.doesNotMatch(appJs, /RTCPeerConnection\.prototype\.setRemoteDescription = /);
   assert.match(appJs, /profile-level-id=64001f;packetization-mode=1', width: 1920, height: 1080, framerate: 60/);
   assert.match(appJs, /r\.supported && r\.powerEfficient/);
@@ -1342,6 +1391,15 @@ test('estatísticas no tile: o gargalo usa os ~12 s recebidos (mesma janela de q
   const sender = { target: 60, fps: 58, cap: 59, hw: true };
   assert.equal(tileStatsLines(now, sender, long)[3], 'Queda rápida agora; nos últimos 12 s, tudo certo');
   assert.equal(tileStatsLines(long, sender, long)[3], 'Tudo certo');
+  // print do dono (Tchelou na 0.3.21): envio 45 de 60, congelando, codificador por software se limitando = não é a rede
+  const tch = { recvFps: 46, decodedFps: 46, kbps: 4200, lossPct: 0, freezeSeconds: 1.2 };
+  assert.equal(tileStatsLines(tch, { target: 60, fps: 45, cap: 54, hw: false, lim: 'bandwidth' }, tch)[3], 'Gargalo provável: upload de quem transmite');
+  assert.equal(tileStatsLines(tch, { target: 60, fps: 45, cap: 54, hw: false, lim: 'none' }, tch)[3], 'Gargalo provável: rede ou servidor');
+  // Marcelo no Nítido (placa da NVIDIA): 29 -> 18 -> 12 -> 9 com "cpu" = corte do WebRTC, não a captura
+  const mar = { recvFps: 9, decodedFps: 9, kbps: 3600, lossPct: 0, freezeSeconds: 0 };
+  assert.equal(tileStatsLines(mar, { target: 30, fps: 9, cap: 9, hw: true, lim: 'cpu' }, mar)[3], 'Gargalo provável: corte automático de quadros (placa ocupada com o jogo)');
+  assert.equal(tileStatsLines(mar, { target: 30, fps: 9, cap: 9, hw: false, lim: 'cpu' }, mar)[3], 'Gargalo provável: captura no PC de quem transmite');
+  assert.equal(tileStatsLines(mar, { target: 30, fps: 9, cap: 9, hw: true, lim: 'none' }, mar)[3], 'Gargalo provável: captura no PC de quem transmite');
   assert.equal(tileStatsLines(now, sender)[3], 'Gargalo provável: rede ou servidor'); // sem a janela longa, culparia a rede
   assert.match(appJs, /summarizeRecvSamples\(st\.samples\.slice\(-TILE_STATS_NOW_SAMPLES\)\)/);
   assert.match(appJs, /tileStatsLines\(sum, sender, sumLong\)/);
@@ -1401,7 +1459,7 @@ test('sugestão como aviso no canto da tela: sem foco, nunca sobre jogo em tela 
   const lib = readFileSync(join(ROOT, 'electron/native/sinal-audio-loopback/src/lib.rs'), 'utf8');
   assert.match(lib, /pub fn user_notification_state\(\) -> Option<i32>/);
   assert.match(lib, /pub fn foreground_window_rect\(\) -> Option<Vec<i32>>/);
-  assert.match(main, /app\.setAppUserModelId\('app\.sinal\.desktop'\)/);
+  assert.match(main, /app\.setAppUserModelId\(app\.isPackaged \? 'app\.sinal\.desktop' : 'app\.sinal\.desktop\.dev'\)/); // dev não suja o ícone do instalado
   const pkg = JSON.parse(readFileSync(join(ROOT, 'electron/package.json'), 'utf8'));
   assert.equal(pkg.build.appId, 'app.sinal.desktop');                        // o id da notificação é o do instalador
   const preload = readFileSync(join(ROOT, 'electron/src/preload.js'), 'utf8');
