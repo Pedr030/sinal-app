@@ -1,5 +1,14 @@
 [
   {
+    "id": "2026-10-13-estatisticas-claras",
+    "date": "2026-10-13",
+    "title": "Estatísticas mais claras",
+    "site": "0.8.78",
+    "items": [
+      "As estatísticas da transmissão agora mostram quantos quadros quem transmite captura e envia, e deixam claro o período de cada número."
+    ]
+  },
+  {
     "id": "2026-10-13-estatisticas",
     "date": "2026-10-13",
     "title": "Estatísticas e dicas de desempenho",
