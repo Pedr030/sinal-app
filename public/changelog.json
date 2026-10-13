@@ -1,5 +1,14 @@
 [
   {
+    "id": "2026-10-13-diagnostico",
+    "date": "2026-10-13",
+    "title": "Diagnóstico das transmissões",
+    "site": "0.8.75",
+    "items": [
+      "O relatório de problema agora traz mais detalhes sobre as transmissões, para achar mais rápido a causa de travadas e quedas de fps."
+    ]
+  },
+  {
     "id": "2026-10-13-relatorio-minimo",
     "date": "2026-10-13",
     "title": "Ajustes no relatório e no rodapé do app",
