@@ -1,5 +1,17 @@
 [
   {
+    "id": "2026-10-13-modo-jogos",
+    "date": "2026-10-13",
+    "title": "Modo Jogos",
+    "destaque": true,
+    "site": "0.8.79",
+    "app": "0.3.22",
+    "items": [
+      "Nova qualidade Jogos: 720p a até 60 fps, feita para transmitir jogo com fluidez e mais nitidez nas lutas.",
+      "O Fluido continua igual, agora indicado para vídeos e sites."
+    ]
+  },
+  {
     "id": "2026-10-13-estatisticas-claras",
     "date": "2026-10-13",
     "title": "Estatísticas mais claras",
