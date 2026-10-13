@@ -458,6 +458,9 @@ function wireRoomEvents(liveRoom){
         }, false);
       } else if(msg && (msg.type === 'watch' || msg.type === 'watch-sync') && participant){
         handleWatchMessage(msg, participant);
+      } else if(msg && msg.type === 'send-stats' && participant){
+        const stats = parseSendStats(msg, participant.identity);
+        if(stats) remoteSendStats.set(stats.tile, { ...stats, at: Date.now() });
       }
     }catch(e){ /* payload em formato inesperado, ignora */ }
   });
@@ -537,6 +540,8 @@ function handleTrackRemoved(track, publication, participant){
     qualityDetails.delete(tileId);
     qualityBaseLabel.delete(tileId);
     qualityStatsPrev.delete(tileId);
+    flushRecvSummary(tileId, 20);
+    remoteSendStats.delete(tileId);
     removeTile(tileId);
     setWatching(tileId, false);
     // Isso dispara tanto quando a PESSOA para de compartilhar quanto quando
@@ -1055,6 +1060,7 @@ async function changeActiveShareQuality(q){
     console.warn('[sinal] troca de qualidade no meio da transmissão incompleta:', e);
   }
   capBackupCodec(track); // VP8 reserva segue o activeShareQuality novo
+  flushSendSummary(20);
   sendStatsPrev = null; senderDetailPrev = null;
   updateQualityBtn();
   appLog(`[sinal] qualidade trocada no meio da transmissão: ${q}`);
@@ -1475,6 +1481,7 @@ function resetShareButton(){
   document.getElementById('selfStatus').textContent = 'Assistindo';
   if(activeShareQuality) appLog('[sinal] transmissão encerrada');
   setSharingMarker(false);
+  flushSendSummary(20);
   sendStatsPrev = null; senderDetailPrev = null;
   activeShareQuality = null;
   activeShareCodec = null;
@@ -1665,6 +1672,234 @@ function viewerTroubleLine({ codec, width, height, d }){
   return `[sinal] recepção abaixo do esperado: ${parts.join(' · ')}`;
 }
 
+// ---- Resumo por minuto + números de quem transmite (diagnóstico, HANDOFF §66) ----
+// As linhas "abaixo do esperado" só aparecem quando cai: um teste em que tudo ia bem não deixava número nenhum pra
+// comparar. Agora, a cada minuto, vai pro registro do app um resumo (média e mínimo) do envio e de cada transmissão
+// assistida. E quem transmite manda, pelo canal de dados, só os números do próprio envio (fps, captura, limite,
+// codificador) pra quem assiste: o registro de QUEM ASSISTE mostra junto se o gargalo é a captura/PC de quem
+// transmite ou a rede, sem precisar pedir nada a quem transmite.
+const SUMMARY_EVERY_MS = 60000;
+const SEND_STATS_EVERY_MS = 12000;
+const SEND_STATS_TOPIC = 'send-stats';
+const SEND_STATS_MAX_AGE_MS = 30000;   // números de quem transmite mais velhos que isso não entram no resumo
+const SEND_LIMIT_REASONS = ['none', 'cpu', 'bandwidth', 'other'];
+
+function sumBy(list, fn){ return list.reduce((acc, x) => acc + fn(x), 0); }
+
+// Amostras de ~4 s de quem transmite: { seconds, frames, captured (null = sem dado), bytes, encodeMs, reason, paused, stalled }.
+// Nenhuma das duas entra na média: `paused` = a captura entrega, mas o LiveKit pausou o envio porque ninguém está
+// assistindo (dynacast); `stalled` = a própria captura não entregou quadro nenhum (tela parada, que o Windows não
+// repete, ou captura falhando, ex.: jogo em tela cheia exclusiva). São coisas diferentes e o resumo diz qual foi.
+function summarizeSendSamples(samples){
+  const valid = (samples || []).filter((s) => s && s.seconds > 0 && s.frames >= 0 && s.bytes >= 0);
+  const active = valid.filter((s) => !s.paused && !s.stalled);
+  const out = {
+    seconds: sumBy(valid, (s) => s.seconds),
+    pausedSeconds: sumBy(valid.filter((s) => s.paused && !s.stalled), (s) => s.seconds),
+    stalledSeconds: sumBy(valid.filter((s) => s.stalled), (s) => s.seconds),
+    activeSeconds: sumBy(active, (s) => s.seconds)
+  };
+  if(!active.length) return out;
+  const frames = sumBy(active, (s) => s.frames);
+  out.fps = frames / out.activeSeconds;
+  out.fpsMin = Math.min(...active.map((s) => s.frames / s.seconds));
+  const withCapture = active.filter((s) => typeof s.captured === 'number' && s.captured >= 0);
+  if(withCapture.length){
+    out.captureFps = sumBy(withCapture, (s) => s.captured) / sumBy(withCapture, (s) => s.seconds);
+    out.captureMin = Math.min(...withCapture.map((s) => s.captured / s.seconds));
+  }
+  out.kbps = sumBy(active, (s) => s.bytes) * 8 / 1000 / out.activeSeconds;
+  out.encodeMs = frames > 0 ? sumBy(active, (s) => s.encodeMs || 0) / frames : 0;
+  out.limits = {};
+  active.forEach((s) => { const r = s.reason || 'none'; out.limits[r] = (out.limits[r] || 0) + s.seconds; });
+  return out;
+}
+
+function dominantLimit(limits){
+  let best = 'none', bestSeconds = -1;
+  Object.entries(limits || {}).forEach(([r, s]) => { if(s > bestSeconds){ best = r; bestSeconds = s; } });
+  return best;
+}
+
+function limitBreakdown(limits, seconds){
+  return Object.entries(limits || {}).sort((a, b) => b[1] - a[1])
+    .map(([r, s]) => `${r} ${Math.round(s / seconds * 100)}%`).join(', ');
+}
+
+// meta: { quality, codec, width, height, targetFps, encoder }
+function sendSummaryLine(sum, meta){
+  if(!sum || !(sum.seconds > 0)) return null;
+  const head = `[sinal] resumo do envio (${Math.round(sum.seconds)}s): ${meta.quality || '?'} ${meta.codec || '?'} ${meta.width || '?'}x${meta.height || '?'}`;
+  if(!(sum.activeSeconds > 0)){
+    if(sum.stalledSeconds >= sum.pausedSeconds) return `${head} · captura sem quadros (tela parada ou captura falhando)`;
+    return `${head} · pausado (ninguém assistindo)`;
+  }
+  const parts = [head, `envio ${Math.round(sum.fps)}fps (mín ${Math.round(sum.fpsMin)}, meta ${meta.targetFps})`];
+  if(sum.captureFps != null) parts.push(`captura ${Math.round(sum.captureFps)}fps (mín ${Math.round(sum.captureMin)})`);
+  parts.push(`${Math.round(sum.kbps)}kbps`);
+  if(sum.encodeMs > 0) parts.push(`codificação ${sum.encodeMs.toFixed(1)}ms/quadro`);
+  parts.push(`limite ${limitBreakdown(sum.limits, sum.activeSeconds)}`);
+  if(sum.pausedSeconds > 0) parts.push(`pausado ${Math.round(sum.pausedSeconds)}s`);
+  if(sum.stalledSeconds > 0) parts.push(`captura sem quadros ${Math.round(sum.stalledSeconds)}s`);
+  if(meta.encoder) parts.push(meta.encoder);
+  return parts.join(' · ');
+}
+
+// O que quem transmite manda a quem assiste: só números e o nome do codificador. Nada de nome, sala ou tela.
+function sendStatsMessage(sum, meta){
+  if(!sum || !(sum.activeSeconds > 0)) return null;
+  const r1 = (v) => (v == null ? null : Math.round(v * 10) / 10);
+  return {
+    type: 'send-stats', v: 1, tile: meta.tile, q: meta.quality || '', codec: meta.codec || '', target: meta.targetFps || 0,
+    fps: r1(sum.fps), fpsMin: r1(sum.fpsMin), cap: r1(sum.captureFps), capMin: r1(sum.captureMin), kbps: Math.round(sum.kbps),
+    lim: dominantLimit(sum.limits), hw: !!meta.hw, enc: String(meta.encoderName || '').slice(0, 60)
+  };
+}
+
+// Quem assiste recebe isso de outro navegador: valida tudo (fronteira de confiança). Só vale pra transmissão da
+// própria pessoa que mandou (ninguém fala pela tela de outro).
+function parseSendStats(msg, senderIdentity){
+  if(!msg || msg.type !== 'send-stats' || msg.v !== 1 || typeof msg.tile !== 'string') return null;
+  if(!senderIdentity || ownerOfTile(msg.tile) !== senderIdentity) return null;
+  const num = (x, max) => (typeof x === 'number' && Number.isFinite(x) && x >= 0 && x <= max ? x : null);
+  const str = (x, max) => (typeof x === 'string' ? x.replace(/[^\w .,()+\-/:áàâãéêíóôõúç]/gi, '').slice(0, max) : '');
+  const fps = num(msg.fps, 240);
+  if(fps == null) return null;
+  return {
+    tile: msg.tile, quality: str(msg.q, 20), codec: str(msg.codec, 10), target: num(msg.target, 240) || 0,
+    fps, fpsMin: num(msg.fpsMin, 240), cap: num(msg.cap, 240), capMin: num(msg.capMin, 240), kbps: num(msg.kbps, 200000),
+    lim: SEND_LIMIT_REASONS.includes(msg.lim) ? msg.lim : 'none', hw: msg.hw === true, enc: str(msg.enc, 60)
+  };
+}
+
+// Amostras de ~4 s de uma transmissão assistida: { seconds, received, decoded, bytes, lost, packets, freezes, freezeSeconds }.
+function summarizeRecvSamples(samples){
+  const valid = (samples || []).filter((s) => s && s.seconds > 0 && s.received >= 0 && s.decoded >= 0 && s.bytes >= 0);
+  if(!valid.length) return null;
+  const seconds = sumBy(valid, (s) => s.seconds);
+  const lost = sumBy(valid, (s) => Math.max(0, s.lost || 0));
+  const packets = sumBy(valid, (s) => Math.max(0, s.packets || 0));
+  return {
+    seconds,
+    recvFps: sumBy(valid, (s) => s.received) / seconds,
+    recvMin: Math.min(...valid.map((s) => s.received / s.seconds)),
+    decodedFps: sumBy(valid, (s) => s.decoded) / seconds,
+    kbps: sumBy(valid, (s) => s.bytes) * 8 / 1000 / seconds,
+    lossPct: lost + packets > 0 ? lost / (lost + packets) * 100 : 0,
+    freezes: sumBy(valid, (s) => Math.max(0, s.freezes || 0)),
+    freezeSeconds: sumBy(valid, (s) => Math.max(0, s.freezeSeconds || 0))
+  };
+}
+
+// Palpite de onde está o gargalo de uma transmissão assistida (pro registro; quem decide é quem lê).
+function streamBottleneck(recv, sender){
+  if(!recv) return null;
+  const target = sender && sender.target ? sender.target : 30;
+  const low = (v) => typeof v === 'number' && v < target * 0.75;
+  if(!low(recv.recvFps) && recv.freezeSeconds < 1) return 'ok';
+  if(sender && low(sender.fps)){
+    if(low(sender.cap)) return 'captura no PC de quem transmite';
+    if(sender.lim === 'cpu') return 'CPU de quem transmite';
+    if(sender.lim === 'bandwidth') return 'upload de quem transmite';
+    return 'envio de quem transmite';
+  }
+  if(recv.lossPct >= 2) return 'rede (perda de pacotes)';
+  if(recv.recvFps - recv.decodedFps > 5) return 'decodificação no seu PC';
+  return sender ? 'rede ou servidor' : 'sem dados de quem transmite';
+}
+
+// Marca curta e estável pra separar duas transmissões no registro sem pôr nome de ninguém.
+function streamTag(tileId){
+  let h = 5381;
+  for(const c of String(tileId)) h = ((h * 33) ^ c.charCodeAt(0)) >>> 0;
+  return (h & 0xffff).toString(16).padStart(4, '0');
+}
+
+// meta: { codec, width, height }
+function recvSummaryLine(tag, sum, meta, sender){
+  if(!sum) return null;
+  const parts = [
+    `[sinal] resumo da recepção (${Math.round(sum.seconds)}s) #${tag}: ${meta.codec || '?'} ${meta.width || '?'}x${meta.height || '?'}`,
+    `recebe ${Math.round(sum.recvFps)}fps (mín ${Math.round(sum.recvMin)})`, `decodifica ${Math.round(sum.decodedFps)}fps`,
+    `${Math.round(sum.kbps)}kbps`, `perda ${sum.lossPct.toFixed(1)}%`
+  ];
+  if(sum.freezes) parts.push(`congelamentos ${sum.freezes} (${sum.freezeSeconds.toFixed(1)}s)`);
+  let line = parts.join(' · ');
+  if(sender){
+    const sp = [`${sender.quality || '?'} ${sender.codec || ''}`.trim()];
+    sp.push(`envio ${Math.round(sender.fps)}fps` + (sender.fpsMin != null ? ` (mín ${Math.round(sender.fpsMin)}, meta ${sender.target})` : ''));
+    if(sender.cap != null) sp.push(`captura ${Math.round(sender.cap)}fps` + (sender.capMin != null ? ` (mín ${Math.round(sender.capMin)})` : ''));
+    sp.push(`limite ${sender.lim}`);
+    if(sender.enc) sp.push(`${sender.enc} (${sender.hw ? 'hardware' : 'software'})`);
+    line += ` | quem transmite: ${sp.join(' · ')}`;
+  }else{
+    line += ' | quem transmite: sem dados (site antigo ou sem envio recente)';
+  }
+  const verdict = streamBottleneck(sum, sender);
+  if(verdict && verdict !== 'ok') line += ` | gargalo provável: ${verdict}`;
+  return line;
+}
+
+// Estado do resumo (zerado ao trocar de qualidade, parar de transmitir e sair da sala).
+let sendSummaryWin = { since: 0, samples: [] }; // resumo de 1 min do envio (registro)
+let sendStatsWin = { since: 0, samples: [] };   // números mandados a quem assiste (~12 s)
+let lastSendMeta = null;
+const recvSummaryWin = new Map(); // tileId -> { since, samples, meta }
+const remoteSendStats = new Map(); // tileId -> números de quem transmite + quando chegaram
+
+function flushSendSummary(minSeconds){
+  const sum = summarizeSendSamples(sendSummaryWin.samples);
+  if(lastSendMeta && sum.seconds >= minSeconds){
+    const line = sendSummaryLine(sum, lastSendMeta);
+    if(line) appLog(line);
+  }
+  sendSummaryWin = { since: 0, samples: [] };
+  sendStatsWin = { since: 0, samples: [] };
+}
+
+function noteSendSample(sample, meta){
+  const now = Date.now();
+  lastSendMeta = meta;
+  if(!sendSummaryWin.since) sendSummaryWin.since = now;
+  if(!sendStatsWin.since) sendStatsWin.since = now;
+  sendSummaryWin.samples.push(sample);
+  sendStatsWin.samples.push(sample);
+  if(now - sendSummaryWin.since >= SUMMARY_EVERY_MS){
+    const line = sendSummaryLine(summarizeSendSamples(sendSummaryWin.samples), meta);
+    if(line) appLog(line);
+    sendSummaryWin = { since: now, samples: [] };
+  }
+  if(now - sendStatsWin.since >= SEND_STATS_EVERY_MS){
+    const msg = sendStatsMessage(summarizeSendSamples(sendStatsWin.samples), meta);
+    sendStatsWin = { since: now, samples: [] };
+    if(msg && room && room.localParticipant){
+      Promise.resolve(room.localParticipant.publishData(new TextEncoder().encode(JSON.stringify(msg)), { reliable: false, topic: SEND_STATS_TOPIC }))
+        .catch(() => { /* só diagnóstico: perder um é normal */ });
+    }
+  }
+}
+
+function flushRecvSummary(tileId, minSeconds){
+  const win = recvSummaryWin.get(tileId);
+  recvSummaryWin.delete(tileId);
+  if(!win) return;
+  const sum = summarizeRecvSamples(win.samples);
+  if(!sum || sum.seconds < minSeconds) return;
+  const s = remoteSendStats.get(tileId);
+  const sender = s && Date.now() - s.at <= SEND_STATS_MAX_AGE_MS ? s : null;
+  const line = recvSummaryLine(streamTag(tileId), sum, win.meta || {}, sender);
+  if(line) appLog(line);
+}
+
+function noteRecvSample(tileId, sample, meta){
+  const now = Date.now();
+  let win = recvSummaryWin.get(tileId);
+  if(!win){ win = { since: now, samples: [], meta }; recvSummaryWin.set(tileId, win); }
+  win.samples.push(sample);
+  win.meta = meta;
+  if(now - win.since >= SUMMARY_EVERY_MS) flushRecvSummary(tileId, 0);
+}
+
 async function sampleTileDetailedStats(tileId, track){
   if(!track || typeof track.getRTCStatsReport !== 'function') return;
   let report;
@@ -1691,10 +1926,15 @@ async function sampleTileDetailedStats(tileId, track){
   const vcur = {
     ts: inbound.timestamp, received: inbound.framesReceived || 0, decoded: inbound.framesDecoded || 0, dropped: inbound.framesDropped || 0,
     freezes: inbound.freezeCount || 0, freezeSeconds: inbound.totalFreezesDuration || 0, bytes: inbound.bytesReceived || 0,
-    lost: inbound.packetsLost || 0, pli: inbound.pliCount || 0, nack: inbound.nackCount || 0
+    lost: inbound.packetsLost || 0, pli: inbound.pliCount || 0, nack: inbound.nackCount || 0, packets: inbound.packetsReceived || 0
   };
   viewerDetailPrev.set(tileId, vcur);
   if(vprev && vcur.ts > vprev.ts){
+    noteRecvSample(tileId, {
+      seconds: (vcur.ts - vprev.ts) / 1000, received: vcur.received - vprev.received, decoded: vcur.decoded - vprev.decoded,
+      bytes: vcur.bytes - vprev.bytes, lost: vcur.lost - vprev.lost, packets: vcur.packets - vprev.packets,
+      freezes: vcur.freezes - vprev.freezes, freezeSeconds: vcur.freezeSeconds - vprev.freezeSeconds
+    }, { codec: codecLabel(report, inbound.codecId), width: inbound.frameWidth, height: inbound.frameHeight });
     const line = viewerTroubleLine({
       codec: codecLabel(report, inbound.codecId), width: inbound.frameWidth, height: inbound.frameHeight,
       d: {
@@ -1828,6 +2068,21 @@ async function sampleOwnScreenStats(){
       }
     });
     if(line && shouldLogTrouble('send', Date.now())) appLog(line);
+    const seconds = (scur.ts - sprev.ts) / 1000;
+    const frames = scur.frames - sprev.frames;
+    const captured = scur.captured != null && sprev.captured != null ? scur.captured - sprev.captured : null;
+    noteSendSample({
+      seconds, frames, captured, bytes: scur.bytes - sprev.bytes, encodeMs: (scur.encodeS - sprev.encodeS) * 1000,
+      reason: outbound.qualityLimitationReason || 'none',
+      stalled: frames === 0 && captured === 0,
+      paused: frames === 0 && !outbound.frameWidth && !outbound.frameHeight
+    }, {
+      tile: room.localParticipant.identity, quality: SHARE_QUALITY_PRESETS[activeShareQuality].name, codec: outCodec,
+      width: outbound.frameWidth, height: outbound.frameHeight,
+      targetFps: shareEncodingFor(SHARE_QUALITY_PRESETS[activeShareQuality], activeShareCodec).maxFramerate,
+      encoder: outbound.encoderImplementation ? `${outbound.encoderImplementation}${outbound.powerEfficientEncoder ? ' (hardware)' : ' (software)'}` : '',
+      encoderName: outbound.encoderImplementation || '', hw: !!outbound.powerEfficientEncoder
+    });
   }
 
   const reason = outbound.qualityLimitationReason;
@@ -2728,6 +2983,10 @@ function leaveRoom(){
   qualityBaseLabel.clear();
   qualityDetails.clear();
   qualityStatsPrev.clear();
+  recvSummaryWin.clear();
+  remoteSendStats.clear();
+  sendSummaryWin = { since: 0, samples: [] };
+  sendStatsWin = { since: 0, samples: [] };
   tileViewers.clear();
   myWatching.clear();
   exitPip();
