@@ -361,6 +361,15 @@
       </label>
     </div>
 
+    <div class="settings-section">
+      <div class="settings-section-title">Som das transmissões</div>
+      <label class="settings-row">
+        <input type="checkbox" id="settingsStartMuted">
+        Abrir as transmissões sem som
+      </label>
+      <div class="settings-note">Ao começar a assistir uma transmissão, ela abre muda e você liga o som quando quiser, no botão de volume do vídeo. Vale para as próximas que você abrir.</div>
+    </div>
+
     <div class="settings-section" id="settingsHardwareSection" hidden>
       <div class="settings-section-title">Codificação do vídeo (experimental)</div>
       <label class="settings-row" id="settingsHardwareRow">
@@ -459,7 +468,7 @@
     <label class="manage-label" for="manageAccess">Quem pode entrar</label>
     <div class="manage-row">
       <select id="manageAccess" class="access-select manage-select">
-        <option value="open">Aberta: qualquer pessoa do servidor</option>
+        <option value="open">Aberta: todo o servidor</option>
         <option value="approval">Com aprovação</option>
         <option value="password">Com senha</option>
       </select>

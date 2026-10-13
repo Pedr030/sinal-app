@@ -1,5 +1,15 @@
 [
   {
+    "id": "2026-10-13-seletor-e-som",
+    "date": "2026-10-13",
+    "title": "Seletor de acesso e som das transmissões",
+    "site": "0.8.70",
+    "items": [
+      "Ao criar ou gerenciar uma sala, a escolha de quem pode entrar agora tem a cara do Sinal.",
+      "No app, nova opção nas Configurações para abrir as transmissões sem som. Você liga quando quiser."
+    ]
+  },
+  {
     "id": "2026-10-08-ate-quatro-telas",
     "date": "2026-10-08",
     "title": "Até 4 telas em destaque",

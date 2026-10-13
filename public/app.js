@@ -1799,6 +1799,16 @@ setInterval(() => {
   sampleOwnScreenStats();
 }, 4000);
 
+// Preferência "abrir as transmissões mudas" (Configurações do app). Guardada no navegador do app, não no JSON do
+// Electron: é só do site, então vale sem instalador novo.
+const START_MUTED_KEY = 'sinal:startMuted';
+function startMutedPref(){
+  try{ return localStorage.getItem(START_MUTED_KEY) === '1'; }catch(e){ return false; }
+}
+function setStartMutedPref(on){
+  try{ localStorage.setItem(START_MUTED_KEY, on ? '1' : '0'); }catch(e){ /* sem localStorage: só não lembra */ }
+}
+
 // ---------------- UI: palco (destaque) + fileira (minimizados) ----------------
 let tiles = new Map();     // id -> elemento .tile
 const MAX_PINNED = 4;      // máximo de transmissões em destaque ao mesmo tempo
@@ -2077,6 +2087,11 @@ function addTile(id, name, stream){
     const volSlider = tile.querySelector('.vol-slider');
     const hideBtn = tile.querySelector('.hide-btn');
 
+    if(startMutedPref()){ // preferência das Configurações: a transmissão abre muda e a pessoa liga quando quiser
+      video.muted = true;
+      muteBtn.innerHTML = ICON_VOLUME_MUTED;
+      muteBtn.classList.add('active');
+    }
     muteBtn.addEventListener('click', (e) => {
       e.stopPropagation();
       video.muted = !video.muted;
@@ -4150,6 +4165,153 @@ function prefillShareQuality(){
   updateQualityBtn();
 }
 
+// ---------------- Seletor próprio (no lugar do <select> nativo) ----------------
+// A lista nativa é desenhada pelo Windows, fora do tema do Sinal. Aqui o <select> continua no DOM (escondido) e é a
+// fonte da verdade: .value, o evento 'change' e as opções que o resto do código preenche seguem funcionando. O botão e
+// a lista só espelham o select e disparam o 'change'. A lista é posicionada com `fixed` pra não ser cortada pela
+// rolagem das janelas (ex.: Gerenciar sala).
+const ICON_DD_CHEVRON = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 9 12 15 18 9"/></svg>';
+const ICON_DD_CHECK = '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>';
+let closeOpenDropdown = null; // só uma lista aberta por vez
+
+function enhanceSelect(select){
+  if(select.dataset.dd) return;
+  select.dataset.dd = '1';
+  const wrap = document.createElement('div');
+  wrap.className = 'dd';
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'dd-btn';
+  btn.id = select.id + 'Dd';
+  btn.setAttribute('aria-haspopup', 'listbox');
+  btn.setAttribute('aria-expanded', 'false');
+  if(select.getAttribute('aria-label')) btn.setAttribute('aria-label', select.getAttribute('aria-label'));
+  const label = document.createElement('span');
+  label.className = 'dd-label';
+  const chevron = document.createElement('span');
+  chevron.className = 'dd-chevron';
+  chevron.innerHTML = ICON_DD_CHEVRON;
+  btn.append(label, chevron);
+  select.before(wrap);
+  wrap.append(btn, select);
+  select.classList.add('dd-native');
+  select.tabIndex = -1;
+  select.setAttribute('aria-hidden', 'true');
+  document.querySelectorAll(`label[for="${select.id}"]`).forEach((l) => { l.htmlFor = btn.id; });
+
+  let menu = null;
+  let active = -1;
+  const refresh = () => {
+    const opt = select.options[select.selectedIndex];
+    label.textContent = opt ? opt.textContent : '';
+    btn.disabled = select.disabled;
+  };
+  // O resto do código faz `select.value = x`: isso não dispara evento, então o botão precisa ser avisado.
+  ['value', 'selectedIndex'].forEach((prop) => {
+    const d = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, prop);
+    Object.defineProperty(select, prop, { configurable: true, get(){ return d.get.call(this); }, set(v){ d.set.call(this, v); refresh(); } });
+  });
+  new MutationObserver(() => { close(); refresh(); }).observe(select, { childList: true, subtree: true, attributes: true, attributeFilter: ['disabled'] });
+  refresh();
+
+  function close(){
+    if(!menu) return;
+    menu.remove();
+    menu = null;
+    btn.setAttribute('aria-expanded', 'false');
+    btn.removeAttribute('aria-activedescendant');
+    if(closeOpenDropdown === close) closeOpenDropdown = null;
+    window.removeEventListener('resize', close);
+    document.removeEventListener('scroll', onScroll, true);
+  }
+  function onScroll(e){ if(menu && !menu.contains(e.target)) close(); }
+  function setActive(i){
+    const items = menu ? [...menu.children] : [];
+    if(!items.length) return;
+    active = Math.max(0, Math.min(items.length - 1, i));
+    items.forEach((el, k) => el.classList.toggle('active', k === active));
+    btn.setAttribute('aria-activedescendant', items[active].id);
+    items[active].scrollIntoView({ block: 'nearest' });
+  }
+  function choose(i){
+    if(i >= 0 && i < select.options.length && i !== select.selectedIndex){
+      select.selectedIndex = i;
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+    close();
+    // Devolve o foco ao botão, a não ser que o 'change' tenha levado o foco pra outro lugar (ex.: o campo de senha).
+    if(!document.activeElement || document.activeElement === document.body) btn.focus();
+  }
+  function open(){
+    if(select.disabled || menu) return;
+    if(closeOpenDropdown) closeOpenDropdown();
+    menu = document.createElement('div');
+    menu.className = 'dd-menu';
+    menu.setAttribute('role', 'listbox');
+    [...select.options].forEach((opt, i) => {
+      const item = document.createElement('div');
+      item.className = 'dd-item' + (i === select.selectedIndex ? ' selected' : '');
+      item.id = `${btn.id}-opt${i}`;
+      item.setAttribute('role', 'option');
+      item.setAttribute('aria-selected', i === select.selectedIndex ? 'true' : 'false');
+      const text = document.createElement('span');
+      text.textContent = opt.textContent;
+      const check = document.createElement('span');
+      check.className = 'dd-check';
+      check.innerHTML = ICON_DD_CHECK;
+      item.append(text, check);
+      item.addEventListener('mousemove', () => { if(active !== i) setActive(i); });
+      item.addEventListener('click', () => choose(i));
+      menu.appendChild(item);
+    });
+    document.body.appendChild(menu);
+    const r = btn.getBoundingClientRect();
+    const spaceBelow = window.innerHeight - r.bottom - 12;
+    const spaceAbove = r.top - 12;
+    const need = menu.offsetHeight;
+    const up = need > spaceBelow && spaceAbove > spaceBelow;
+    menu.style.left = `${Math.round(r.left)}px`;
+    menu.style.minWidth = `${Math.round(r.width)}px`;
+    menu.style.maxHeight = `${Math.max(120, Math.floor(up ? spaceAbove : spaceBelow))}px`;
+    if(up) menu.style.bottom = `${Math.round(window.innerHeight - r.top + 6)}px`;
+    else menu.style.top = `${Math.round(r.bottom + 6)}px`;
+    btn.setAttribute('aria-expanded', 'true');
+    closeOpenDropdown = close;
+    window.addEventListener('resize', close);
+    document.addEventListener('scroll', onScroll, true);
+    setActive(select.selectedIndex);
+  }
+
+  btn.addEventListener('click', () => { menu ? close() : open(); });
+  btn.addEventListener('keydown', (e) => {
+    const k = e.key;
+    if(!menu){
+      if(k === 'ArrowDown' || k === 'ArrowUp'){ e.preventDefault(); open(); }
+      return;
+    }
+    if(k === 'ArrowDown'){ e.preventDefault(); setActive(active + 1); }
+    else if(k === 'ArrowUp'){ e.preventDefault(); setActive(active - 1); }
+    else if(k === 'Home'){ e.preventDefault(); setActive(0); }
+    else if(k === 'End'){ e.preventDefault(); setActive(select.options.length - 1); }
+    else if(k === 'Enter' || k === ' '){ e.preventDefault(); choose(active); }
+    else if(k === 'Tab'){ close(); }
+  });
+}
+
+// Fecha a lista ao clicar fora; e o Esc fecha só a lista (antes de a janela por baixo tratar o Esc dela).
+document.addEventListener('pointerdown', (e) => {
+  if(!closeOpenDropdown) return;
+  if(e.target.closest && (e.target.closest('.dd-menu') || e.target.closest('.dd-btn'))) return;
+  closeOpenDropdown();
+}, true);
+window.addEventListener('keydown', (e) => {
+  if(e.key === 'Escape' && closeOpenDropdown){ e.stopPropagation(); e.preventDefault(); closeOpenDropdown(); }
+}, true);
+
+function setupSelects(){
+  document.querySelectorAll('select.access-select').forEach(enhanceSelect);
+}
+
 // Mostra o botão de áudio isolado só dentro do Electron (ver #audioToggleBtn
 // em style.css) e restaura a preferência lembrada — mesma lógica de
 // prefillShareQuality().
@@ -4213,6 +4375,9 @@ function setupSettingsPanel(){
   const startMinimizedCb = document.getElementById('settingsStartMinimized');
   const audioSection = document.getElementById('settingsAudioSection');
   const excludedList = document.getElementById('settingsExcludedList');
+  const startMutedCb = document.getElementById('settingsStartMuted');
+  startMutedCb.checked = startMutedPref();
+  startMutedCb.addEventListener('change', () => setStartMutedPref(startMutedCb.checked));
 
   const showError = (msg) => { errorEl.textContent = msg; errorEl.hidden = false; };
   const clearError = () => { errorEl.hidden = true; };
@@ -4474,6 +4639,7 @@ window.addEventListener('DOMContentLoaded', () => {
   prefillLastName();
   setupQualityMenu();
   setupChangelog();
+  setupSelects();
   prefillShareQuality();
   prefillShareElectronAudio();
   renderDiscordStatus();
@@ -4496,7 +4662,7 @@ window.addEventListener('beforeunload', () => {
 });
 
 // PWA: versão, registro do service worker, detecção de atualização e botão de instalação
-const APP_VERSION = '0.8.69'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
+const APP_VERSION = '0.8.70'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
 // Dentro do Electron, mostra a versão do INSTALADOR (electron/package.json),
 // não a do site — ver preload.js. Fora dele (navegador normal), continua a
 // versão do deploy de sempre.
