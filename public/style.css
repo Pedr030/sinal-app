@@ -785,6 +785,16 @@ body.in-room .update-bar{ bottom:auto; top:12px; }
   font-size:18px; letter-spacing:1px; color:var(--tune); word-break:break-all; user-select:all;
 }
 #passwordBtn.active, #passwordBtn:hover{ border-color:var(--tune); color:var(--tune); }
+#muteAllBtn:hover, #muteAllBtn.active, #closedToggleBtn:hover, #closedToggleBtn.active{ border-color:var(--tune); color:var(--tune); }
+.tile.pending-hidden{ display:none; }
+/* X no canto do card "clique pra assistir": oculta o card sem abrir a transmissão */
+.pending-dismiss{
+  position:absolute; top:6px; right:6px; z-index:2; width:22px; height:22px; padding:0; border-radius:50%;
+  display:flex; align-items:center; justify-content:center; background:rgba(0,0,0,.55); border:1px solid var(--line);
+  color:var(--fog); opacity:0; transition:.12s;
+}
+.pending-tile:hover .pending-dismiss, .pending-dismiss:focus-visible{ opacity:1; }
+.pending-dismiss:hover{ color:var(--ink); border-color:#454a52; }
 /* Gerenciar sala (dono da sala) */
 .manage-panel{ max-height:92vh; overflow-y:auto; scrollbar-width:thin; scrollbar-color:var(--line) transparent; }
 .manage-select{ flex:1; min-width:0; height:40px; font-size:13px; }
