@@ -825,3 +825,34 @@ test('novidades: sem id visto (ou id desconhecido) considera todas; destaque tem
 test('novidades: a janela só abre sozinha quando há novidade grande não vista', () => {
   assert.match(appJs, /hasUnseenMajor\(changelogEntries, seen\)\) openChangelog\(\);/);
 });
+
+// ---------- seletor próprio e "abrir mudo" ----------
+const indexHtml = readFileSync(join(ROOT, 'public/index.html'), 'utf8');
+const styleCss = readFileSync(join(ROOT, 'public/style.css'), 'utf8');
+
+test('seletor próprio: todo <select class="access-select"> vira o seletor do tema (o nativo fica escondido)', () => {
+  assert.match(appJs, /document\.querySelectorAll\('select\.access-select'\)\.forEach\(enhanceSelect\)/);
+  assert.match(appJs, /setupChangelog\(\);\s*setupSelects\(\);/);
+  assert.match(styleCss, /\.dd-native\{[^}]*opacity:0;[^}]*pointer-events:none/);
+  assert.match(styleCss, /\.dd-menu\{[^}]*position:fixed/); // fixed: a janela com rolagem não corta a lista
+  // o código que faz `select.value = x` continua valendo: o botão é avisado pelo setter
+  assert.match(appJs, /\['value', 'selectedIndex'\]\.forEach/);
+  // Esc fecha só a lista, antes da janela por baixo
+  assert.match(appJs, /window\.addEventListener\('keydown', \(e\) => \{\s*if\(e\.key === 'Escape' && closeOpenDropdown\)/);
+});
+
+test('abrir mudo: opção nas Configurações, guardada no navegador, aplicada ao criar o tile de quem assiste', () => {
+  assert.match(indexHtml, /id="settingsStartMuted"/);
+  assert.match(appJs, /const START_MUTED_KEY = 'sinal:startMuted';/);
+  assert.match(appJs, /startMutedCb\.addEventListener\('change', \(\) => setStartMutedPref\(startMutedCb\.checked\)\)/);
+  // só no tile de quem assiste (dentro de `if(!isSelf)`), com o botão de volume já no estado "mudo"
+  assert.match(appJs, /if\(startMutedPref\(\)\)\{[^}]*video\.muted = true;[^}]*ICON_VOLUME_MUTED[^}]*classList\.add\('active'\)/);
+});
+
+const startMutedPref = (storage) => new Function('localStorage', "const START_MUTED_KEY = 'sinal:startMuted';" + extractFunction(appJs, 'startMutedPref') + '; return startMutedPref();')(storage);
+test('abrir mudo: só "1" liga; sem valor, outro valor ou localStorage quebrado = desligado', () => {
+  assert.equal(startMutedPref({ getItem: () => '1' }), true);
+  assert.equal(startMutedPref({ getItem: () => '0' }), false);
+  assert.equal(startMutedPref({ getItem: () => null }), false);
+  assert.equal(startMutedPref({ getItem: () => { throw new Error('bloqueado'); } }), false);
+});
