@@ -217,11 +217,13 @@ const codecFns = new Function(
 const PRESETS_SRC = appJs.match(/const SHARE_QUALITY_PRESETS = \{[\s\S]*?\n\};/)[0];
 const SHARE_QUALITY_PRESETS = new Function(PRESETS_SRC + '; return SHARE_QUALITY_PRESETS;')();
 
-test('codec: Fluido sai em H.264 e Nítido/Leve em H.265 (placa com H.265); sem H.265 tudo cai pra VP8', () => {
+test('codec: Nítido, Fluido e Jogos em H.264; só o Leve em H.265 (placa com H.265); sem H.265 o Leve cai pra VP8', () => {
   assert.equal(codecFns.pickShareCodec('fluido', true), 'h264');
-  assert.equal(codecFns.pickShareCodec('nitido', true), 'h265');
+  assert.equal(codecFns.pickShareCodec('nitido', true), 'h264');
+  assert.equal(codecFns.pickShareCodec('nitido', false), 'h264');   // não depende de H.265
   assert.equal(codecFns.pickShareCodec('leve', true), 'h265');
-  for(const q of ['leve', 'nitido', 'fluido']) assert.equal(codecFns.pickShareCodec(q, false), 'vp8', q);
+  for(const q of ['leve', 'fluido']) assert.equal(codecFns.pickShareCodec(q, false), 'vp8', q);
+  assert.deepEqual(codecFns.shareEncodingFor(SHARE_QUALITY_PRESETS.nitido, 'h264'), { maxBitrate: 5_500_000, maxFramerate: 30 });
 });
 
 test('codec: todo preset tem limites pros três codecs, e o Fluido H.264 segue 60fps/6 Mbps', () => {
@@ -276,13 +278,19 @@ test('Jogos: pela placa, sem corte automático; pelo processador, piso de 720p e
   assert.equal(gamesDegradationFor('maintain-framerate', false, 0), 'maintain-framerate');      // sem dado
   assert.equal(gamesDegradationFor('maintain-framerate-and-resolution', false, 720), 'maintain-framerate'); // placa caiu pro processador
   assert.match(appJs, /if\(!outbound\) return;\s*adjustGamesDegradation\(track, outbound\);/);
-  assert.match(appJs, /if\(activeShareQuality !== 'jogos' \|\| !track \|\| typeof track\.setDegradationPreference !== 'function'\) return;/);
+  assert.match(appJs, /const MOTION_QUALITIES = \['jogos', 'fluido'\];/);   // o Fluido segue a mesma regra (1080p60 pela placa)
+  assert.match(appJs, /const H264_QUALITIES = \['jogos', 'fluido', 'nitido'\];/);
+  assert.match(appJs, /if\(!H264_QUALITIES\.includes\(activeShareQuality\) \|\| !track \|\| typeof track\.setDegradationPreference !== 'function'\) return;/);
+  // Nítido (texto): pela placa sem corte; pelo processador segura a resolução e corta quadros, como sempre
+  assert.equal(gamesDegradationFor('maintain-resolution', true, 1080, false), 'maintain-framerate-and-resolution');
+  assert.equal(gamesDegradationFor('maintain-resolution', false, 1080, false), 'maintain-resolution');
+  assert.equal(gamesDegradationFor('maintain-resolution', false, 720, false), 'maintain-resolution');
 });
 
 test('Jogos no app: perfil H.264 High na oferta durante a transmissão em Jogos, desligado ao parar', () => {
   assert.match(appJs, /const wantHigh = \(electronSettings && electronSettings\.hardwareEncode && !electronSettings\.gpuCaptureActive\) \|\| shareWantsHighProfile;/);
   assert.match(appJs, /if\(hardwareEncodeReady && electronSettings && wantHigh && offer && typeof offer\.sdp === 'string'\)\{/);
-  assert.match(appJs, /shareWantsHighProfile = quality === 'jogos';\s*const publishOpts = screenPublishOptions\(quality\);/);
+  assert.match(appJs, /shareWantsHighProfile = H264_QUALITIES\.includes\(quality\);\s*const publishOpts = screenPublishOptions\(quality\);/);
   assert.match(appJs, /activeShareCodec = null;\s*shareWantsHighProfile = false;/);
   const main = readFileSync(join(ROOT, 'electron/src/main.js'), 'utf8');
   assert.match(main, /const SHARE_QUALITIES = \['leve', 'nitido', 'fluido', 'jogos'\];/);
@@ -1466,4 +1474,30 @@ test('sugestão como aviso no canto da tela: sem foco, nunca sobre jogo em tela 
   assert.match(preload, /showGpuHint: \(\) => ipcRenderer\.send\('sinal:show-gpu-hint'\),/); // sem argumento: o site não manda texto
   assert.match(appJs, /const toast = !document\.hasFocus\(\) && !!\(window\.sinalElectron && window\.sinalElectron\.showGpuHint\);/);
   assert.match(appJs, /if\(section === 'gpu-capture'\)\{/);
+});
+
+test('entrar na sala: uma conexão por vez (cliques repetidos não criam a mesma pessoa duplicada)', () => {
+  assert.match(appJs, /async function connectToRoom\(code, name, mode, extra\)\{\s*if\(connectInFlight\) return;\s*connectInFlight = true;\s*try\{ return await connectToRoomOnce\(code, name, mode, extra\); \}\s*finally\{ connectInFlight = false; \}\s*\}/);
+  // a nova tentativa depois de pedir pra entrar não pode cair na trava da própria entrada
+  assert.match(appJs, /if\(await requestToJoinRoom\(code, data403\.access\)\) return connectToRoomOnce\(code, name, mode, extra\);/);
+  // sobrou conexão aberta: sai antes da nova
+  assert.match(appJs, /if\(room\)\{ const old = room; room = null; try\{ old\.disconnect\(\); \}catch\(e\)\{\} \}\s*room = new LivekitClient\.Room/);
+});
+
+// ---------- tela preta depois que o processo de vídeo do Chromium reinicia (HANDOFF §72) ----------
+const decoderLooksStuck = new Function(extractFunction(appJs, 'decoderLooksStuck') + '; return decoderLooksStuck;')();
+
+test('tela preta: percebe a GPU reiniciando ou quadros sem decodificar, religa e, se não resolver, recarrega e volta pra sala', () => {
+  assert.equal(decoderLooksStuck(18, 0), true);
+  assert.equal(decoderLooksStuck(0, 0), false);   // pausado / ninguém mandando: não é travamento
+  assert.equal(decoderLooksStuck(30, 29), false);
+  assert.match(appJs, /c\.addEventListener\('webglcontextlost', \(e\) => \{\s*e\.preventDefault\(\);/);
+  assert.match(appJs, /if\(stuck >= DECODER_STUCK_SAMPLES\)\{/);
+  // religar não resolveu (H.265) = recarrega, mas nunca derruba a transmissão de quem está transmitindo
+  assert.match(appJs, /if\(last && now - last < VIDEO_RELOAD_WINDOW_MS\)\{ reloadToRecoverVideo\(why\); return; \}/);
+  assert.match(appJs, /if\(activeShareQuality\)\{\s*appLog\(`\[sinal\] vídeo das transmissões travado/);
+  assert.match(appJs, /const params = new URLSearchParams\(\{ sala: roomCode, retomar: '1' \}\);\s*leaveRoom\(\);/);
+  // volta assistindo o que assistia
+  assert.match(appJs, /if\(pendingRewatch\.delete\(tileId\)\) setTimeout\(\(\) => watchTile\(tileId, isCamera\), 300\);/);
+  assert.match(appJs, /setupGpuHint\(\);\s*watchGpuProcessReset\(\);/);
 });

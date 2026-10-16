@@ -1,5 +1,17 @@
 [
   {
+    "id": "2026-10-16-correcoes",
+    "date": "2026-10-16",
+    "title": "Correções e Fluido em Full HD",
+    "site": "0.8.80",
+    "items": [
+      "Corrigido: a mesma pessoa podia aparecer repetida na sala.",
+      "Se a imagem de uma transmissão ficar preta depois de um problema na placa de vídeo, o Sinal se recupera sozinho.",
+      "O Fluido volta a manter Full HD a 60 fps.",
+      "O Nítido passou a usar um formato de vídeo mais estável."
+    ]
+  },
+  {
     "id": "2026-10-13-modo-jogos",
     "date": "2026-10-13",
     "title": "Modo Jogos",
