@@ -1,5 +1,17 @@
 [
   {
+    "id": "2026-10-16-salas-numeradas",
+    "date": "2026-10-16",
+    "title": "Salas numeradas e captura pela placa ligada",
+    "site": "0.8.81",
+    "app": "0.3.23",
+    "items": [
+      "Salas criadas sem nome agora são numeradas: Sala 1, Sala 2 e assim por diante.",
+      "A captura pela placa de vídeo agora vem ligada para quem tem Windows 11 24H2 ou mais novo.",
+      "As estatísticas mostram quando a internet de quem transmite está perdendo pacotes."
+    ]
+  },
+  {
     "id": "2026-10-16-correcoes",
     "date": "2026-10-16",
     "title": "Correções e Fluido em Full HD",
