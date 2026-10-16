@@ -32,7 +32,7 @@ import { verifySession, guildTier } from '../lib/session.js';
 import { createLimiter, clientIp } from '../lib/ratelimit.js';
 import {
   MAX_ROOMS_PER_GUILD, MAX_PARTICIPANTS_PER_ROOM, PRESENCE_ROOM, MAX_PRESENCE_GUILDS,
-  parseServerRoom, newServerRoomName, cleanTitle, cleanDisplayName,
+  parseServerRoom, newServerRoomName, cleanTitle, cleanDisplayName, nextDefaultTitle,
   buildRoomMetadata, parseRoomMetadata, cleanAccess, cleanPassword, verifyRoomPassword, encryptRoomPassword,
   canEnterRoom, approvalDeciders, participantInfo, withApproved, recentFailures, withFailedAttempt, MAX_PASSWORD_TRIES
 } from '../lib/rooms.js';
@@ -103,7 +103,7 @@ export async function POST(request){
   if(isServerMode){
     if(mode === 'server-create'){
       guildId = str(body.guild).trim();
-      title = cleanTitle(body.title) || 'Sala';
+      title = cleanTitle(body.title); // vazio: "Sala N" (nextDefaultTitle), escolhido depois de listar as salas do servidor
       newAccess = cleanAccess(str(body.access));
       if(newAccess === 'password'){
         newPassword = cleanPassword(body.password);
@@ -177,9 +177,11 @@ export async function POST(request){
         console.error('listRooms falhou:', e && e.message, e);
       }
       const prefix = `s${guildId}-`;
-      if(rooms.filter((r) => typeof r.name === 'string' && r.name.startsWith(prefix)).length >= MAX_ROOMS_PER_GUILD){
+      const guildRooms = rooms.filter((r) => typeof r.name === 'string' && r.name.startsWith(prefix));
+      if(guildRooms.length >= MAX_ROOMS_PER_GUILD){
         return json(429, { error: 'limite-de-salas' });
       }
+      if(!title) title = nextDefaultTitle(guildRooms.map((r) => (parseRoomMetadata(r.metadata) || {}).title));
       room = newServerRoomName(guildId);
       try{
         await roomService.createRoom({
