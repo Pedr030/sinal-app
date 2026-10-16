@@ -950,3 +950,32 @@ test('pedido sem resposta quando a sala muda de tipo: virou ABERTA = o próximo 
   assert.ok((await livre.json()).token);
 });
 
+
+import { nextDefaultTitle } from '../lib/rooms.js';
+test('sala criada sem nome: "Sala 1", "Sala 2"... o menor número livre entre as salas ao vivo do servidor', () => {
+  assert.equal(nextDefaultTitle([]), 'Sala 1');
+  assert.equal(nextDefaultTitle(undefined), 'Sala 1');
+  assert.equal(nextDefaultTitle(['Sala 1', 'Sala 2', 'Ranqueada']), 'Sala 3');
+  assert.equal(nextDefaultTitle(['Sala 1', 'Sala 3']), 'Sala 2');          // reaproveita o número que vagou
+  assert.equal(nextDefaultTitle(['Sala']), 'Sala 2');                       // "Sala" antiga conta como 1
+  assert.equal(nextDefaultTitle(['sala 1', ' Sala  2 ', null, 5]), 'Sala 3');
+  assert.equal(nextDefaultTitle(['Sala dos amigos', 'Salas']), 'Sala 1');  // nome escolhido não conta
+});
+
+test('criar sala de servidor sem nome: vira "Sala N" contando as salas ao vivo daquele servidor', async () => {
+  const meta = (title) => JSON.stringify({ v: 1, guild: G, title, creator: { id: '1', name: 'x' }, access: 'open' });
+  fake.rooms = [
+    { name: `s${G}-aaaaaa`, numParticipants: 1, metadata: meta('Sala 1') },
+    { name: `s${G}-bbbbbb`, numParticipants: 1, metadata: meta('Ranqueada') },
+    { name: `s999-cccccc`, numParticipants: 1, metadata: meta('Sala 2') }   // outro servidor: não conta
+  ];
+  fake.created = null;
+  await call({ mode: 'server-create', guild: G, session: session({ id: CRIADOR }) });
+  assert.equal(JSON.parse(fake.created.metadata).title, 'Sala 2');
+  fake.created = null;
+  await call({ mode: 'server-create', guild: G, title: '  ', session: session({ id: CRIADOR }) });
+  assert.equal(JSON.parse(fake.created.metadata).title, 'Sala 2');                // só espaços = sem nome
+  fake.created = null;
+  await call({ mode: 'server-create', guild: G, title: 'Treino', session: session({ id: CRIADOR }) });
+  assert.equal(JSON.parse(fake.created.metadata).title, 'Treino');               // nome escolhido fica
+});

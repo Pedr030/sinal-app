@@ -1166,8 +1166,9 @@ test('resumo do envio: tempo pausado (ninguém assistindo) não entra na média;
 test('números de quem transmite: só números e o codificador; quem assiste aceita só da própria tela de quem mandou', () => {
   const sum = diag.summarizeSendSamples([sendSample({ frames: 100, captured: 100, reason: 'cpu' }), sendSample({ frames: 120, captured: 124, reason: 'cpu' })]);
   const msg = diag.sendStatsMessage(sum, { tile: 'd123-abc123', quality: 'Fluido', codec: 'H.264', targetFps: 60, hw: false, encoderName: 'OpenH264' });
-  assert.deepEqual(Object.keys(msg).sort(), ['cap', 'capMin', 'codec', 'enc', 'fps', 'fpsMin', 'hw', 'kbps', 'lim', 'q', 'target', 'tile', 'type', 'v'].sort());
+  assert.deepEqual(Object.keys(msg).sort(), ['cap', 'capMin', 'codec', 'enc', 'fps', 'fpsMin', 'hw', 'kbps', 'lim', 'q', 'target', 'tile', 'type', 'upLoss', 'v'].sort());
   assert.equal(msg.lim, 'cpu');
+  assert.equal(msg.upLoss, null); // amostras sem o relatório do servidor: sem número de perda no envio
   const parsed = diag.parseSendStats(JSON.parse(JSON.stringify(msg)), 'd123-abc123');
   assert.equal(parsed.fps, 27.5);
   assert.equal(parsed.enc, 'OpenH264');
@@ -1279,9 +1280,12 @@ test('rtx-time: vale pra oferta e resposta, roda depois do ajuste do perfil High
 });
 
 // ---------- captura pela placa de vídeo (HANDOFF §68) ----------
-test('captura pela placa: nasce desligada, só booleano, liga as duas opções do Chromium ANTES do app ficar pronto, só no Windows 11 24H2+', () => {
+test('captura pela placa: ligada por padrão (0.3.23), só booleano, liga as duas opções do Chromium ANTES do app ficar pronto, só no Windows 11 24H2+', () => {
   const main = readFileSync(join(ROOT, 'electron/src/main.js'), 'utf8');
-  assert.match(main, /gpuCapture: false\s*\n\};/);
+  assert.match(main, /gpuCapture: true,\s*gpuCaptureChosen: false\s*\};/);                               // ligada por padrão (§75)
+  assert.match(main, /if\(appSettings\.gpuCaptureChosen !== true\) appSettings\.gpuCapture = true;/);   // o "false" salvo antigo era só o padrão
+  assert.match(main, /if\('gpuCapture' in patch\) patch\.gpuCaptureChosen = true;/);                    // mexeu na opção = vale a escolha
+  assert.doesNotMatch(main, /'gpuCaptureChosen'\]/);                                                     // o site não consegue marcar "escolhido" direto
   assert.match(main, /const GPU_CAPTURE_FEATURES = \['WebRtcAllowWgcUsingTexture', 'PlatformH264CbpEncoding'\];/);
   assert.match(main, /const GPU_CAPTURE_MIN_BUILD = 26100;/);
   assert.match(main, /const gpuCaptureActive = gpuCaptureSupported && appSettings\.gpuCapture === true;/);
@@ -1500,4 +1504,38 @@ test('tela preta: percebe a GPU reiniciando ou quadros sem decodificar, religa e
   // volta assistindo o que assistia
   assert.match(appJs, /if\(pendingRewatch\.delete\(tileId\)\) setTimeout\(\(\) => watchTile\(tileId, isCamera\), 300\);/);
   assert.match(appJs, /setupGpuHint\(\);\s*watchGpuProcessReset\(\);/);
+});
+
+// ---------- perda de pacotes no upload de quem transmite (HANDOFF §75) ----------
+test('perda no envio: resumo, mensagem pra quem assiste e veredito de que lado está o problema', () => {
+  const sum = diag.summarizeSendSamples([
+    sendSample({ upLost: 30, upPackets: 970, rtt: 0.12 }),
+    sendSample({ upLost: 10, upPackets: 990, rtt: 0.14 }),
+    sendSample({ upLost: null, upPackets: 1000 })                       // sem relatório do servidor nessa amostra
+  ]);
+  assert.equal(sum.upLossPct.toFixed(1), '2.0');                        // 40 perdidos de 2000
+  assert.equal(Math.round(sum.rttMs), 130);
+  const line = diag.sendSummaryLine(sum, { quality: 'Jogos', codec: 'H.264', targetFps: 60 });
+  assert.match(line, /perda no envio 2\.0% · ida e volta 130ms/);
+  const msg = diag.sendStatsMessage(sum, { tile: 'd1-aaaaaa', quality: 'Jogos', codec: 'H.264', targetFps: 60 });
+  assert.equal(msg.upLoss, 2);
+  assert.equal(diag.parseSendStats(msg, 'd1-aaaaaa').upLoss, 2);
+  assert.equal(diag.parseSendStats({ ...msg, upLoss: 400 }, 'd1-aaaaaa').upLoss, null);   // absurdo vira "sem dado"
+  // quem assiste vê 5% de perda: se o upload de quem transmite perde 4%, o problema é dele; se perde 0,2%, é do caminho até você
+  const recv = { recvFps: 50, decodedFps: 50, kbps: 7000, lossPct: 5, freezeSeconds: 2 };
+  const s = (upLoss) => ({ target: 60, fps: 50, cap: 50, hw: true, lim: 'none', upLoss });
+  assert.equal(diag.streamBottleneck(recv, s(4)), 'upload de quem transmite (perdendo pacotes)');
+  assert.equal(diag.streamBottleneck(recv, s(0.2)), 'internet entre o servidor e você');
+  assert.equal(diag.streamBottleneck(recv, s(null)), 'rede (perda de pacotes)');          // quem transmite com site antigo
+  assert.match(diag.recvSummaryLine('ab12', { seconds: 60, recvFps: 50, recvMin: 40, decodedFps: 50, kbps: 7000, lossPct: 5, freezes: 2, freezeSeconds: 2 }, { codec: 'H.264', width: 1280, height: 720 },
+    { quality: 'Jogos', codec: 'H.264', fps: 50, fpsMin: 40, target: 60, cap: 50, capMin: 45, lim: 'none', hw: true, enc: 'NVIDIA', upLoss: 4 }), /perda no envio 4\.0%/);
+  // a coleta usa o relatório do servidor (remote-inbound-rtp) ligado ao envio
+  assert.match(appJs, /let remoteIn = outbound\.remoteId && typeof report\.get === 'function' \? report\.get\(outbound\.remoteId\) : null;/);
+  assert.match(appJs, /upLost: scur\.upLost != null && sprev\.upLost != null \? Math\.max\(0, scur\.upLost - sprev\.upLost\) : null,/);
+});
+
+test('perda no envio no painel do tile', () => {
+  const recv = { recvFps: 50, decodedFps: 50, kbps: 7000, lossPct: 0, freezeSeconds: 0, width: 1280, height: 720 };
+  assert.equal(tileStatsLines(recv, { target: 60, fps: 50, cap: 51, hw: true, upLoss: 3.4 })[1], 'Quem transmite (média de 12 s): captura 51 · envio 50 de 60 fps · perda no envio 3,4%');
+  assert.equal(tileStatsLines(recv, { target: 60, fps: 50, cap: 51, hw: true, upLoss: null })[1], 'Quem transmite (média de 12 s): captura 51 · envio 50 de 60 fps');
 });

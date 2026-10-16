@@ -1843,6 +1843,13 @@ function summarizeSendSamples(samples){
   }
   out.kbps = sumBy(active, (s) => s.bytes) * 8 / 1000 / out.activeSeconds;
   out.encodeMs = frames > 0 ? sumBy(active, (s) => s.encodeMs || 0) / frames : 0;
+  const withLoss = active.filter((s) => typeof s.upLost === 'number' && s.upPackets > 0);
+  if(withLoss.length){
+    const lost = sumBy(withLoss, (s) => s.upLost);
+    out.upLossPct = lost / (lost + sumBy(withLoss, (s) => s.upPackets)) * 100;
+  }
+  const withRtt = active.filter((s) => typeof s.rtt === 'number');
+  if(withRtt.length) out.rttMs = sumBy(withRtt, (s) => s.rtt) / withRtt.length * 1000;
   out.limits = {};
   active.forEach((s) => { const r = s.reason || 'none'; out.limits[r] = (out.limits[r] || 0) + s.seconds; });
   return out;
@@ -1870,6 +1877,8 @@ function sendSummaryLine(sum, meta){
   const parts = [head, `envio ${Math.round(sum.fps)}fps (mín ${Math.round(sum.fpsMin)}, meta ${meta.targetFps})`];
   if(sum.captureFps != null) parts.push(`captura ${Math.round(sum.captureFps)}fps (mín ${Math.round(sum.captureMin)})`);
   parts.push(`${Math.round(sum.kbps)}kbps`);
+  if(sum.upLossPct != null) parts.push(`perda no envio ${sum.upLossPct.toFixed(1)}%`);
+  if(sum.rttMs != null) parts.push(`ida e volta ${Math.round(sum.rttMs)}ms`);
   if(sum.encodeMs > 0) parts.push(`codificação ${sum.encodeMs.toFixed(1)}ms/quadro`);
   parts.push(`limite ${limitBreakdown(sum.limits, sum.activeSeconds)}`);
   if(sum.pausedSeconds > 0) parts.push(`pausado ${Math.round(sum.pausedSeconds)}s`);
@@ -1885,7 +1894,8 @@ function sendStatsMessage(sum, meta){
   return {
     type: 'send-stats', v: 1, tile: meta.tile, q: meta.quality || '', codec: meta.codec || '', target: meta.targetFps || 0,
     fps: r1(sum.fps), fpsMin: r1(sum.fpsMin), cap: r1(sum.captureFps), capMin: r1(sum.captureMin), kbps: Math.round(sum.kbps),
-    lim: dominantLimit(sum.limits), hw: !!meta.hw, enc: String(meta.encoderName || '').slice(0, 60)
+    lim: dominantLimit(sum.limits), hw: !!meta.hw, enc: String(meta.encoderName || '').slice(0, 60),
+    upLoss: r1(sum.upLossPct)
   };
 }
 
@@ -1900,7 +1910,7 @@ function mergeSendStats(list){
   const min = (key) => { const v = valid.filter((s) => typeof s[key] === 'number').map((s) => s[key]); return v.length ? Math.min(...v) : null; };
   const lims = {};
   valid.forEach((s) => { lims[s.lim] = (lims[s.lim] || 0) + 1; });
-  return { ...last, fps: avg('fps'), fpsMin: min('fpsMin'), cap: avg('cap'), capMin: min('capMin'), kbps: avg('kbps'), lim: dominantLimit(lims), count: valid.length };
+  return { ...last, fps: avg('fps'), fpsMin: min('fpsMin'), cap: avg('cap'), capMin: min('capMin'), kbps: avg('kbps'), upLoss: avg('upLoss'), lim: dominantLimit(lims), count: valid.length };
 }
 
 // Quem assiste recebe isso de outro navegador: valida tudo (fronteira de confiança). Só vale pra transmissão da
@@ -1915,7 +1925,8 @@ function parseSendStats(msg, senderIdentity){
   return {
     tile: msg.tile, quality: str(msg.q, 20), codec: str(msg.codec, 10), target: num(msg.target, 240) || 0,
     fps, fpsMin: num(msg.fpsMin, 240), cap: num(msg.cap, 240), capMin: num(msg.capMin, 240), kbps: num(msg.kbps, 200000),
-    lim: SEND_LIMIT_REASONS.includes(msg.lim) ? msg.lim : 'none', hw: msg.hw === true, enc: str(msg.enc, 60)
+    lim: SEND_LIMIT_REASONS.includes(msg.lim) ? msg.lim : 'none', hw: msg.hw === true, enc: str(msg.enc, 60),
+    upLoss: num(msg.upLoss, 100)
   };
 }
 
@@ -1953,7 +1964,11 @@ function streamBottleneck(recv, sender){
     if(sender.lim === 'bandwidth') return 'upload de quem transmite';
     return 'envio de quem transmite';
   }
-  if(recv.lossPct >= 2) return 'rede (perda de pacotes)';
+  if(recv.lossPct >= 2){
+    // perda no upload de quem transmite explica pelo menos metade da que chega aqui = o problema é a internet dela
+    if(sender && typeof sender.upLoss === 'number') return sender.upLoss >= recv.lossPct / 2 ? 'upload de quem transmite (perdendo pacotes)' : 'internet entre o servidor e você';
+    return 'rede (perda de pacotes)';
+  }
   if(recv.recvFps - recv.decodedFps > 5) return 'decodificação no seu PC';
   // envio quase na meta, mas o codificador de quem transmite está se limitando (baixa resolução/quadros)
   if(sender && sender.lim === 'cpu') return 'CPU de quem transmite';
@@ -1982,6 +1997,7 @@ function recvSummaryLine(tag, sum, meta, sender){
     const sp = [`${sender.quality || '?'} ${sender.codec || ''}`.trim()];
     sp.push(`envio ${Math.round(sender.fps)}fps` + (sender.fpsMin != null ? ` (mín ${Math.round(sender.fpsMin)}, meta ${sender.target})` : ''));
     if(sender.cap != null) sp.push(`captura ${Math.round(sender.cap)}fps` + (sender.capMin != null ? ` (mín ${Math.round(sender.capMin)})` : ''));
+    if(typeof sender.upLoss === 'number') sp.push(`perda no envio ${sender.upLoss.toFixed(1)}%`);
     sp.push(`limite ${sender.lim}`);
     if(sender.enc) sp.push(`${sender.enc} (${sender.hw ? 'hardware' : 'software'})`);
     line += ` | quem transmite: ${sp.join(' · ')}`;
@@ -2388,7 +2404,13 @@ async function sampleOwnScreenStats(){
 
   // diagnóstico de travada (ver senderTroubleLine)
   const source = outbound.mediaSourceId && typeof report.get === 'function' ? report.get(outbound.mediaSourceId) : null;
+  // Perda no UPLOAD de quem transmite (HANDOFF §75): o servidor conta o que chegou dele e devolve (remote-inbound-rtp).
+  // Quem assiste vê a perda do caminho todo; comparando as duas dá pra saber de que lado está o problema.
+  let remoteIn = outbound.remoteId && typeof report.get === 'function' ? report.get(outbound.remoteId) : null;
+  if(!remoteIn) report.forEach((s) => { if(s.type === 'remote-inbound-rtp' && s.kind === 'video' && s.ssrc === outbound.ssrc) remoteIn = s; });
   const scur = {
+    sent: outbound.packetsSent || 0, upLost: remoteIn && typeof remoteIn.packetsLost === 'number' ? remoteIn.packetsLost : null,
+    rtt: remoteIn && typeof remoteIn.roundTripTime === 'number' ? remoteIn.roundTripTime : null,
     ts: outbound.timestamp, frames: outbound.framesEncoded || 0, encodeS: outbound.totalEncodeTime || 0, bytes: outbound.bytesSent || 0,
     keyFrames: outbound.keyFramesEncoded || 0, pli: outbound.pliCount || 0, nack: outbound.nackCount || 0,
     captured: source && typeof source.frames === 'number' ? source.frames : null // media-source: quadros entregues pela captura
@@ -2410,6 +2432,8 @@ async function sampleOwnScreenStats(){
     const frames = scur.frames - sprev.frames;
     const captured = scur.captured != null && sprev.captured != null ? scur.captured - sprev.captured : null;
     noteSendSample({
+      upLost: scur.upLost != null && sprev.upLost != null ? Math.max(0, scur.upLost - sprev.upLost) : null,
+      upPackets: Math.max(0, scur.sent - sprev.sent), rtt: scur.rtt,
       seconds, frames, captured, bytes: scur.bytes - sprev.bytes, encodeMs: (scur.encodeS - sprev.encodeS) * 1000,
       reason: outbound.qualityLimitationReason || 'none',
       stalled: frames === 0 && captured === 0,
@@ -2475,7 +2499,8 @@ function tileStatsLines(recv, sender, recvLong){
   if(sender && typeof sender.fps === 'number'){
     const target = sender.target ? ` de ${sender.target}` : '';
     const capture = typeof sender.cap === 'number' ? `captura ${Math.round(sender.cap)} · ` : '';
-    lines.push(`Quem transmite (média de 12 s): ${capture}envio ${Math.round(sender.fps)}${target} fps`);
+    const upLoss = typeof sender.upLoss === 'number' ? ` · perda no envio ${sender.upLoss.toFixed(1).replace('.', ',')}%` : '';
+    lines.push(`Quem transmite (média de 12 s): ${capture}envio ${Math.round(sender.fps)}${target} fps${upLoss}`);
     lines.push(`Codificando ${sender.hw ? 'pela placa de vídeo' : 'pelo processador'}`);
   }else{
     lines.push('Quem transmite: sem dados (versão antiga do Sinal)');
@@ -5667,7 +5692,7 @@ window.addEventListener('beforeunload', () => {
 });
 
 // PWA: versão, registro do service worker, detecção de atualização e botão de instalação
-const APP_VERSION = '0.8.80'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
+const APP_VERSION = '0.8.81'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
 // Dentro do Electron, mostra a versão do INSTALADOR (electron/package.json),
 // não a do site — ver preload.js. Fora dele (navegador normal), continua a
 // versão do deploy de sempre.

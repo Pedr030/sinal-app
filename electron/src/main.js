@@ -205,9 +205,11 @@ const DEFAULT_SETTINGS = {
   // Codificar o H.264 pela placa de vídeo (HANDOFF §58): experimental, DESLIGADA por padrão. O app só pede o perfil High na
   // oferta (a placa codifica High por hardware; o Baseline que o servidor prefere cai no OpenH264, em software).
   hardwareEncode: false,
-  // Captura pela placa de vídeo (HANDOFF §68): experimental, DESLIGADA por padrão. Liga opções do Chromium que só valem
-  // a partir da próxima abertura do app (ver GPU_CAPTURE_FEATURES).
-  gpuCapture: false
+  // Captura pela placa de vídeo (HANDOFF §68, §75): LIGADA por padrão desde a 0.3.23, onde o Windows suporta (o Marcelo
+  // foi de 6 pra ~52 fps de captura). Liga opções do Chromium que só valem a partir da próxima abertura do app (ver
+  // GPU_CAPTURE_FEATURES). `gpuCaptureChosen` = a pessoa mexeu na opção (aí vale o que ela escolheu).
+  gpuCapture: true,
+  gpuCaptureChosen: false
 };
 const SHARE_QUALITIES = ['leve', 'nitido', 'fluido', 'jogos'];
 
@@ -229,6 +231,9 @@ function saveSettings(settings){
 }
 
 let appSettings = loadSettings();
+// Até a 0.3.22 o padrão era desligado e o settings.json de quase todo mundo já guardava "gpuCapture": false sem a pessoa
+// ter escolhido nada (o arquivo é salvo inteiro a cada mudança). Só vale o valor salvo se a pessoa mexeu na opção.
+if(appSettings.gpuCaptureChosen !== true) appSettings.gpuCapture = true;
 
 // ---- Captura pela placa de vídeo (HANDOFF §66 e §68) ----
 // No Chromium 152, a captura de tela/janela (WGC) copia cada quadro da placa pra memória e ESPERA a placa terminar o que
@@ -1176,7 +1181,7 @@ app.whenReady().then(() => {
   // 2026-10-07 mostrou três "app iniciado" no mesmo instante e o atalho global falhando por conflito entre elas.
   if(!gotSingleInstanceLock) return;
   console.log(`[sinal] app iniciado — v${app.getVersion()}, Electron ${process.versions.electron}, Windows ${os.release()}`);
-  console.log(`[sinal] captura pela placa de vídeo: ${gpuCaptureActive ? 'ligada' : 'desligada'}${gpuCaptureSupported ? '' : ' (este Windows não suporta)'} · opções do Chromium: ${app.commandLine.getSwitchValue('enable-features') || 'nenhuma'}`);
+  console.log(`[sinal] captura pela placa de vídeo: ${gpuCaptureActive ? 'ligada' : 'desligada'}${appSettings.gpuCaptureChosen ? '' : ' (padrão)'}${gpuCaptureSupported ? '' : ' (este Windows não suporta)'} · opções do Chromium: ${app.commandLine.getSwitchValue('enable-features') || 'nenhuma'}`);
   app.getGPUInfo('basic').then((info) => {
     const gpus = (info && info.gpuDevice || []).map((g) => ({ vendorId: g.vendorId, deviceId: g.deviceId, active: g.active, driver: g.driverVersion }));
     console.log('[sinal] placa de vídeo:', gpus);
@@ -1360,7 +1365,9 @@ function sanitizeSettingsPatch(patch){
 }
 
 trustedIpc.handle('sinal:set-settings', (event, partial) => {
-  appSettings = { ...appSettings, ...sanitizeSettingsPatch(partial) };
+  const patch = sanitizeSettingsPatch(partial);
+  if('gpuCapture' in patch) patch.gpuCaptureChosen = true; // a partir daqui vale a escolha da pessoa
+  appSettings = { ...appSettings, ...patch };
   saveSettings(appSettings);
   const shortcutRegistered = registerShareShortcut();
   applyLoginItemSetting();
