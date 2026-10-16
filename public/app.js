@@ -225,7 +225,20 @@ function joinRoom(){
 // HANDOFF §5).
 // mode: 'join' | 'create' (salas por código) | 'server-join' | 'server-create'
 // (salas de um server do Discord). `extra` leva { guild, title } no server-create.
+// Uma entrada por vez (HANDOFF §71): cada chamada pede um token novo (identidade nova) e abre uma conexão nova. Antes,
+// clicar 2-3 vezes enquanto conectava (a lista do servidor demora 1-3 s pra responder) deixava 2-3 conexões vivas da
+// mesma pessoa: só a última ficava em `room`, as outras ficavam órfãs, apareciam como "Marcelo" duplicado pra todo
+// mundo e continuavam na sala até fechar o app, mesmo depois de sair (reproduzido em 2026-10-16). Cliques enquanto
+// conecta são ignorados; a nova tentativa vale quando a anterior termina (deu certo ou não).
+let connectInFlight = false;
 async function connectToRoom(code, name, mode, extra){
+  if(connectInFlight) return;
+  connectInFlight = true;
+  try{ return await connectToRoomOnce(code, name, mode, extra); }
+  finally{ connectInFlight = false; }
+}
+
+async function connectToRoomOnce(code, name, mode, extra){
   myName = name;
   roomCode = code || '';
   const hadSession = !!(discordUser && discordUser.session);
@@ -278,7 +291,7 @@ async function connectToRoom(code, name, mode, extra){
       if(why === 'sala-privada' && mode === 'server-join'){
         // Sala privada: oferece "pedir para entrar" (aprovação) ou a caixa de senha e, se der certo, tenta de novo (agora passa).
         setEntryStatus('');
-        if(await requestToJoinRoom(code, data403.access)) return connectToRoom(code, name, mode, extra);
+        if(await requestToJoinRoom(code, data403.access)) return connectToRoomOnce(code, name, mode, extra);
         return;
       }
       setEntryStatus(why === 'sala-privada' ? 'Essa sala é privada.' : 'Você não faz parte desse servidor do Discord.');
@@ -305,6 +318,8 @@ async function connectToRoom(code, name, mode, extra){
   // segunda credencial.
   myAccessToken = token;
 
+  // Nunca duas conexões ao mesmo tempo: se sobrou uma sala aberta, ela sai antes da nova entrar.
+  if(room){ const old = room; room = null; try{ old.disconnect(); }catch(e){} }
   room = new LivekitClient.Room({ adaptiveStream: true, dynacast: true });
   wireRoomEvents(room);
 
@@ -784,8 +799,12 @@ const CAPTURE_MAX = { width: 1920, height: 1080, frameRate: 60 };
 const FLUIDO_CODEC = 'h264';
 
 // Codec principal de uma qualidade. Sem H.265 na placa: VP8 (e o Fluido nem existe, ver effectiveShareQuality).
+// Nítido também em H.264 desde 2026-10-16 (HANDOFF §73): o H.265 só tem decodificação pela placa e fica preto pra
+// sempre quando o processo de vídeo do Chromium reinicia (§72); o H.264 volta sozinho, todo mundo decodifica (sem
+// reserva em VP8) e, no app, a placa codifica (perfil High). Custa mais banda (5,5 x 4 Mbps). O Leve segue em H.265
+// (upload fraco, onde a economia faz falta) e a gente acompanha.
 function pickShareCodec(q, h265Supported){
-  if(q === 'jogos') return 'h264'; // todo navegador codifica H.264 (na placa ou no processador)
+  if(q === 'jogos' || q === 'nitido') return 'h264'; // todo navegador codifica H.264 (na placa ou no processador)
   if(!h265Supported) return 'vp8';
   return q === 'fluido' ? FLUIDO_CODEC : 'h265';
 }
@@ -1514,9 +1533,9 @@ async function toggleShare(){
   await applyCaptureQuality(videoTrack, quality);
   activeShareQuality = quality;
   gamesDegradation = null;
-  // Jogos no app: a oferta da publicação (e as próximas, enquanto durar a transmissão) põe o H.264 High na frente,
+  // Jogos/Fluido no app: a oferta da publicação (e as próximas, enquanto durar a transmissão) põe o H.264 High na frente,
   // que a placa codifica por hardware (setupHardwareEncode). Fixo até parar: trocar de perfil no meio reiniciaria o codificador.
-  shareWantsHighProfile = quality === 'jogos';
+  shareWantsHighProfile = H264_QUALITIES.includes(quality);
   const publishOpts = screenPublishOptions(quality);
   activeShareCodec = publishOpts.videoCodec;
   try{
@@ -2096,6 +2115,86 @@ function noteRecvSample(tileId, sample, meta){
   if(now - win.since >= SUMMARY_EVERY_MS) flushRecvSummary(tileId, 0);
 }
 
+// ---- Tela preta depois que o processo de vídeo do Chromium reinicia (HANDOFF §72) ----
+// Atualizar o driver da placa com o app aberto (ou o driver cair) derruba o processo da GPU do Chromium. Ele volta
+// sozinho, mas o decodificador de H.265 (só existe pela placa) não: o vídeo para em 0 fps e fica preto até reabrir o
+// app (relato de 2026-10-16; reproduzido derrubando a GPU com o app assistindo uma transmissão em H.265 — em H.264 ele
+// se recupera sozinho). Duas formas de perceber, as duas só no site: (1) um canvas WebGL invisível perde o contexto
+// quando a GPU reinicia; (2) quadros chegando sem nenhum ser decodificado por 2 ciclos seguidos (~8 s). Primeiro o
+// vídeo é desligado e religado (setSubscribed false/true), que resolve o H.264. No H.265 isso NÃO basta (medido: o
+// decodificador novo também não decodifica nada até a página recarregar), então, se continuar travado logo depois de
+// religar, a página recarrega sozinha, volta pra sala (?retomar=1) e reabre as mesmas transmissões (sessionStorage).
+// Quem está transmitindo não recarrega (derrubaria a transmissão dos outros): só recebe o aviso pra sair e entrar.
+const VIDEO_RESTART_MIN_GAP_MS = 15000;
+const VIDEO_RELOAD_WINDOW_MS = 120000; // travou de novo até 2 min depois de religar = religar não resolveu
+const REWATCH_KEY = 'sinal:rewatch';
+let videoReloadPending = false;
+const DECODER_STUCK_SAMPLES = 2;
+const decoderStuckCount = new Map();  // tileId -> ciclos seguidos recebendo sem decodificar
+const lastVideoRestart = new Map();   // tileId -> quando foi religado pela última vez
+function decoderLooksStuck(receivedDelta, decodedDelta){ return receivedDelta > 0 && decodedDelta === 0; }
+
+async function restartTileVideo(tileId, why){
+  if(!room) return;
+  const now = Date.now();
+  const last = lastVideoRestart.get(tileId) || 0;
+  if(now - last < VIDEO_RESTART_MIN_GAP_MS) return;
+  if(last && now - last < VIDEO_RELOAD_WINDOW_MS){ reloadToRecoverVideo(why); return; }
+  lastVideoRestart.set(tileId, now);
+  const { Track } = LivekitClient;
+  const isCamera = tileId.endsWith(':cam');
+  const identity = isCamera ? tileId.slice(0, -4) : tileId;
+  const participant = room.remoteParticipants.get(identity);
+  const pub = participant && participant.getTrackPublication(isCamera ? Track.Source.Camera : Track.Source.ScreenShare);
+  if(!pub || !pub.isSubscribed) return;
+  appLog(`[sinal] religando o vídeo #${streamTag(tileId)}: ${why}`);
+  const liveRoom = room;
+  pub.setSubscribed(false);
+  await new Promise((r) => setTimeout(r, 700));
+  if(room === liveRoom && room.remoteParticipants.get(identity) === participant) pub.setSubscribed(true);
+}
+
+function reloadToRecoverVideo(why){
+  if(videoReloadPending || !room || !roomCode) return;
+  if(activeShareQuality){
+    appLog(`[sinal] vídeo das transmissões travado (${why}); transmitindo, então não recarrega sozinho`);
+    setRoomStatus('A imagem das transmissões travou depois de um problema na placa de vídeo. Saia e entre de novo na sala para voltar.', true);
+    return;
+  }
+  videoReloadPending = true;
+  appLog(`[sinal] recarregando a página pra recuperar o vídeo (${why})`);
+  try{ sessionStorage.setItem(REWATCH_KEY, JSON.stringify({ at: Date.now(), tiles: [...tileVideoTracks.keys()] })); }catch(e){}
+  const params = new URLSearchParams({ sala: roomCode, retomar: '1' });
+  leaveRoom();
+  window.location.replace(window.location.pathname + '?' + params.toString());
+}
+
+// Volta de uma recarga pra recuperar o vídeo: reabre as transmissões que a pessoa assistia (válido por 1 min).
+const pendingRewatch = (() => {
+  try{
+    const raw = sessionStorage.getItem(REWATCH_KEY);
+    sessionStorage.removeItem(REWATCH_KEY);
+    const data = raw ? JSON.parse(raw) : null;
+    if(data && Date.now() - data.at < 60000 && Array.isArray(data.tiles)) return new Set(data.tiles.filter((t) => typeof t === 'string'));
+  }catch(e){}
+  return new Set();
+})();
+
+let gpuWatchCanvas = null; // guardado: sem referência, o canvas some e não avisa mais
+function watchGpuProcessReset(){
+  try{
+    const c = document.createElement('canvas');
+    c.width = 1; c.height = 1;
+    if(!c.getContext('webgl')) return;
+    c.addEventListener('webglcontextlost', (e) => {
+      e.preventDefault();
+      appLog('[sinal] o processo de vídeo do Chromium reiniciou (placa de vídeo ou driver)');
+      setTimeout(() => [...tileVideoTracks.keys()].forEach((id) => restartTileVideo(id, 'o processo de vídeo reiniciou')), 1500);
+    });
+    gpuWatchCanvas = c;
+  }catch(e){ /* sem WebGL: fica só a checagem pelo decodificador */ }
+}
+
 async function sampleTileDetailedStats(tileId, track){
   if(!track || typeof track.getRTCStatsReport !== 'function') return;
   let report;
@@ -2126,6 +2225,12 @@ async function sampleTileDetailedStats(tileId, track){
   };
   viewerDetailPrev.set(tileId, vcur);
   if(vprev && vcur.ts > vprev.ts){
+    const stuck = decoderLooksStuck(vcur.received - vprev.received, vcur.decoded - vprev.decoded) ? (decoderStuckCount.get(tileId) || 0) + 1 : 0;
+    decoderStuckCount.set(tileId, stuck);
+    if(stuck >= DECODER_STUCK_SAMPLES){
+      decoderStuckCount.set(tileId, 0);
+      restartTileVideo(tileId, 'chegam quadros mas nenhum é decodificado');
+    }
     noteRecvSample(tileId, {
       seconds: (vcur.ts - vprev.ts) / 1000, received: vcur.received - vprev.received, decoded: vcur.decoded - vprev.decoded,
       bytes: vcur.bytes - vprev.bytes, lost: vcur.lost - vprev.lost, packets: vcur.packets - vprev.packets,
@@ -2205,7 +2310,9 @@ async function capBackupCodec(track){
   }
 }
 
-// ---- Jogos: o que fazer quando o PC aperta (HANDOFF §70) ----
+// ---- Jogos e Fluido: o que fazer quando o PC aperta (HANDOFF §70) ----
+// Valem pros dois modos de 60 fps. O Fluido (1080p) voltou a segurar Full HD a 60 fps pela placa (pedido do dono depois
+// do teste de 2026-10-13: o Fluido "abaixava a resolução"); pelo processador, mesmo piso de 720p.
 // Codificando pela PLACA: nenhum corte automático ('maintain-framerate-and-resolution', o Chromium 152 aceita). O WebRTC
 // mede o tempo de cada quadro e, com a placa ocupada pelo jogo, achava o PC sobrecarregado e cortava os quadros em
 // degraus (Marcelo no Nítido: 29 -> 18 -> 12 -> 9 fps, 2026-10-13); quem segura a qualidade passa a ser só o bitrate.
@@ -2213,25 +2320,30 @@ async function capBackupCodec(track){
 // quadros e fica assim até o fim da transmissão (sem ficar trocando). Piso começa em 720p (= a resolução do modo, decisão
 // do dono: "se não prestar, descemos"); o Jean no Fluido segurava 540p a 50 fps, então 540 é o próximo degrau.
 const GAMES_FLOOR_SW = 720;
-let gamesDegradation = null; // regra aplicada nesta transmissão em Jogos (null = a da publicação, maintain-framerate)
-function gamesDegradationFor(current, hw, height){
+const MOTION_QUALITIES = ['jogos', 'fluido'];
+// Qualidades em H.264: pedem o perfil High na oferta e, pela placa, ficam sem corte automático. O Nítido (texto) pelo
+// processador continua segurando a resolução e cortando quadros, como sempre.
+const H264_QUALITIES = ['jogos', 'fluido', 'nitido'];
+let gamesDegradation = null; // regra aplicada nesta transmissão (null = a da publicação)
+function gamesDegradationFor(current, hw, height, motion = true){
   if(hw) return 'maintain-framerate-and-resolution';
-  if(current === 'maintain-resolution') return current;
+  if(!motion || current === 'maintain-resolution') return 'maintain-resolution';
   if(height > 0 && height < GAMES_FLOOR_SW) return 'maintain-resolution';
   return 'maintain-framerate';
 }
 async function adjustGamesDegradation(track, outbound){
-  if(activeShareQuality !== 'jogos' || !track || typeof track.setDegradationPreference !== 'function') return;
+  if(!H264_QUALITIES.includes(activeShareQuality) || !track || typeof track.setDegradationPreference !== 'function') return;
   if(!outbound.frameHeight) return; // pausado (ninguém assistindo): sem dado do codificador
-  const current = gamesDegradation || 'maintain-framerate';
-  const want = gamesDegradationFor(current, outbound.powerEfficientEncoder === true, outbound.frameHeight);
+  const motion = MOTION_QUALITIES.includes(activeShareQuality);
+  const current = gamesDegradation || (motion ? 'maintain-framerate' : 'maintain-resolution');
+  const want = gamesDegradationFor(current, outbound.powerEfficientEncoder === true, outbound.frameHeight, motion);
   if(want === current){ gamesDegradation = current; return; }
   gamesDegradation = want;
   try{
     await track.setDegradationPreference(want);
-    appLog(`[sinal] Jogos: ${want === 'maintain-framerate-and-resolution' ? 'codificando pela placa, sem corte automático'
+    appLog(`[sinal] ${SHARE_QUALITY_PRESETS[activeShareQuality].name}: ${want === 'maintain-framerate-and-resolution' ? 'codificando pela placa, sem corte automático'
       : want === 'maintain-resolution' ? `resolução chegou ao piso (${outbound.frameHeight}p), agora corta quadros` : 'segura os quadros e baixa a resolução'}`);
-  }catch(e){ console.warn('[sinal] Jogos: não consegui trocar a regra de adaptação:', e); }
+  }catch(e){ console.warn('[sinal] não consegui trocar a regra de adaptação:', e); }
 }
 
 async function sampleOwnScreenStats(){
@@ -2558,6 +2670,7 @@ function handleWatchMessage(msg, participant){
 function addPendingTile(tileId, participant, isCamera){
   if(tiles.has(tileId)) return; // já existe (pendente ou ao vivo) — não duplica
   if(room && participant === room.localParticipant) return; // nunca pendente pra si mesmo
+  if(pendingRewatch.delete(tileId)) setTimeout(() => watchTile(tileId, isCamera), 300); // volta da recarga do vídeo (§72)
   const displayName = participant.name || participant.identity;
   const label = isCamera ? displayName + ' (câmera)' : displayName;
 
@@ -5536,6 +5649,7 @@ window.addEventListener('DOMContentLoaded', () => {
   setupSettingsPanel();
   setupReportDialog();
   setupGpuHint();
+  watchGpuProcessReset();
   document.getElementById('reportBugBtn').addEventListener('click', openReportDialog);
   setupServersUI();
   setupAppLogin();
@@ -5553,7 +5667,7 @@ window.addEventListener('beforeunload', () => {
 });
 
 // PWA: versão, registro do service worker, detecção de atualização e botão de instalação
-const APP_VERSION = '0.8.79'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
+const APP_VERSION = '0.8.80'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
 // Dentro do Electron, mostra a versão do INSTALADOR (electron/package.json),
 // não a do site — ver preload.js. Fora dele (navegador normal), continua a
 // versão do deploy de sempre.
