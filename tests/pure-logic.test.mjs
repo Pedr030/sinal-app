@@ -1503,7 +1503,7 @@ test('tela preta: percebe a GPU reiniciando ou quadros sem decodificar, religa e
   assert.match(appJs, /const params = new URLSearchParams\(\{ sala: roomCode, retomar: '1' \}\);\s*leaveRoom\(\);/);
   // volta assistindo o que assistia
   assert.match(appJs, /if\(pendingRewatch\.delete\(tileId\)\) setTimeout\(\(\) => watchTile\(tileId, isCamera\), 300\);/);
-  assert.match(appJs, /setupGpuHint\(\);\s*watchGpuProcessReset\(\);/);
+  assert.match(appJs, /setupShareHint\(\);\s*watchGpuProcessReset\(\);/);
 });
 
 // ---------- perda de pacotes no upload de quem transmite (HANDOFF §75) ----------
@@ -1538,4 +1538,18 @@ test('perda no envio no painel do tile', () => {
   const recv = { recvFps: 50, decodedFps: 50, kbps: 7000, lossPct: 0, freezeSeconds: 0, width: 1280, height: 720 };
   assert.equal(tileStatsLines(recv, { target: 60, fps: 50, cap: 51, hw: true, upLoss: 3.4 })[1], 'Quem transmite (média de 12 s): captura 51 · envio 50 de 60 fps · perda no envio 3,4%');
   assert.equal(tileStatsLines(recv, { target: 60, fps: 50, cap: 51, hw: true, upLoss: null })[1], 'Quem transmite (média de 12 s): captura 51 · envio 50 de 60 fps');
+});
+
+test('seletor de tela do app: as 4 qualidades numa linha (o Jogos quebrava em 2 linhas e a grade descia por baixo do Cancelar)', () => {
+  const picker = readFileSync(join(ROOT, 'electron/src/picker.html'), 'utf8');
+  assert.match(picker, /#quality\{ display:grid; grid-template-columns:repeat\(4, 1fr\);/);
+  assert.match(picker, /#grid\{\s*flex:1; min-height:0; overflow:hidden;/);
+  assert.match(picker, /const \[spec, use\] = q\.desc\.split\(' — '\);/);
+});
+
+test('texto embaixo da barra da sala: no app explica o seletor e o som isolado; no navegador fica o texto da "Guia"', () => {
+  assert.match(indexHtml, /<div class="audio-hint" id="shareHint">\s*Ao clicar, o navegador pergunta o que compartilhar\./);
+  assert.match(appJs, /function setupShareHint\(\)\{\s*if\(!isDesktopApp\(\)\) return;/);
+  assert.match(appJs, /el\.replaceChildren\('Ao clicar, escolha o que compartilhar e a qualidade\. Se for transmitir jogo, use a qualidade ', b,\s*'\. Numa janela, só o som dela vai junto; na tela inteira, vai o som do PC, menos o Discord\.'\);/);
+  assert.match(appJs, /setupGpuHint\(\);\s*setupShareHint\(\);/);
 });
