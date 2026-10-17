@@ -2,7 +2,7 @@
 
 O app é o **mesmo site** (o de produção, ou `SINAL_DEV_URL` em desenvolvimento) dentro de uma janela do Electron, com recursos nativos por cima. Mudanças no site chegam ao app só de recarregar; mudanças em `electron/` precisam de instalador novo. Histórico: [historico.md](historico.md) §15–§29, §34, §37, §45, §52, §58, §66–§75.
 
-Versão atual: **0.3.23** · Electron 44.5.1 · Chromium 152.0.7977.130.
+Versão atual: **0.3.24** · Electron 44.5.1 · Chromium 152.0.7977.130.
 
 ## Peças
 
