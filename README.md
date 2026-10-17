@@ -44,16 +44,19 @@ O Sinal nasceu para cobrir só essa parte. Ele roda **em paralelo** com a call d
 ### Salas e transmissão
 
 - **Entrada por código ou link**: salas de 6 caracteres, sem cadastro. Quem tem o código entra.
-- **Várias transmissões ao mesmo tempo**, com tela em destaque, fileira de miniaturas e até 2 telas fixadas lado a lado. Também há câmera.
+- **Várias transmissões ao mesmo tempo**, com até 4 em destaque e as outras numa fileira de miniaturas que dá para recolher. Também há câmera.
+- **Assistir é opcional**: cada transmissão aparece como um card e só começa a chegar quando você clica. Dá para ocultar as que não interessam, ajustar o volume de cada pessoa e silenciar tudo.
 - **Qualidade ajustável por transmissão**:
 
   | Preset | Resolução | Quando usar |
   |---|---|---|
   | Leve | 720p · 30 fps | upload fraco |
   | Nítido | 1080p · 30 fps | texto e vídeo |
-  | Fluido | 1080p · 60 fps | jogos |
+  | Fluido | 1080p · 60 fps | vídeos e sites |
+  | Jogos | 720p · 60 fps | jogos |
 
-- **Codecs escolhidos conforme o aparelho**: H.265 por placa de vídeo quando existe (Leve e Nítido), H.264 por placa no Fluido, com VP8 como reserva automática para quem assiste sem H.265.
+- **Codecs escolhidos conforme o aparelho**: H.264 no Nítido, no Fluido e no Jogos (no app, codificado pela placa de vídeo); H.265 por placa no Leve, com VP8 como reserva automática para quem assiste sem H.265.
+- **Estatísticas por transmissão**: fps, resolução, bitrate, perda de pacotes, os números de quem transmite e o gargalo provável (captura, codificador, upload de quem transmite ou a sua internet).
 - **Chat de texto** sem histórico: a conversa some ao sair da sala, por design.
 - **Indicador de qualidade da conexão** em tempo real (nível do LiveKit, perda de pacotes e jitter).
 - **Painel de participantes** com avatar, nome e quem está transmitindo.
@@ -79,7 +82,9 @@ O Sinal nasceu para cobrir só essa parte. Ele roda **em paralelo** com a call d
 - **Links `sinal://`** para abrir a sala direto no app.
 - **Retomar transmissão** depois de uma queda do app, sempre com confirmação.
 - **Picture-in-Picture** que devolve o foco ao app ao expandir.
-- **Codificação pela placa de vídeo (experimental)**: opção que usa o chip de vídeo da placa para comprimir a transmissão e poupar o processador durante o jogo. Fica desligada por padrão e cinza, com aviso, quando a placa não suporta.
+- **Captura pela placa de vídeo** (Windows 11 24H2 ou mais novo, ligada por padrão): a tela é capturada e codificada pela placa, sem disputar com o jogo; em jogos pesados, a transmissão chega muito mais fluida.
+- **Qualidade Jogos** pensada para o app: 720p a até 60 fps, codificada pela placa, sem cortes automáticos de quadros.
+- **Recuperação automática**: se o app cair ou a imagem de uma transmissão ficar preta depois de um problema na placa de vídeo, ele volta sozinho para a sala.
 - **Enviar relatório** de problemas, com diagnóstico de captura e codificação, para o canal privado do dono.
 
 ## Arquitetura
@@ -156,9 +161,10 @@ sinal-app/
 │   ├── src/                  # processo principal, preload e janelas
 │   └── native/               # addon de áudio isolado por processo (Rust)
 ├── tools/vm-dashboard/      # painel local de consumo da VM (não vai para a Vercel)
+├── docs/                    # documentação por tema e histórico completo
 ├── .github/workflows/       # CI
 ├── vercel.json              # cabeçalhos de segurança e diretório publicado
-├── HANDOFF.md               # histórico de decisões e guia de manutenção
+├── HANDOFF.md               # ponto de partida para manutenção (estado atual e regras)
 └── SECURITY.md
 ```
 
@@ -236,7 +242,8 @@ Roda a suíte completa com o test runner nativo do Node, cobrindo emissão de to
 
 ## Documentação adicional
 
-- [HANDOFF.md](HANDOFF.md): decisões de projeto, problemas já resolvidos, testes de carga, o que foi tentado e descartado, e o passo a passo de publicação. É o ponto de partida para quem for dar manutenção.
+- [HANDOFF.md](HANDOFF.md): ponto de partida para quem for dar manutenção, com o estado atual, as regras de trabalho e o que está em acompanhamento.
+- [docs/](docs/): [arquitetura](docs/arquitetura.md), [vídeo e diagnóstico](docs/video.md), [app desktop](docs/app-desktop.md), [servidor e capacidade](docs/servidor.md), [testes](docs/testes.md), [publicação](docs/publicacao.md) e o [histórico completo](docs/historico.md) de decisões, incluindo o que foi tentado e descartado.
 - [SECURITY.md](SECURITY.md): como reportar vulnerabilidades.
 - [Novidades](public/changelog.json): histórico de mudanças voltadas aos usuários.
 
