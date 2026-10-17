@@ -1,5 +1,16 @@
 [
   {
+    "id": "2026-10-16-seletor",
+    "date": "2026-10-16",
+    "title": "Ajustes no app",
+    "site": "0.8.82",
+    "app": "0.3.24",
+    "items": [
+      "O seletor de tela voltou a mostrar tudo direitinho, com as quatro qualidades numa linha.",
+      "No app, o texto embaixo da sala agora explica a qualidade e como o som vai junto."
+    ]
+  },
+  {
     "id": "2026-10-16-salas-numeradas",
     "date": "2026-10-16",
     "title": "Salas numeradas e captura pela placa ligada",

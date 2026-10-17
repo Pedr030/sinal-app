@@ -2196,6 +2196,18 @@ const pendingRewatch = (() => {
   return new Set();
 })();
 
+// Texto embaixo da barra da sala: o do index.html é o do navegador ("Guia", áudio de jogo vaza o sistema). No app o
+// seletor é próprio e o som vai isolado, então o texto é outro (escolhido pelo dono, 2026-10-16).
+function setupShareHint(){
+  if(!isDesktopApp()) return;
+  const el = document.getElementById('shareHint');
+  if(!el) return;
+  const b = document.createElement('b');
+  b.textContent = 'Jogos';
+  el.replaceChildren('Ao clicar, escolha o que compartilhar e a qualidade. Se for transmitir jogo, use a qualidade ', b,
+    '. Numa janela, só o som dela vai junto; na tela inteira, vai o som do PC, menos o Discord.');
+}
+
 let gpuWatchCanvas = null; // guardado: sem referência, o canvas some e não avisa mais
 function watchGpuProcessReset(){
   try{
@@ -5674,6 +5686,7 @@ window.addEventListener('DOMContentLoaded', () => {
   setupSettingsPanel();
   setupReportDialog();
   setupGpuHint();
+  setupShareHint();
   watchGpuProcessReset();
   document.getElementById('reportBugBtn').addEventListener('click', openReportDialog);
   setupServersUI();
@@ -5692,7 +5705,7 @@ window.addEventListener('beforeunload', () => {
 });
 
 // PWA: versão, registro do service worker, detecção de atualização e botão de instalação
-const APP_VERSION = '0.8.81'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
+const APP_VERSION = '0.8.82'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
 // Dentro do Electron, mostra a versão do INSTALADOR (electron/package.json),
 // não a do site — ver preload.js. Fora dele (navegador normal), continua a
 // versão do deploy de sempre.
