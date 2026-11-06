@@ -1,5 +1,27 @@
 [
   {
+    "id": "2026-11-06-zoom-no-tile",
+    "date": "2026-11-06",
+    "title": "Zoom nas transmissões",
+    "site": "0.8.86",
+    "items": [
+      "Segure Ctrl e use a roda do mouse para aproximar uma transmissão, e arraste para mover a imagem.",
+      "Em tela cheia, o volume e os outros controles agora ficam à mão e somem com o mouse parado."
+    ]
+  },
+  {
+    "id": "2026-11-06-mensagens-mais-claras",
+    "date": "2026-11-06",
+    "title": "Mensagens mais claras",
+    "site": "0.8.86",
+    "items": [
+      "Agora dá para colar o link do convite no campo de código e entrar com Enter.",
+      "Cancelar a escolha da tela não mostra mais erro.",
+      "O Sinal avisa quando você foi removido da sala ou quando a sala já fechou.",
+      "Se a rede falhar, o Sinal agora abre a página guardada em vez de uma tela de erro."
+    ]
+  },
+  {
     "id": "2026-11-06-reiniciar-apos-queda",
     "date": "2026-11-06",
     "title": "Mais estabilidade no app",

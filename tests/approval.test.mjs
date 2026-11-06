@@ -113,11 +113,18 @@ let ip = 0;
 const call = (body) => postToken(new Request('http://localhost/api/get-token', {
   method: 'POST', headers: { 'content-type': 'application/json', 'x-forwarded-for': '10.7.0.' + (++ip) }, body: JSON.stringify(body)
 }));
-const session = ({ id = VISITANTE, tier = 'x', admin = false } = {}) => buildSession({
+// O admin do Sinal vale pela lista de AGORA (ADMIN_DISCORD_IDS), não pelo que ficou gravado na sessão (HANDOFF §82):
+// os testes montam a lista junto com cada sessão que criam.
+const adminNow = new Set();
+function markAdmin(id, admin){
+  if(admin) adminNow.add(id); else adminNow.delete(id);
+  process.env.ADMIN_DISCORD_IDS = [...adminNow].join(',');
+}
+const session = ({ id = VISITANTE, tier = 'x', admin = false } = {}) => (markAdmin(id, admin), buildSession({
   profile: { id, username: 'fulano' + id.slice(-2), global_name: 'Fulano ' + id.slice(-2), avatar: 'h' + id.slice(-2) },
   guilds: [{ id: G, name: 'Galera', icon: '', owner: tier === 'o', permissions: tier === 'a' ? '8' : tier === 'm' ? '32' : '0' }],
   adminIds: admin ? [id] : [], secret: TEST_SECRET
-});
+}));
 const roomApr = (meta = {}) => ({ name: ROOM, numParticipants: 1, metadata: JSON.stringify(metaApr(meta)) });
 const join = (s, extra = {}) => call({ mode: 'server-join', room: ROOM, session: s, ...extra });
 

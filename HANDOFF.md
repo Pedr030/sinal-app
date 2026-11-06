@@ -4,7 +4,7 @@ Ponto de partida para quem for mexer no projeto (pessoa ou outra instância de I
 
 > Comentários no código que citam **"HANDOFF §NN"** apontam para a seção de mesmo número em `docs/historico.md`.
 
-Atualizado em 2026-11-06 · site **0.8.85** · app desktop **0.3.25**.
+Atualizado em 2026-11-06 · site **0.8.86** · app desktop **0.3.25** no ar (0.3.26 pronto no código, sem instalador).
 
 ## O que é
 
@@ -25,7 +25,7 @@ Compartilhamento de tela ao vivo para um grupo de amigos, usado **ao lado** da c
 | [docs/servidor.md](docs/servidor.md) | VM do LiveKit, painel de consumo, **capacidade medida** (quantas transmissões cabem) |
 | [docs/testes.md](docs/testes.md) | Testes automáticos, testes no app real (CDP), testes pelo navegador interno e as regras de quando pedir permissão |
 | [docs/publicacao.md](docs/publicacao.md) | Passo a passo de publicar site e app (versões, Novidades, PR, instalador, release) |
-| [docs/historico.md](docs/historico.md) | Histórico completo §1–§77 (o "porquê" de tudo, inclusive o que foi descartado) |
+| [docs/historico.md](docs/historico.md) | Histórico completo §1–§83 (o "porquê" de tudo, inclusive o que foi descartado) |
 | [README.md](README.md) | Apresentação pública do projeto |
 
 ## Estado atual em uma página
@@ -43,7 +43,7 @@ Compartilhamento de tela ao vivo para um grupo de amigos, usado **ao lado** da c
 - **Captura pela placa de vídeo** vem ligada por padrão no app (Windows 11 24H2 ou mais novo); quem desligar nas Configurações continua desligado.
 - O site registra um **resumo por minuto** do que envia e do que recebe, e quem transmite manda seus números a quem assiste (`send-stats`): dá para diagnosticar o PC dos amigos sem pedir nada a eles.
 
-**Funcionalidades de sala:** código de 6 letras ou salas por servidor do Discord (até 10 por servidor, 25 pessoas por sala; sem nome viram "Sala 1, 2…"), acesso aberto/com aprovação/com senha, gerenciar sala, moderação por hierarquia, chat sem histórico, até 4 destaques + fileira de miniaturas, volume por pessoa, transmissões ocultas, estatísticas no tile, janela flutuante, "quem está assistindo".
+**Funcionalidades de sala:** código de 6 letras ou salas por servidor do Discord (até 10 por servidor, 25 pessoas por sala; sem nome viram "Sala 1, 2…"), acesso aberto/com aprovação/com senha, gerenciar sala, moderação por hierarquia, chat sem histórico, até 4 destaques + fileira de miniaturas, zoom e arraste no tile, volume por pessoa, transmissões ocultas, estatísticas no tile, janela flutuante, "quem está assistindo".
 
 ## Como trabalhar com o dono (regras permanentes)
 
@@ -61,12 +61,12 @@ Compartilhamento de tela ao vivo para um grupo de amigos, usado **ao lado** da c
 ## O que acompanhar agora
 
 1. **Leve ainda em H.265**: se a tela preta aparecer no Leve e a recuperação automática (recarregar e voltar para a sala) incomodar, passar o Leve para H.264 também (`pickShareCodec`).
-2. **Jogos a 8 Mbps**: o painel agora diz se a perda é do upload de quem transmite. Se for frequente, baixar o Jogos para 6 Mbps (`SHARE_QUALITY_PRESETS.jogos.h264`). Também ajuda o servidor (ver [docs/servidor.md](docs/servidor.md)).
+2. **Jogos a 8 Mbps**: o painel agora diz se a perda vem de antes do servidor (o upload de quem transmite ou o buffer da VM; os contadores da VM separam os dois). Se for do upload e for frequente, baixar o Jogos para 6 Mbps (`SHARE_QUALITY_PRESETS.jogos.h264`). Também ajuda o servidor (ver [docs/servidor.md](docs/servidor.md)).
 3. **Piso de 720p no Jogos pelo processador** (decisão do dono: "se não prestar, descemos"): se alguém pelo processador ficar sem fluidez, descer `GAMES_FLOOR_SW` para 540.
 4. **Captura em luta pesada (Marcelo/Tchelou, GTX 1650)**: a captura ainda cai quando a placa satura com o jogo. Não há alavanca no app; a saída é limitar o fps do jogo no PC dele.
 5. **Tela preta**: a recuperação foi provada derrubando a GPU pelo CDP, não com atualização de driver de verdade. Se acontecer de novo, o registro de quem assiste deve mostrar "o processo de vídeo do Chromium reiniciou" → "religando o vídeo" → "recarregando a página pra recuperar o vídeo".
 
-**Publicado na 0.8.83:** recuperação da página aberta sem CSS (§78) e volume e mudo sem efeito (§79). **Publicado na 0.8.84 / app 0.3.25:** oferta de reiniciar o app depois da queda do vídeo do Chromium (§80). **Publicado na 0.8.85 (§81):** sala de servidor fechada se o LiveKit não responde (SEC1), diagnóstico extra do envio (E1); coletor da VM com contadores de descarte (S1) já instalado. **Em teste:** Electron 45.2.3 na branch local `electron-45`, com commit (precisa de teste com jogo real antes de publicar; ver §78).
+**Publicado na 0.8.83:** recuperação da página aberta sem CSS (§78) e volume e mudo sem efeito (§79). **Publicado na 0.8.84 / app 0.3.25:** oferta de reiniciar o app depois da queda do vídeo do Chromium (§80). **Publicado na 0.8.85 (§81):** sala de servidor fechada se o LiveKit não responde (SEC1), diagnóstico extra do envio (E1); coletor da VM com contadores de descarte (S1) já instalado. **Publicado na 0.8.86 (§82):** fase 1 do roadmap (segurança, service worker, gargalo, recepção e mensagens). **App 0.3.26:** Electron 44.9.1 (decisão do dono) já no código, falta a passada com jogo real antes do instalador; a entrada do app nas Novidades entra junto com ele. **Também na 0.8.86 (§83):** zoom no tile, com a tela cheia passando a ser do tile; só o Esc para sair ainda não foi provado. **Em teste:** Electron 45.2.3 na branch local `electron-45`, com commit (precisa de teste com jogo real antes de publicar; ver §78).
 
 ## Decidido e não reabrir sem o dono pedir
 

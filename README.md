@@ -56,7 +56,8 @@ O Sinal nasceu para cobrir só essa parte. Ele roda **em paralelo** com a call d
   | Jogos | 720p · 60 fps | jogos |
 
 - **Codecs escolhidos conforme o aparelho**: H.264 no Nítido, no Fluido e no Jogos (no app, codificado pela placa de vídeo); H.265 por placa no Leve, com VP8 como reserva automática para quem assiste sem H.265.
-- **Estatísticas por transmissão**: fps, resolução, bitrate, perda de pacotes, os números de quem transmite e o gargalo provável (captura, codificador, upload de quem transmite ou a sua internet).
+- **Zoom no tile**: Ctrl + roda do mouse para aproximar uma transmissão e arrastar para mover, só na sua tela.
+- **Estatísticas por transmissão**: fps, resolução, bitrate, perda de pacotes, os números de quem transmite e o gargalo provável (captura, codificador, perda antes do servidor ou depois dele).
 - **Chat de texto** sem histórico: a conversa some ao sair da sala, por design.
 - **Indicador de qualidade da conexão** em tempo real (nível do LiveKit, perda de pacotes e jitter).
 - **Painel de participantes** com avatar, nome e quem está transmitindo.

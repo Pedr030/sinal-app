@@ -98,7 +98,7 @@ test('dono de OUTRO servidor, ou token de outra sala, não moderam aqui', async 
 
 test('staff de servidor não modera sala por código (só o admin do Sinal)', async () => {
   const codeRoom = 'ABC123';
-  fake.participants[codeRoom] = [{ identity: 'comum-1', metadata: '{}', tracks: [] }];
+  fake.participants[codeRoom] = [{ identity: 'comum-1', metadata: '{}', tracks: [] }, { identity: 'sinal-1', metadata: JSON.stringify(WHO.sinal.meta), tracks: [] }]; // o admin também está na sala
   const res = await POST(new Request('http://localhost/api/moderate', {
     method: 'POST',
     headers: { 'content-type': 'application/json', authorization: 'Bearer ' + tokenOf('dono', { room: codeRoom }) },
@@ -145,4 +145,14 @@ test('limite de pedidos de moderação por IP', async () => {
   for(let i = 0; i < 60; i++) assert.notEqual((await send('198.51.100.7')).status, 429);
   assert.equal((await send('198.51.100.7')).status, 429);
   assert.notEqual((await send('198.51.100.8')).status, 429);
+});
+
+test('quem pede a moderação precisa ainda estar na sala (token de 6 h não vale depois de sair ou ser expulso)', async () => {
+  const saiu = { identity: 'dono-que-saiu', meta: { userId: '2', tier: 'o', guild: G } };
+  const res = await act(tokenOf(saiu), { action: 'kick', targetIdentity: 'comum-1' });
+  assert.equal(res.status, 403);
+  assert.equal((await res.json()).error, 'fora-da-sala');
+  assert.equal((fake.actions || []).length, 0);
+  // quem está na sala continua moderando normalmente
+  assert.equal((await kick('dono', 'comum')).status, 200);
 });
