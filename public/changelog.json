@@ -1,5 +1,14 @@
 [
   {
+    "id": "2026-11-06-app-0326",
+    "date": "2026-11-06",
+    "title": "Atualização do app",
+    "app": "0.3.26",
+    "items": [
+      "Atualização de segurança do app."
+    ]
+  },
+  {
     "id": "2026-11-06-zoom-no-tile",
     "date": "2026-11-06",
     "title": "Zoom nas transmissões",
