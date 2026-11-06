@@ -1099,3 +1099,6 @@ body.in-room{ padding-top:12px; padding-bottom:20px; }
 body.in-room header.top{ margin-bottom:12px; padding-bottom:10px; }
 body.in-room .brand small{ display:none; }
 body.in-room .room-bar{ margin-bottom:12px; }
+
+/* Última regra do arquivo de propósito: o app confere se ela chegou (ensureStylesLoaded em app.js). */
+:root{ --css-carregado:1; }

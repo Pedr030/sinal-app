@@ -4,7 +4,7 @@ Ponto de partida para quem for mexer no projeto (pessoa ou outra instância de I
 
 > Comentários no código que citam **"HANDOFF §NN"** apontam para a seção de mesmo número em `docs/historico.md`.
 
-Atualizado em 2026-10-16 · site **0.8.82** · app desktop **0.3.24**.
+Atualizado em 2026-11-06 · site **0.8.83** · app desktop **0.3.24**.
 
 ## O que é
 
@@ -66,7 +66,7 @@ Compartilhamento de tela ao vivo para um grupo de amigos, usado **ao lado** da c
 4. **Captura em luta pesada (Marcelo/Tchelou, GTX 1650)**: a captura ainda cai quando a placa satura com o jogo. Não há alavanca no app; a saída é limitar o fps do jogo no PC dele.
 5. **Tela preta**: a recuperação foi provada derrubando a GPU pelo CDP, não com atualização de driver de verdade. Se acontecer de novo, o registro de quem assiste deve mostrar "o processo de vídeo do Chromium reiniciou" → "religando o vídeo" → "recarregando a página pra recuperar o vídeo".
 
-Nada pendente de publicação em 2026-10-16 (a última leva, site 0.8.82 e app 0.3.24, trouxe o seletor de tela com as 4 qualidades numa linha e o texto da sala próprio do app — §77 do histórico).
+**Publicado na 0.8.83:** recuperação da página aberta sem CSS (§78) e volume e mudo sem efeito (§79). **Em teste:** Electron 45.2.3 na branch local `electron-45`, com commit (precisa de teste com jogo real antes de publicar; ver §78).
 
 ## Decidido e não reabrir sem o dono pedir
 
