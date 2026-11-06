@@ -1472,6 +1472,36 @@ function renderHardwareSection(settings){
     : hardwareEncodeChecked ? 'Sua placa de vídeo não suporta este método de codificação.' : 'Verificando a sua placa de vídeo…';
 }
 
+// Depois que o processo de vídeo do Chromium cai, o codificador da placa pode não voltar: a transmissão sai preta
+// (OpenH264 por software, ~1 kbps) até o app reabrir (relato de 2026-11-05, HANDOFF §80). Quem assiste se recupera
+// sozinho (§72), quem transmite não, então antes de transmitir de novo oferece reiniciar o app e voltar para a sala.
+const GPU_RESTART_ASKED_KEY = 'sinal:gpuRestartAsked';
+function shouldOfferGpuRestart(crashes, alreadyAskedAt, canAsk){
+  return Number.isFinite(crashes) && crashes > 0 && crashes > (Number(alreadyAskedAt) || 0) && !!canAsk;
+}
+async function offerRestartAfterGpuCrash(){
+  const api = window.sinalElectron;
+  if(!api || typeof api.getGpuState !== 'function' || typeof api.relaunchApp !== 'function') return false;
+  let crashes = 0;
+  try{ const state = await api.getGpuState(); crashes = state && state.crashes; }catch(e){ return false; }
+  let askedAt = 0;
+  try{ askedAt = Number(sessionStorage.getItem(GPU_RESTART_ASKED_KEY)) || 0; }catch(e){}
+  // Pelo atalho global (janela escondida ou atrás do jogo) a pergunta ficaria invisível e a transmissão nunca abriria.
+  const canAsk = document.visibilityState === 'visible' && document.hasFocus();
+  if(!shouldOfferGpuRestart(crashes, askedAt, canAsk)) return false;
+  try{ sessionStorage.setItem(GPU_RESTART_ASKED_KEY, String(crashes)); }catch(e){}
+  appLog(`[sinal] o vídeo do app já caiu ${crashes}x nesta abertura; oferecendo reiniciar antes de transmitir`);
+  const ok = await askConfirm({
+    title: 'Reiniciar o Sinal?',
+    message: 'O vídeo do app reiniciou depois de um problema na placa de vídeo, e a transmissão pode sair preta ou travada. Reiniciar o Sinal resolve, e você volta para a sala em seguida.',
+    okText: 'Reiniciar agora', cancelText: 'Transmitir assim mesmo'
+  });
+  if(!ok){ appLog('[sinal] seguiu sem reiniciar o app'); return false; }
+  appLog('[sinal] reiniciando o app pra recuperar o vídeo depois da queda da placa');
+  api.relaunchApp(roomCode);
+  return true;
+}
+
 async function toggleShare(){
   if(!room) return;
   const { Track } = LivekitClient;
@@ -1499,6 +1529,7 @@ async function toggleShare(){
     resetShareButton();
     return;
   }
+  if(await offerRestartAfterGpuCrash()) return;
   // Captura e publicação separadas (antes era setScreenShareEnabled, que faz
   // as duas juntas): no app desktop a qualidade é escolhida no seletor de
   // tela, que só abre DEPOIS do pedido de captura — então captura no teto

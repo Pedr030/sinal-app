@@ -78,7 +78,10 @@ contextBridge.exposeInMainWorld('sinalElectron', {
   // SETTINGS_PATH sobre o porquê).
   getSettings: () => ipcRenderer.invoke('sinal:get-settings'),
   setSettings: (partial) => ipcRenderer.invoke('sinal:set-settings', partial),
-  relaunchApp: () => ipcRenderer.send('sinal:relaunch'),
+  // roomCode (opcional, v0.3.25+): o app reabre e volta para essa sala.
+  relaunchApp: (roomCode) => ipcRenderer.send('sinal:relaunch', typeof roomCode === 'string' ? roomCode : undefined),
+  // Quantas vezes o processo de vídeo do Chromium caiu desde que o app abriu (v0.3.25+).
+  getGpuState: () => ipcRenderer.invoke('sinal:get-gpu-state'),
 
   // Chamado logo antes de toggleShare() quando o atalho disparou começando
   // um compartilhamento com "tela inteira direto" ligado — main.js pula o
