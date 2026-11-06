@@ -1166,7 +1166,7 @@ test('resumo do envio: tempo pausado (ninguém assistindo) não entra na média;
 test('números de quem transmite: só números e o codificador; quem assiste aceita só da própria tela de quem mandou', () => {
   const sum = diag.summarizeSendSamples([sendSample({ frames: 100, captured: 100, reason: 'cpu' }), sendSample({ frames: 120, captured: 124, reason: 'cpu' })]);
   const msg = diag.sendStatsMessage(sum, { tile: 'd123-abc123', quality: 'Fluido', codec: 'H.264', targetFps: 60, hw: false, encoderName: 'OpenH264' });
-  assert.deepEqual(Object.keys(msg).sort(), ['cap', 'capMin', 'codec', 'enc', 'fps', 'fpsMin', 'hw', 'kbps', 'lim', 'q', 'target', 'tile', 'type', 'upLoss', 'v'].sort());
+  assert.deepEqual(Object.keys(msg).sort(), ['avail', 'cap', 'capMin', 'codec', 'delay', 'enc', 'fps', 'fpsMin', 'hw', 'kbps', 'lim', 'nack', 'q', 'qp', 'retx', 'target', 'tgt', 'tile', 'type', 'upLoss', 'v'].sort());
   assert.equal(msg.lim, 'cpu');
   assert.equal(msg.upLoss, null); // amostras sem o relatório do servidor: sem número de perda no envio
   const parsed = diag.parseSendStats(JSON.parse(JSON.stringify(msg)), 'd123-abc123');
@@ -1597,4 +1597,49 @@ test('depois da queda do vídeo do Chromium, oferece reiniciar o app antes de tr
   assert.match(main, /arg !== HIDDEN_LAUNCH_ARG/);
   const preload = readFileSync(join(ROOT, 'electron/src/preload.js'), 'utf8');
   assert.match(preload, /getGpuState: \(\) => ipcRenderer\.invoke\('sinal:get-gpu-state'\)/);
+});
+
+test('diagnóstico extra de quem transmite: QP, alvo, banda estimada, atraso e retransmissões entram no resumo e vão a quem assiste', () => {
+  const extra = new Function(
+    "const SEND_LIMIT_REASONS = ['none', 'cpu', 'bandwidth', 'other'];" +
+    "function ownerOfTile(t){ return t.endsWith(':cam') ? t.slice(0, -4) : t; }" +
+    ['sumBy', 'sendExtraSample', 'summarizeSendSamples', 'dominantLimit', 'limitBreakdown', 'sendSummaryLine', 'sendStatsMessage', 'parseSendStats', 'mergeSendStats'].map((n) => extractFunction(appJs, n)).join('\n') +
+    '; return { sendExtraSample, summarizeSendSamples, sendSummaryLine, sendStatsMessage, parseSendStats, mergeSendStats };'
+  )();
+  const prev = { qpSum: 1000, delayS: 2, nack: 10, retx: 100 };
+  const cur = { qpSum: 1000 + 30 * 240, targetBps: 5500000, availBps: 8200000, delayS: 2.6, nack: 14, retx: 130 };
+  const x = extra.sendExtraSample(cur, prev, 240, 3000);
+  assert.equal(Math.round(x.qp), 30);
+  assert.equal(x.targetKbps, 5500);
+  assert.equal(x.availKbps, 8200);
+  assert.ok(Math.abs(x.sendDelayMs - 0.2) < 1e-9);
+  assert.equal(x.nack, 4);
+  assert.equal(x.retx, 30);
+  // leitura que não existe (codificador por hardware sem QP) ou contador que voltou para trás: null, nunca número inventado
+  const none = extra.sendExtraSample({ targetBps: 1e6 }, { qpSum: null }, 240, 3000);
+  assert.equal(none.qp, null); assert.equal(none.nack, null); assert.equal(none.sendDelayMs, null);
+  assert.equal(extra.sendExtraSample({ ...cur, nack: 3 }, prev, 240, 3000).nack, null);
+  assert.equal(extra.sendExtraSample(cur, prev, 0, 0).qp, null);
+
+  const base = { seconds: 4, frames: 100, captured: 100, bytes: 3000000, encodeMs: 1000, reason: 'none' };
+  const sum = extra.summarizeSendSamples([{ ...base, ...x }, { ...base, qp: 40, targetKbps: 4000, availKbps: 6000, sendDelayMs: 0.4, nack: 6, retx: 10 }]);
+  assert.equal(Math.round(sum.qp), 35);
+  assert.equal(Math.round(sum.targetKbps), 4750);
+  assert.equal(sum.nack, 10);
+  const line = extra.sendSummaryLine(sum, { quality: 'Jogos', codec: 'H.264', targetFps: 60 });
+  assert.match(line, /QP 35 · alvo do codificador 4750kbps · banda estimada 7100kbps · atraso no envio 0\.3ms · pedidos de retransmissão 10 · reenviados 40 · limite/);
+  // sem os números extras o resumo é o de sempre
+  assert.doesNotMatch(extra.sendSummaryLine(extra.summarizeSendSamples([base]), { quality: 'Jogos', codec: 'H.264', targetFps: 60 }), /QP|alvo do codificador|banda estimada/);
+
+  const msg = extra.sendStatsMessage(sum, { tile: 'd1-abc123', quality: 'Jogos', codec: 'H.264', targetFps: 60, encoderName: 'x' });
+  assert.equal(msg.qp, 35); assert.equal(msg.nack, 10);
+  const parsed = extra.parseSendStats(JSON.parse(JSON.stringify(msg)), 'd1-abc123');
+  assert.equal(parsed.qp, 35); assert.equal(parsed.avail, 7100); assert.equal(parsed.retx, 40);
+  // lixo de outro navegador não vira número
+  const bad = extra.parseSendStats({ ...msg, qp: 9999, tgt: -1, avail: 'x', nack: 1e12 }, 'd1-abc123');
+  assert.equal(bad.qp, null); assert.equal(bad.tgt, null); assert.equal(bad.avail, null); assert.equal(bad.nack, null);
+  // a média do minuto: QP e banda em média, retransmissões somadas
+  const merged = extra.mergeSendStats([parsed, { ...parsed, qp: 45, nack: 4 }]);
+  assert.equal(Math.round(merged.qp), 40);
+  assert.equal(merged.nack, 14);
 });

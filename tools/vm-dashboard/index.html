@@ -104,6 +104,11 @@ const CHARTS = [
     { label:'saindo', color:'var(--tune)', get:p => p.ppsOut, peak:p => p.ppsOutMax },
     { label:'entrando', color:'var(--blue)', get:p => p.ppsIn, peak:p => p.ppsInMax },
   ]},
+  { id:'drops', title:'Pacotes descartados (por intervalo)', unit:'', minMax:4, series:[
+    { label:'buffer UDP cheio', color:'var(--rec)', get:p => p.udpRcvbuf },
+    { label:'fila da placa de rede', color:'var(--violet)', get:p => p.snDrop },
+    { label:'saída da placa de rede', color:'var(--blue)', get:p => p.txDrop },
+  ]},
   { id:'lk', title:'Sinal', unit:'', step:true, minMax:4, series:[
     { label:'pessoas', color:'var(--green)', get:p => p.lk ? p.lk.people : null },
     { label:'telas', color:'var(--tune)', get:p => p.lk ? p.lk.screens : null },

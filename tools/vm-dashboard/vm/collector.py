@@ -67,6 +67,60 @@ def read_net():
     return 0, 0, 0, 0
 
 
+def parse_udp(text):
+    """Contadores do protocolo UDP em /proc/net/snmp (acumulados desde o boot).
+
+    InErrors e RcvbufErrors sobem quando o kernel descarta um pacote UDP porque o buffer do socket estava cheio
+    (ver HANDOFF §81): é o descarte que pode parecer "perda no envio" para quem transmite.
+    """
+    head = None
+    for line in text.splitlines():
+        if not line.startswith('Udp:'):
+            continue
+        cols = line.split()[1:]
+        if head is None:
+            head = cols
+            continue
+        return {k: int(v) for k, v in zip(head, cols)}
+    return {}
+
+
+def parse_softnet(text):
+    """(descartados, apertos) somados de todas as CPUs em /proc/net/softnet_stat (campos em hexadecimal)."""
+    dropped = squeezed = 0
+    for line in text.splitlines():
+        f = line.split()
+        if len(f) >= 3:
+            dropped += int(f[1], 16)
+            squeezed += int(f[2], 16)
+    return dropped, squeezed
+
+
+def read_drops():
+    """Contadores acumulados de descarte de pacotes (só leitura). Cada fonte falha sozinha: o que não der fica de fora."""
+    out = {}
+    try:
+        with open('/proc/net/snmp') as f:
+            udp = parse_udp(f.read())
+        out['udpRcvbuf'] = udp.get('RcvbufErrors', 0)
+        out['udpInErr'] = udp.get('InErrors', 0)
+        out['udpSndbuf'] = udp.get('SndbufErrors', 0)
+    except Exception:
+        pass
+    try:
+        with open('/proc/net/softnet_stat') as f:
+            out['snDrop'], out['snSqueeze'] = parse_softnet(f.read())
+    except Exception:
+        pass
+    for key, name in (('txDrop', 'tx_dropped'), ('rxDrop', 'rx_dropped')):
+        try:
+            with open(f'/sys/class/net/{NET_IFACE}/statistics/{name}') as f:
+                out[key] = int(f.read())
+        except Exception:
+            pass
+    return out
+
+
 def read_load():
     with open('/proc/loadavg') as f:
         return float(f.read().split()[0])
@@ -197,6 +251,7 @@ class Sampler:
             print('[sinal-stats] sem chave do LiveKit:', e, file=sys.stderr)
         self.lk = None
         self.lk_at = 0
+        self.prev_drops = None
 
     def sample(self):
         now = time.time()
@@ -204,8 +259,10 @@ class Sampler:
         net = read_net()
         cts = read_containers()
         cur = (now, cpu, net, cts)
+        drops = read_drops()
         if self.prev is None:
             self.prev = cur
+            self.prev_drops = drops
             return None
         p_now, p_cpu, p_net, p_cts = self.prev
         self.prev = cur
@@ -223,6 +280,12 @@ class Sampler:
             'ct': {},
         }
         s.update(read_mem())
+        if self.prev_drops is not None:
+            for k, v in drops.items():
+                if k in self.prev_drops:
+                    s[k] = max(0, v - self.prev_drops[k])  # quantos nesta janela (o contador zera no reboot)
+            s['cum'] = {k: drops[k] for k in ('udpRcvbuf', 'udpInErr', 'udpSndbuf') if k in drops}  # desde o boot
+        self.prev_drops = drops
         for name, (usec, mem) in cts.items():
             if name in p_cts:
                 # % da VM inteira (todas as vCPUs), comparável com `cpu`
@@ -241,6 +304,8 @@ class Sampler:
 
 # Campos que ganham média + pico no histórico; o resto guarda o último valor.
 PEAK_FIELDS = ('cpu', 'steal', 'rx', 'tx', 'ppsIn', 'ppsOut', 'memUsed', 'swapUsed')
+# Descartes de pacote: no histórico entra a SOMA do intervalo (contagem, não média).
+SUM_FIELDS = ('udpRcvbuf', 'udpInErr', 'udpSndbuf', 'snDrop', 'snSqueeze', 'txDrop', 'rxDrop')
 
 
 def aggregate(samples):
@@ -250,6 +315,10 @@ def aggregate(samples):
         vals = [s[k] for s in samples]
         out[k] = round(sum(vals) / len(vals), 2)
         out[k + 'Max'] = max(vals)
+    for k in SUM_FIELDS:
+        out[k] = sum(s.get(k, 0) for s in samples)
+    if last.get('cum'):
+        out['cum'] = last['cum']
     out['load'] = last['load']
     out['memTotal'] = last['memTotal']
     out['swapTotal'] = last['swapTotal']

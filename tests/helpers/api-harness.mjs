@@ -43,6 +43,7 @@ export class AccessToken {
 export class RoomServiceClient {
   constructor(url, key, secret){ this.url = url; }
   async listRooms(names){
+    if(globalThis.__failListRooms) throw new Error('livekit fora do ar');
     const all = st().rooms;
     return names ? all.filter((r) => names.includes(r.name)) : all;
   }

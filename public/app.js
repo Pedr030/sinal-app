@@ -304,6 +304,10 @@ async function connectToRoomOnce(code, name, mode, extra){
         : 'Esse servidor já tem 10 salas ao vivo. Entre numa delas ou espere alguma fechar.');
       return;
     }
+    if(res.status === 503){
+      setEntryStatus('Não deu para conferir a sala agora. Tente de novo em instantes.');
+      return;
+    }
     if(!res.ok) throw new Error('token-fetch-failed');
     const data = await res.json();
     token = data.token; url = data.url;
@@ -1855,6 +1859,24 @@ const SEND_LIMIT_REASONS = ['none', 'cpu', 'bandwidth', 'other'];
 
 function sumBy(list, fn){ return list.reduce((acc, x) => acc + fn(x), 0); }
 
+// Números extras de quem transmite (HANDOFF §81): quanto o codificador comprimiu (QP), o que ele recebeu como alvo, o que o
+// controle de banda estima, quanto cada pacote esperou para sair e quantas retransmissões houve. Servem para ver, sem
+// adivinhar, se o envio caiu por banda, por codificador ou por perda. Cada leitura pode não existir (codificador por
+// hardware sem QP, por exemplo): fica null e some do resumo. cur/prev são contadores acumulados; QP só compara dentro do
+// mesmo codificador.
+function sendExtraSample(cur, prev, frames, packets){
+  const out = { qp: null, targetKbps: null, availKbps: null, sendDelayMs: null, nack: null, retx: null };
+  if(!cur || !prev) return out;
+  const ok = (v) => typeof v === 'number' && Number.isFinite(v);
+  if(ok(cur.qpSum) && ok(prev.qpSum) && frames > 0 && cur.qpSum >= prev.qpSum) out.qp = (cur.qpSum - prev.qpSum) / frames;
+  if(ok(cur.targetBps) && cur.targetBps >= 0) out.targetKbps = cur.targetBps / 1000;
+  if(ok(cur.availBps) && cur.availBps >= 0) out.availKbps = cur.availBps / 1000;
+  if(ok(cur.delayS) && ok(prev.delayS) && packets > 0 && cur.delayS >= prev.delayS) out.sendDelayMs = (cur.delayS - prev.delayS) / packets * 1000;
+  if(ok(cur.nack) && ok(prev.nack) && cur.nack >= prev.nack) out.nack = cur.nack - prev.nack;
+  if(ok(cur.retx) && ok(prev.retx) && cur.retx >= prev.retx) out.retx = cur.retx - prev.retx;
+  return out;
+}
+
 // Amostras de ~4 s de quem transmite: { seconds, frames, captured (null = sem dado), bytes, encodeMs, reason, paused, stalled }.
 // Nenhuma das duas entra na média: `paused` = a captura entrega, mas o LiveKit pausou o envio porque ninguém está
 // assistindo (dynacast); `stalled` = a própria captura não entregou quadro nenhum (tela parada, que o Windows não
@@ -1886,6 +1908,12 @@ function summarizeSendSamples(samples){
   }
   const withRtt = active.filter((s) => typeof s.rtt === 'number');
   if(withRtt.length) out.rttMs = sumBy(withRtt, (s) => s.rtt) / withRtt.length * 1000;
+  const withQp = active.filter((s) => typeof s.qp === 'number' && s.frames > 0);
+  if(withQp.length) out.qp = sumBy(withQp, (s) => s.qp * s.frames) / sumBy(withQp, (s) => s.frames);
+  const avgOf = (key) => { const v = active.filter((s) => typeof s[key] === 'number'); return v.length ? sumBy(v, (s) => s[key]) / v.length : null; };
+  const totalOf = (key) => { const v = active.filter((s) => typeof s[key] === 'number'); return v.length ? sumBy(v, (s) => s[key]) : null; };
+  [['targetKbps', avgOf('targetKbps')], ['availKbps', avgOf('availKbps')], ['sendDelayMs', avgOf('sendDelayMs')],
+    ['nack', totalOf('nack')], ['retx', totalOf('retx')]].forEach(([k, v]) => { if(v != null) out[k] = v; });
   out.limits = {};
   active.forEach((s) => { const r = s.reason || 'none'; out.limits[r] = (out.limits[r] || 0) + s.seconds; });
   return out;
@@ -1916,6 +1944,12 @@ function sendSummaryLine(sum, meta){
   if(sum.upLossPct != null) parts.push(`perda no envio ${sum.upLossPct.toFixed(1)}%`);
   if(sum.rttMs != null) parts.push(`ida e volta ${Math.round(sum.rttMs)}ms`);
   if(sum.encodeMs > 0) parts.push(`codificação ${sum.encodeMs.toFixed(1)}ms/quadro`);
+  if(sum.qp != null) parts.push(`QP ${Math.round(sum.qp)}`);
+  if(sum.targetKbps != null) parts.push(`alvo do codificador ${Math.round(sum.targetKbps)}kbps`);
+  if(sum.availKbps != null) parts.push(`banda estimada ${Math.round(sum.availKbps)}kbps`);
+  if(sum.sendDelayMs != null) parts.push(`atraso no envio ${sum.sendDelayMs.toFixed(1)}ms`);
+  if(sum.nack > 0) parts.push(`pedidos de retransmissão ${sum.nack}`);
+  if(sum.retx > 0) parts.push(`reenviados ${sum.retx}`);
   parts.push(`limite ${limitBreakdown(sum.limits, sum.activeSeconds)}`);
   if(sum.pausedSeconds > 0) parts.push(`pausado ${Math.round(sum.pausedSeconds)}s`);
   if(sum.stalledSeconds > 0) parts.push(`captura sem quadros ${Math.round(sum.stalledSeconds)}s`);
@@ -1931,7 +1965,8 @@ function sendStatsMessage(sum, meta){
     type: 'send-stats', v: 1, tile: meta.tile, q: meta.quality || '', codec: meta.codec || '', target: meta.targetFps || 0,
     fps: r1(sum.fps), fpsMin: r1(sum.fpsMin), cap: r1(sum.captureFps), capMin: r1(sum.captureMin), kbps: Math.round(sum.kbps),
     lim: dominantLimit(sum.limits), hw: !!meta.hw, enc: String(meta.encoderName || '').slice(0, 60),
-    upLoss: r1(sum.upLossPct)
+    upLoss: r1(sum.upLossPct), qp: r1(sum.qp), tgt: r1(sum.targetKbps), avail: r1(sum.availKbps), delay: r1(sum.sendDelayMs),
+    nack: sum.nack == null ? null : Math.round(sum.nack), retx: sum.retx == null ? null : Math.round(sum.retx)
   };
 }
 
@@ -1946,7 +1981,12 @@ function mergeSendStats(list){
   const min = (key) => { const v = valid.filter((s) => typeof s[key] === 'number').map((s) => s[key]); return v.length ? Math.min(...v) : null; };
   const lims = {};
   valid.forEach((s) => { lims[s.lim] = (lims[s.lim] || 0) + 1; });
-  return { ...last, fps: avg('fps'), fpsMin: min('fpsMin'), cap: avg('cap'), capMin: min('capMin'), kbps: avg('kbps'), upLoss: avg('upLoss'), lim: dominantLimit(lims), count: valid.length };
+  const total = (key) => { const v = valid.filter((s) => typeof s[key] === 'number'); return v.length ? sumBy(v, (s) => s[key]) : null; };
+  return {
+    ...last, fps: avg('fps'), fpsMin: min('fpsMin'), cap: avg('cap'), capMin: min('capMin'), kbps: avg('kbps'), upLoss: avg('upLoss'),
+    qp: avg('qp'), tgt: avg('tgt'), avail: avg('avail'), delay: avg('delay'), nack: total('nack'), retx: total('retx'),
+    lim: dominantLimit(lims), count: valid.length
+  };
 }
 
 // Quem assiste recebe isso de outro navegador: valida tudo (fronteira de confiança). Só vale pra transmissão da
@@ -1962,7 +2002,8 @@ function parseSendStats(msg, senderIdentity){
     tile: msg.tile, quality: str(msg.q, 20), codec: str(msg.codec, 10), target: num(msg.target, 240) || 0,
     fps, fpsMin: num(msg.fpsMin, 240), cap: num(msg.cap, 240), capMin: num(msg.capMin, 240), kbps: num(msg.kbps, 200000),
     lim: SEND_LIMIT_REASONS.includes(msg.lim) ? msg.lim : 'none', hw: msg.hw === true, enc: str(msg.enc, 60),
-    upLoss: num(msg.upLoss, 100)
+    upLoss: num(msg.upLoss, 100), qp: num(msg.qp, 255), tgt: num(msg.tgt, 200000), avail: num(msg.avail, 2000000),
+    delay: num(msg.delay, 60000), nack: num(msg.nack, 10000000), retx: num(msg.retx, 10000000)
   };
 }
 
@@ -2034,6 +2075,11 @@ function recvSummaryLine(tag, sum, meta, sender){
     sp.push(`envio ${Math.round(sender.fps)}fps` + (sender.fpsMin != null ? ` (mín ${Math.round(sender.fpsMin)}, meta ${sender.target})` : ''));
     if(sender.cap != null) sp.push(`captura ${Math.round(sender.cap)}fps` + (sender.capMin != null ? ` (mín ${Math.round(sender.capMin)})` : ''));
     if(typeof sender.upLoss === 'number') sp.push(`perda no envio ${sender.upLoss.toFixed(1)}%`);
+    if(typeof sender.qp === 'number') sp.push(`QP ${Math.round(sender.qp)}`);
+    if(typeof sender.tgt === 'number') sp.push(`alvo ${Math.round(sender.tgt)}kbps`);
+    if(typeof sender.avail === 'number') sp.push(`banda estimada ${Math.round(sender.avail)}kbps`);
+    if(typeof sender.delay === 'number') sp.push(`atraso no envio ${sender.delay.toFixed(1)}ms`);
+    if(sender.nack > 0) sp.push(`pedidos de retransmissão ${sender.nack}`);
     sp.push(`limite ${sender.lim}`);
     if(sender.enc) sp.push(`${sender.enc} (${sender.hw ? 'hardware' : 'software'})`);
     line += ` | quem transmite: ${sp.join(' · ')}`;
@@ -2456,12 +2502,19 @@ async function sampleOwnScreenStats(){
   // Quem assiste vê a perda do caminho todo; comparando as duas dá pra saber de que lado está o problema.
   let remoteIn = outbound.remoteId && typeof report.get === 'function' ? report.get(outbound.remoteId) : null;
   if(!remoteIn) report.forEach((s) => { if(s.type === 'remote-inbound-rtp' && s.kind === 'video' && s.ssrc === outbound.ssrc) remoteIn = s; });
+  // Par de candidatos em uso: é dele que vem a banda de saída que o controle de congestionamento estima.
+  let pairOut = null;
+  report.forEach((s) => { if(s.type === 'candidate-pair' && (s.nominated || s.selected) && s.state === 'succeeded') pairOut = s; });
   const scur = {
     sent: outbound.packetsSent || 0, upLost: remoteIn && typeof remoteIn.packetsLost === 'number' ? remoteIn.packetsLost : null,
     rtt: remoteIn && typeof remoteIn.roundTripTime === 'number' ? remoteIn.roundTripTime : null,
     ts: outbound.timestamp, frames: outbound.framesEncoded || 0, encodeS: outbound.totalEncodeTime || 0, bytes: outbound.bytesSent || 0,
     keyFrames: outbound.keyFramesEncoded || 0, pli: outbound.pliCount || 0, nack: outbound.nackCount || 0,
-    captured: source && typeof source.frames === 'number' ? source.frames : null // media-source: quadros entregues pela captura
+    captured: source && typeof source.frames === 'number' ? source.frames : null, // media-source: quadros entregues pela captura
+    qpSum: typeof outbound.qpSum === 'number' ? outbound.qpSum : null, targetBps: typeof outbound.targetBitrate === 'number' ? outbound.targetBitrate : null,
+    availBps: pairOut && typeof pairOut.availableOutgoingBitrate === 'number' ? pairOut.availableOutgoingBitrate : null,
+    delayS: typeof outbound.totalPacketSendDelay === 'number' ? outbound.totalPacketSendDelay : null,
+    retx: typeof outbound.retransmittedPacketsSent === 'number' ? outbound.retransmittedPacketsSent : null
   };
   const sprev = senderDetailPrev;
   senderDetailPrev = scur;
@@ -2484,6 +2537,7 @@ async function sampleOwnScreenStats(){
       upPackets: Math.max(0, scur.sent - sprev.sent), rtt: scur.rtt,
       seconds, frames, captured, bytes: scur.bytes - sprev.bytes, encodeMs: (scur.encodeS - sprev.encodeS) * 1000,
       reason: outbound.qualityLimitationReason || 'none',
+      ...sendExtraSample(scur, sprev, frames, Math.max(0, scur.sent - sprev.sent)),
       stalled: frames === 0 && captured === 0,
       paused: frames === 0 && !outbound.frameWidth && !outbound.frameHeight
     }, {
@@ -5818,7 +5872,7 @@ window.addEventListener('beforeunload', () => {
 });
 
 // PWA: versão, registro do service worker, detecção de atualização e botão de instalação
-const APP_VERSION = '0.8.84'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
+const APP_VERSION = '0.8.85'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
 // Dentro do Electron, mostra a versão do INSTALADOR (electron/package.json),
 // não a do site — ver preload.js. Fora dele (navegador normal), continua a
 // versão do deploy de sempre.

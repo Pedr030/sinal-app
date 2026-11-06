@@ -12,6 +12,7 @@ import glob, json, os, sys, time
 
 STATE_DIR = '/var/lib/sinal-stats'
 PEAK_FIELDS = ('cpu', 'steal', 'rx', 'tx', 'ppsIn', 'ppsOut', 'memUsed', 'swapUsed')
+SUM_FIELDS = ('udpRcvbuf', 'udpInErr', 'udpSndbuf', 'snDrop', 'snSqueeze', 'txDrop', 'rxDrop')  # só existem nos registros novos
 
 
 def main():
@@ -43,6 +44,10 @@ def main():
         for k in PEAK_FIELDS:
             p[k] = round(sum(r[k] for r in recs) / len(recs), 2)
             p[k + 'Max'] = max(r[k + 'Max'] for r in recs)
+        for k in SUM_FIELDS:
+            p[k] = sum(r.get(k, 0) for r in recs)
+        if last.get('cum'):
+            p['cum'] = last['cum']
         p['memTotal'] = last['memTotal']
         p['swapTotal'] = last['swapTotal']
         ct = {}

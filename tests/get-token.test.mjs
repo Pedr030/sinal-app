@@ -332,3 +332,26 @@ test('erro interno não vaza detalhe pro cliente (mensagem genérica; detalhe s�
     delete globalThis.__failToken;
   }
 });
+
+test('se o LiveKit não responde, sala de servidor não abre (nem a privada): 503 e nenhum token', async () => {
+  const meta = (access) => JSON.stringify({ v: 1, guild: GUILD, title: 'Privada', creator: { id: '1', name: 'X' }, access, createdAt: 1 });
+  fake.rooms.push(openRoom({ metadata: meta('approval') }));
+  globalThis.__failListRooms = true;
+  try{
+    for(const mode of ['server-join', 'join']){
+      const res = await post({ mode, room: serverRoom, session: sessionFor() });
+      if(mode === 'server-join'){
+        assert.equal(res.status, 503);
+        const data = await res.json();
+        assert.equal(data.error, 'verificacao-indisponivel');
+        assert.equal(data.token, undefined);
+      }
+    }
+    // sala por código segue como sempre: não trava por falha nossa de checagem
+    const byCode = await post({ mode: 'join', room: 'ABC123', name: 'Fulano' });
+    assert.equal(byCode.status, 200);
+    assert.ok((await byCode.json()).token);
+  }finally{
+    delete globalThis.__failListRooms;
+  }
+});
