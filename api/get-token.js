@@ -211,12 +211,15 @@ export async function POST(request){
         found = rooms.find((r) => r.name === room) || null;
       }catch(e){
         console.error('listRooms falhou:', e && e.message, e);
-        // Não travar o usuário por causa de uma falha nossa de checagem —
+        // Sala por código: não travar o usuário por causa de uma falha nossa de checagem —
         // segue como se existisse, deixa o LiveKit decidir (comportamento
         // antigo: cria se não existir). Prioriza "funciona" sobre "erro
         // preciso" quando a própria checagem está com problema.
+        // Sala de servidor NÃO segue assim: sem ler a sala não há como aplicar a regra de acesso (aprovação, senha),
+        // e seguir daria token a qualquer membro do servidor numa sala privada (HANDOFF §81).
         checked = false;
       }
+      if(!checked && isServerMode) return json(503, { error: 'verificacao-indisponivel' });
       if(checked && !found) return json(404, { error: 'room-not-found' });
       // Regra de acesso da sala de server (HANDOFF §49). Sala com aprovação: entra direto o admin do
       // Sinal, dono/Administrador do servidor, o criador e quem já foi aprovado. Os outros recebem 403
