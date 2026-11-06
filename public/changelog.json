@@ -1,5 +1,16 @@
 [
   {
+    "id": "2026-11-06-transmissao-mais-firme",
+    "date": "2026-11-06",
+    "title": "Transmissão mais firme",
+    "site": "0.8.87",
+    "items": [
+      "Se a conexão piscar, sua transmissão continua e o botão não se perde mais.",
+      "Quando um moderador desliga a sua tela, o áudio para junto e o Sinal avisa.",
+      "Apertar o atalho duas vezes seguidas não abre mais duas transmissões."
+    ]
+  },
+  {
     "id": "2026-11-06-app-0326",
     "date": "2026-11-06",
     "title": "Atualização do app",
