@@ -1,5 +1,15 @@
 [
   {
+    "id": "2026-11-06-volume-e-visual",
+    "date": "2026-11-06",
+    "title": "Correções",
+    "site": "0.8.83",
+    "items": [
+      "Corrigido: o volume e o mudo de uma transmissão às vezes paravam de funcionar até reabrir o app.",
+      "Se a tela abrir sem o visual, o Sinal se recupera sozinho."
+    ]
+  },
+  {
     "id": "2026-10-16-seletor",
     "date": "2026-10-16",
     "title": "Ajustes no app",
