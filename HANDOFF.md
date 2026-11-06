@@ -75,7 +75,7 @@ Compartilhamento de tela ao vivo para um grupo de amigos, usado **ao lado** da c
 
 **Pendente:**
 
-- **App 0.3.26 publicado** (release `desktop-v0.3.26`, Electron 44.9.1, com os PRs do Dependabot #57 e #58): captura provada no app real em 2026-11-06 (30 fps pelo codificador da placa) e Esc real saindo da tela cheia (§84). Os amigos recebem pelo atualizador. Falta só o login real do Discord com o service worker novo.
+- **App 0.3.26 publicado** (release `desktop-v0.3.26`, Electron 44.9.1, com os PRs do Dependabot #57 e #58): captura provada no app real em 2026-11-06 (30 fps pelo codificador da placa) e Esc real saindo da tela cheia (§84). Os amigos recebem pelo atualizador. O login real do Discord com o service worker novo foi provado pelo dono em 2026-11-06.
 - **Em teste:** Electron 45.2.3 na branch local `electron-45`, com commit (precisa de teste com jogo real antes de publicar; ver §78).
 - Roadmap e relatório da pesquisa ficam em `reports/` (fora do git).
 
