@@ -107,3 +107,19 @@ test('relatório feito pelo navegador (sem versão de app): a mensagem diz "no n
   assert.ok(payload.content.includes('site v0.8.73'));
   assert.ok(payload.content.includes('o botao de silenciar nao some'));
 });
+
+test('corpo sem content-length também tem teto de leitura (413), e links do texto saem desarmados', async () => {
+  const big = JSON.stringify({ description: 'x', log: 'a'.repeat(300 * 1024) });
+  const stream = new ReadableStream({ start(c){ c.enqueue(new TextEncoder().encode(big)); c.close(); } });
+  const res = await POST(new Request('http://localhost/api/report', {
+    method: 'POST', headers: { 'content-type': 'application/json', 'x-forwarded-for': '192.0.2.200' }, body: stream, duplex: 'half'
+  }));
+  assert.equal(res.status, 413);
+  assert.equal(sent.length, 0);
+  const ok = await send({ description: 'veja https://evil.example/x e [clique](http://evil.example)', name: 'http://x.y' });
+  assert.equal(ok.status, 200);
+  const content = JSON.parse(sent[0].body.get('payload_json')).content;
+  assert.ok(!/https?:\/\//i.test(content));
+  assert.ok(content.includes('hxxps://evil.example/x'));
+  assert.ok(!content.includes(']('));
+});

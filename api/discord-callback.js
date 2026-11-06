@@ -12,6 +12,11 @@
 // Se o Discord ID bater com ADMIN_DISCORD_IDS, só aqui (via OAuth real) é
 // possível confirmar isso — a assinatura leva essa informação adiante.
 import { buildSession, isBlockedUser } from '../lib/session.js';
+import { createLimiter, clientIp } from '../lib/ratelimit.js';
+
+// O retorno do login troca o code por token usando o Client Secret: sem limite, qualquer um podia disparar essa troca
+// em loop (o state "app.<32hex>" nem precisa do cookie). Melhor esforço, por IP (HANDOFF §82).
+const callbackLimiter = createLimiter({ max: 30, windowMs: 10 * 60 * 1000 });
 
 // Cookie do login pelo navegador (ver api/discord-login.js): lê o valor e o apaga no retorno.
 function readCookie(request, name){
@@ -50,6 +55,7 @@ export async function GET(request){
 
   const code = url.searchParams.get('code');
   if(!code) return fail();
+  if(!callbackLimiter.allow(clientIp(request))) return fail();
 
   const redirectUri = `${url.origin}/api/discord-callback`;
   // "state" veio do discord-login.js — é o código de sala que a pessoa já

@@ -201,3 +201,14 @@ test('quem é moderador pelo token: admin do Sinal (roomAdmin) em qualquer sala;
   assert.equal(isModeratorToken({ video: { room: 'ABC123' }, metadata: { tier: 'o', guild: '111111111111111111' } }, 'ABC123'), false); // staff em sala por código
   assert.equal(isModeratorToken({ video: null, metadata: null }, room), false);
 });
+
+test('admin do Sinal vale pela lista de AGORA: sair de ADMIN_DISCORD_IDS tira o poder da sessão já assinada', async () => {
+  const profile = { id: '123456789012345678', username: 'x', global_name: 'X', avatar: null };
+  const token = buildSession({ profile, guilds: [], adminIds: [profile.id], secret: SECRET });
+  assert.equal(verifySession(token, SECRET, { ADMIN_DISCORD_IDS: profile.id }).admin, true);
+  assert.equal(verifySession(token, SECRET, { ADMIN_DISCORD_IDS: '' }).admin, false);
+  assert.equal(verifySession(token, SECRET, {}).admin, false);
+  // quem não era admin no login só vira com a lista nova (e a sessão assinada continua valendo)
+  const comum = buildSession({ profile, guilds: [], adminIds: [], secret: SECRET });
+  assert.equal(verifySession(comum, SECRET, { ADMIN_DISCORD_IDS: ' 9 , ' + profile.id }).admin, true);
+});

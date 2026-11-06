@@ -31,7 +31,8 @@ function fakeDiscord({ profile, guilds, guildsStatus = 200, tokenStatus = 200 })
 }
 const CSRF = 'c0ffee00c0ffee00c0ffee00c0ffee00';
 // Por padrão manda o cookie que o discord-login.js deixaria no navegador (a validação anti login-CSRF).
-const cb = (qs, cookie = 'sinal_oauth=' + CSRF) => callback(new Request('https://sinal.test/api/discord-callback?' + qs, cookie ? { headers: { cookie } } : undefined));
+let cbIp = 0;
+const cb = (qs, cookie = 'sinal_oauth=' + CSRF, ip) => callback(new Request('https://sinal.test/api/discord-callback?' + qs, { headers: { 'x-forwarded-for': ip || ('10.4.0.' + (++cbIp)), ...(cookie ? { cookie } : {}) } }));
 const sessionFrom = (res) => verifySession(new URL(res.headers.get('location')).hash.replace('#session=', ''), SECRET);
 
 test('login pede identify + guilds; o state é "<nonce>.<SALA>" e o MESMO nonce vai num cookie HttpOnly', async () => {

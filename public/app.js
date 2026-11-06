@@ -206,14 +206,29 @@ function createRoom(){
   getAudioCtx();
   connectToRoom(genCode(), getName(), 'create');
 }
+// O campo aceita o código ou o link de convite inteiro (site ou sinal://): do link, vale o ?sala=. Pura (testada).
+function parseJoinInput(raw){
+  const text = String(raw || '').trim();
+  const match = /[?&]sala=([^&#\s]+)/i.exec(text);
+  if(!match) return text;
+  try{ return decodeURIComponent(match[1]).trim(); }catch(e){ return match[1]; }
+}
+
 function joinRoom(){
   getAudioCtx();
-  const raw = document.getElementById('joinCodeInput').value.trim();
+  const raw = parseJoinInput(document.getElementById('joinCodeInput').value);
   if(!raw){ setEntryStatus('Digite o código da sala.'); return; }
   // Link de convite de sala de SERVER (s<id>-xxxxxx, minúsculo) entra pelo modo
   // próprio; o resto é código de sala normal, sempre em maiúsculas.
   const server = isServerRoomName(raw);
   connectToRoom(server ? raw : raw.toUpperCase(), getName(), server ? 'server-join' : 'join');
+}
+
+// Sala de código some quando esvazia. Quem volta pelo código que usou da última vez não errou nada: a sala fechou.
+// Sala de servidor não tem código pra conferir. Nos outros casos não dá pra saber qual dos dois foi. Pura (testada).
+function roomNotFoundMessage(code, mode, lastCode){
+  if(mode === 'server-join' || (lastCode && code === lastCode)) return 'Essa sala já fechou.';
+  return 'Sala não encontrada. Ela pode já ter fechado, ou o código está errado.';
 }
 
 // Pede um token de acesso pra função serverless (que fala com a API do
@@ -271,7 +286,9 @@ async function connectToRoomOnce(code, name, mode, extra){
       })
     });
     if(res.status === 404){
-      setEntryStatus('Sala não encontrada. Confira o código.');
+      let lastCode = null;
+      try{ lastCode = localStorage.getItem('sinal:lastRoomCode'); }catch(e){ /* sem localStorage: só não compara */ }
+      setEntryStatus(roomNotFoundMessage(code, mode, lastCode));
       return;
     }
     if(res.status === 401){
@@ -510,11 +527,21 @@ function wireRoomEvents(liveRoom){
     // rede, etc. Antes só mostrava uma mensagem e ficava preso na tela da
     // sala sem conseguir fazer nada (bug real, achado em teste); agora volta
     // pra tela inicial de verdade, igual sair por conta própria.
+    appLog(`[sinal] desconectado da sala (motivo ${reason})`);
     leaveRoom();
-    setEntryStatus(LivekitClient.DisconnectReason && reason === LivekitClient.DisconnectReason.ROOM_DELETED
-      ? 'A sala foi encerrada.'
-      : 'Você foi desconectado da sala.');
+    setEntryStatus(disconnectMessage(reason, LivekitClient.DisconnectReason));
   });
+}
+
+// O que dizer a quem caiu da sala. reasons = LivekitClient.DisconnectReason. Pura (testada).
+function disconnectMessage(reason, reasons){
+  const r = reasons || {};
+  if(reason == null) return 'Você foi desconectado da sala.';
+  if(reason === r.ROOM_DELETED || reason === r.ROOM_CLOSED) return 'A sala foi encerrada.';
+  if(reason === r.PARTICIPANT_REMOVED) return 'Você foi removido da sala.';
+  if(reason === r.DUPLICATE_IDENTITY) return 'Você entrou nessa sala em outra janela, então esta saiu.';
+  if(reason === r.SERVER_SHUTDOWN) return 'O servidor reiniciou. Tente entrar de novo em instantes.';
+  return 'Você foi desconectado da sala.';
 }
 
 // Tela ou câmera podem vir com vídeo e áudio como tracks separados (ex:
@@ -1525,7 +1552,8 @@ async function toggleShare(){
       if(audioPub && audioPub.audioTrack) await room.localParticipant.unpublishTrack(audioPub.audioTrack);
     }catch(e){
       console.error('[sinal] unpublish da tela falhou:', e);
-      setRoomStatus('Erro ao desligar a tela: ' + (e && e.message || e), true);
+      appLog(`[sinal] desligar a tela falhou: ${e && e.name}: ${e && e.message}`);
+      setRoomStatus('Não consegui desligar a tela. Saia e entre de novo na sala.', true);
     }finally{
       selfInitiatedUnpublish = false;
     }
@@ -1558,7 +1586,11 @@ async function toggleShare(){
       surfaceSwitching: 'include'
     });
   }catch(e){
-    setRoomStatus('Permissão de tela negada ou cancelada.', true);
+    const message = captureErrorMessage(e, 'tela', !!window.sinalElectron);
+    if(message){
+      appLog(`[sinal] captura da tela falhou: ${e && e.name}: ${e && e.message}`);
+      setRoomStatus(message, true);
+    }
     return;
   }
   const videoTrack = localTracks.find((t) => t.kind === 'video');
@@ -1585,8 +1617,9 @@ async function toggleShare(){
     }
   }catch(e){
     console.error('[sinal] publicar a tela falhou:', e);
+    appLog(`[sinal] publicar a tela falhou: ${e && e.name}: ${e && e.message}`);
     localTracks.forEach((t) => t.stop());
-    setRoomStatus('Não consegui transmitir a tela: ' + (e && e.message || e), true);
+    setRoomStatus('Não consegui transmitir a tela. Tente de novo.', true);
     return;
   }
 
@@ -1665,6 +1698,25 @@ function resetShareButton(){
   renderAvatars();
 }
 
+// Frase para quem tentou capturar a tela ou a câmera, a partir do erro do navegador. O texto cru vai só pro registro.
+// null = a pessoa cancelou, não é erro. what: 'tela' | 'câmera'. inApp: rodando no app desktop. Pura (testada).
+function captureErrorMessage(e, what, inApp){
+  const name = e && e.name;
+  const isScreen = what === 'tela';
+  // Na tela, o Chromium usa o mesmo erro para "cancelou" e "negou"; só o bloqueio do sistema vem marcado na mensagem.
+  if(name === 'NotAllowedError'){
+    if(/system/i.test(String(e.message))) return `O sistema bloqueou o acesso à ${what}. Libere nas configurações de privacidade e tente de novo.`;
+    return isScreen ? null : 'Sem permissão para usar a câmera. Libere nas configurações do navegador e tente de novo.';
+  }
+  // No app, o seletor próprio cancelado chega como AbortError (medido no Electron 44.9.1, botão e Esc). No navegador,
+  // esse erro é falha de verdade e cai na frase genérica lá embaixo.
+  if(name === 'AbortError' && isScreen && inApp) return null;
+  if(name === 'NotFoundError') return isScreen ? 'Não achei nenhuma tela para transmitir.' : 'Não achei nenhuma câmera neste aparelho.';
+  if(name === 'NotReadableError') return `Não consegui abrir a ${what}. Outro programa pode estar usando. Tente de novo.`;
+  if(name === 'NotSupportedError' || name === 'DeviceUnsupportedError') return `Este navegador não consegue usar a ${what}.`;
+  return `Não consegui abrir a ${what}. Tente de novo.`;
+}
+
 async function toggleCamera(){
   if(!room) return;
   const { Track } = LivekitClient;
@@ -1677,7 +1729,8 @@ async function toggleCamera(){
       if(pub.videoTrack) await room.localParticipant.unpublishTrack(pub.videoTrack);
     }catch(e){
       console.error('[sinal] unpublish da câmera falhou:', e);
-      setRoomStatus('Erro ao desligar a câmera: ' + (e && e.message || e), true);
+      appLog(`[sinal] desligar a câmera falhou: ${e && e.name}: ${e && e.message}`);
+      setRoomStatus('Não consegui desligar a câmera. Saia e entre de novo na sala.', true);
     }finally{
       selfInitiatedUnpublish = false;
     }
@@ -1687,7 +1740,11 @@ async function toggleCamera(){
   try{
     await room.localParticipant.setCameraEnabled(true); // sem áudio — a voz já vai 100% pelo Discord
   }catch(e){
-    setRoomStatus('Permissão de câmera negada ou cancelada.', true);
+    const message = captureErrorMessage(e, 'câmera');
+    if(message){
+      appLog(`[sinal] ligar a câmera falhou: ${e && e.name}: ${e && e.message}`);
+      setRoomStatus(message, true);
+    }
     return;
   }
   const btn = document.getElementById('cameraBtn');
@@ -2007,13 +2064,37 @@ function parseSendStats(msg, senderIdentity){
   };
 }
 
-// Amostras de ~4 s de uma transmissão assistida: { seconds, received, decoded, bytes, lost, packets, freezes, freezeSeconds }.
+// Caminho da conexão que traz o vídeo: ida e volta até o servidor e se passa por relay (TURN), que custa bem mais CPU
+// na VM. Mesma escolha de par do envio. Sem o par no relatório, volta vazio. Pura (testada).
+function recvPathInfo(report){
+  let pair = null;
+  report.forEach((s) => { if(s.type === 'candidate-pair' && (s.nominated || s.selected) && s.state === 'succeeded') pair = s; });
+  if(!pair) return { rttMs: null, relay: null };
+  const local = typeof report.get === 'function' ? report.get(pair.localCandidateId) : null;
+  return {
+    rttMs: typeof pair.currentRoundTripTime === 'number' ? pair.currentRoundTripTime * 1000 : null,
+    relay: local && local.candidateType ? local.candidateType === 'relay' : null
+  };
+}
+
+// Atraso médio do buffer de jitter entre duas leituras, em ms. Os contadores do WebRTC são acumulados. Pura (testada).
+function jitterDelayMs(prev, cur){
+  const emitted = cur.jitterEmitted - prev.jitterEmitted;
+  if(!(emitted > 0)) return null;
+  return Math.max(0, cur.jitterDelay - prev.jitterDelay) / emitted * 1000;
+}
+
+// Amostras de ~4 s de uma transmissão assistida: { seconds, received, decoded, bytes, lost, packets, freezes, freezeSeconds,
+// pli, nack, rttMs, jitterDelayMs, relay }. Os picos ficam guardados porque uma rajada de 2 s some na média do minuto.
 function summarizeRecvSamples(samples){
   const valid = (samples || []).filter((s) => s && s.seconds > 0 && s.received >= 0 && s.decoded >= 0 && s.bytes >= 0);
   if(!valid.length) return null;
   const seconds = sumBy(valid, (s) => s.seconds);
   const lost = sumBy(valid, (s) => Math.max(0, s.lost || 0));
   const packets = sumBy(valid, (s) => Math.max(0, s.packets || 0));
+  const rtts = valid.map((s) => s.rttMs).filter((v) => typeof v === 'number');
+  const jitters = valid.map((s) => s.jitterDelayMs).filter((v) => typeof v === 'number');
+  const avg = (list) => (list.length ? list.reduce((a, b) => a + b, 0) / list.length : null);
   return {
     seconds,
     recvFps: sumBy(valid, (s) => s.received) / seconds,
@@ -2022,7 +2103,12 @@ function summarizeRecvSamples(samples){
     kbps: sumBy(valid, (s) => s.bytes) * 8 / 1000 / seconds,
     lossPct: lost + packets > 0 ? lost / (lost + packets) * 100 : 0,
     freezes: sumBy(valid, (s) => Math.max(0, s.freezes || 0)),
-    freezeSeconds: sumBy(valid, (s) => Math.max(0, s.freezeSeconds || 0))
+    freezeSeconds: sumBy(valid, (s) => Math.max(0, s.freezeSeconds || 0)),
+    pli: sumBy(valid, (s) => Math.max(0, s.pli || 0)),
+    nack: sumBy(valid, (s) => Math.max(0, s.nack || 0)),
+    rttMs: avg(rtts), rttMax: rtts.length ? Math.max(...rtts) : null,
+    jitterDelayMs: avg(jitters), jitterDelayMax: jitters.length ? Math.max(...jitters) : null,
+    relay: valid.some((s) => s.relay === true)
   };
 }
 
@@ -2030,8 +2116,20 @@ function summarizeRecvSamples(samples){
 function streamBottleneck(recv, sender){
   if(!recv) return null;
   const target = sender && sender.target ? sender.target : 30;
-  const low = (v) => typeof v === 'number' && v < target * 0.75;
-  if(!low(recv.recvFps) && recv.freezeSeconds < 1) return 'ok';
+  // Em 60 fps a régua é 40, não 45: Jogos normais rodam abaixo de 60 e eram marcados como problema de captura.
+  const goal = target >= 50 ? Math.min(target * 0.75, 40) : target * 0.75;
+  const low = (v) => typeof v === 'number' && v < goal;
+  if(!low(recv.recvFps) && !low(recv.decodedFps) && recv.freezeSeconds < 1) return 'ok';
+  // Perda vem antes de fps baixo: nessa ordem, ela não se esconde atrás de "captura" (87 minutos no registro).
+  // "Perda no envio" é medida no servidor e pode ser o buffer da VM enchendo, por isso o rótulo não acusa o upload.
+  // Sem esse número não dá pra separar os dois lados. A perda de quem assiste não entra na conta: a antiga regra
+  // da metade dizia "internet até você" enquanto outra transmissão no mesmo downlink estava limpa.
+  if(recv.lossPct >= 2){
+    if(!sender || typeof sender.upLoss !== 'number') return 'indeterminado';
+    return sender.upLoss >= 2 ? 'perda antes do servidor' : 'servidor ou caminho até você';
+  }
+  // Tela parada: poucos quadros porque nada muda na imagem, sem nada travando pra quem assiste.
+  if(sender && low(sender.fps) && typeof sender.kbps === 'number' && sender.kbps < 500 && recv.freezeSeconds < 1) return 'ok';
   if(sender && low(sender.fps)){
     // "cpu" com codificador da placa: o WebRTC achou o PC sobrecarregado (placa ocupada com o jogo) e cortou os quadros
     // já na captura; por isso vem antes da captura (§70)
@@ -2041,16 +2139,11 @@ function streamBottleneck(recv, sender){
     if(sender.lim === 'bandwidth') return 'upload de quem transmite';
     return 'envio de quem transmite';
   }
-  if(recv.lossPct >= 2){
-    // perda no upload de quem transmite explica pelo menos metade da que chega aqui = o problema é a internet dela
-    if(sender && typeof sender.upLoss === 'number') return sender.upLoss >= recv.lossPct / 2 ? 'upload de quem transmite (perdendo pacotes)' : 'internet entre o servidor e você';
-    return 'rede (perda de pacotes)';
-  }
   if(recv.recvFps - recv.decodedFps > 5) return 'decodificação no seu PC';
   // envio quase na meta, mas o codificador de quem transmite está se limitando (baixa resolução/quadros)
   if(sender && sender.lim === 'cpu') return 'CPU de quem transmite';
   if(sender && sender.lim === 'bandwidth') return 'upload de quem transmite';
-  return sender ? 'rede ou servidor' : 'sem dados de quem transmite';
+  return sender ? 'servidor ou caminho até você' : 'sem dados de quem transmite';
 }
 
 // Marca curta e estável pra separar duas transmissões no registro sem pôr nome de ninguém.
@@ -2069,6 +2162,11 @@ function recvSummaryLine(tag, sum, meta, sender){
     `${Math.round(sum.kbps)}kbps`, `perda ${sum.lossPct.toFixed(1)}%`
   ];
   if(sum.freezes) parts.push(`congelamentos ${sum.freezes} (${sum.freezeSeconds.toFixed(1)}s)`);
+  if(sum.rttMs != null) parts.push(`ida e volta ${Math.round(sum.rttMs)}ms (pico ${Math.round(sum.rttMax)})`);
+  if(sum.jitterDelayMs != null) parts.push(`buffer de jitter ${Math.round(sum.jitterDelayMs)}ms (pico ${Math.round(sum.jitterDelayMax)})`);
+  if(sum.pli > 0) parts.push(`pedidos de quadro-chave ${sum.pli}`);
+  if(sum.nack > 0) parts.push(`pedidos de retransmissão ${sum.nack}`);
+  if(sum.relay) parts.push('conexão por relay');
   let line = parts.join(' · ');
   if(sender){
     const sp = [`${sender.quality || '?'} ${sender.codec || ''}`.trim()];
@@ -2331,7 +2429,8 @@ async function sampleTileDetailedStats(tileId, track){
   const vcur = {
     ts: inbound.timestamp, received: inbound.framesReceived || 0, decoded: inbound.framesDecoded || 0, dropped: inbound.framesDropped || 0,
     freezes: inbound.freezeCount || 0, freezeSeconds: inbound.totalFreezesDuration || 0, bytes: inbound.bytesReceived || 0,
-    lost: inbound.packetsLost || 0, pli: inbound.pliCount || 0, nack: inbound.nackCount || 0, packets: inbound.packetsReceived || 0
+    lost: inbound.packetsLost || 0, pli: inbound.pliCount || 0, nack: inbound.nackCount || 0, packets: inbound.packetsReceived || 0,
+    jitterDelay: inbound.jitterBufferDelay || 0, jitterEmitted: inbound.jitterBufferEmittedCount || 0
   };
   viewerDetailPrev.set(tileId, vcur);
   if(vprev && vcur.ts > vprev.ts){
@@ -2344,7 +2443,8 @@ async function sampleTileDetailedStats(tileId, track){
     noteRecvSample(tileId, {
       seconds: (vcur.ts - vprev.ts) / 1000, received: vcur.received - vprev.received, decoded: vcur.decoded - vprev.decoded,
       bytes: vcur.bytes - vprev.bytes, lost: vcur.lost - vprev.lost, packets: vcur.packets - vprev.packets,
-      freezes: vcur.freezes - vprev.freezes, freezeSeconds: vcur.freezeSeconds - vprev.freezeSeconds
+      freezes: vcur.freezes - vprev.freezes, freezeSeconds: vcur.freezeSeconds - vprev.freezeSeconds,
+      pli: vcur.pli - vprev.pli, nack: vcur.nack - vprev.nack, jitterDelayMs: jitterDelayMs(vprev, vcur), ...recvPathInfo(report)
     }, { codec: codecLabel(report, inbound.codecId), width: inbound.frameWidth, height: inbound.frameHeight });
     const line = viewerTroubleLine({
       codec: codecLabel(report, inbound.codecId), width: inbound.frameWidth, height: inbound.frameHeight,
@@ -2868,6 +2968,111 @@ function stopWatchingTile(tileId, isCamera){
   }
 }
 
+// ---- Zoom e arraste no tile ----
+// Só muda como a imagem aparece aqui: não mexe na transmissão, não pesa na rede e some junto com o tile.
+// A posição é guardada em frações do tile, então aguenta o tile mudar de tamanho (destaque, tela cheia).
+
+// Quanto do tile a imagem ocupa de verdade (o vídeo usa object-fit:contain), em frações. Pura (testada).
+function tileContentBox(boxW, boxH, videoW, videoH){
+  if(!(boxW > 0 && boxH > 0 && videoW > 0 && videoH > 0)) return { w: 1, h: 1 };
+  const ratio = (videoW / videoH) / (boxW / boxH);
+  return ratio >= 1 ? { w: 1, h: 1 / ratio } : { w: ratio, h: 1 };
+}
+
+// Não deixa a imagem sair do tile: maior que ele, a borda da imagem não entra; menor, fica centralizada. Pura (testada).
+function clampTileZoom(view, content){
+  const fit = (pos, size) => {
+    if(view.scale * size <= 1) return (1 - view.scale) / 2;
+    const margin = (1 - size) / 2;
+    return Math.min(-view.scale * margin, Math.max(1 - view.scale * (margin + size), pos));
+  };
+  return { scale: view.scale, x: fit(view.x, content.w), y: fit(view.y, content.h) };
+}
+
+// Novo zoom mantendo parado o ponto sob o cursor (fx, fy em frações do tile). De 1× a 4×. Pura (testada).
+function zoomTileAt(view, fx, fy, nextScale){
+  const limited = Math.min(4, Math.max(1, nextScale));
+  const scale = limited < 1.02 ? 1 : limited;
+  const ratio = scale / view.scale;
+  return { scale, x: fx - (fx - view.x) * ratio, y: fy - (fy - view.y) * ratio };
+}
+
+function tileZoomLabel(scale){ return `${scale.toFixed(1).replace('.', ',')}×`; }
+
+function setupTileZoom(tile, video){
+  const chip = tile.querySelector('.zoom-chip');
+  let view = { scale: 1, x: 0, y: 0 };
+  let drag = null;
+  let dragged = false;
+  const apply = (next) => {
+    view = clampTileZoom(next, tileContentBox(tile.clientWidth, tile.clientHeight, video.videoWidth, video.videoHeight));
+    const zoomed = view.scale > 1;
+    tile.classList.toggle('zoomed', zoomed);
+    video.style.transform = zoomed ? `translate(${view.x * 100}%, ${view.y * 100}%) scale(${view.scale})` : '';
+    chip.hidden = !zoomed;
+    chip.textContent = tileZoomLabel(view.scale);
+  };
+  const reset = () => apply({ scale: 1, x: 0, y: 0 });
+  // passive:false porque sem o preventDefault o Ctrl + roda também aumentaria a página inteira no navegador.
+  tile.addEventListener('wheel', (e) => {
+    if(!e.ctrlKey) return;
+    e.preventDefault();
+    if(tile.closest('.filmstrip') || tile.matches('.in-pip, .render-off')) return;
+    const rect = tile.getBoundingClientRect();
+    const pixels = e.deltaMode === 1 ? e.deltaY * 33 : e.deltaY; // alguns mouses contam em linhas
+    apply(zoomTileAt(view, (e.clientX - rect.left) / rect.width, (e.clientY - rect.top) / rect.height, view.scale * Math.exp(-pixels * 0.002)));
+  }, { passive: false });
+  tile.addEventListener('pointerdown', (e) => {
+    dragged = false;
+    if(e.button !== 0 || view.scale === 1 || e.target.closest('button, input, .tile-controls')) return;
+    drag = { id: e.pointerId, startX: e.clientX, startY: e.clientY, x: view.x, y: view.y, moved: false };
+    try{ tile.setPointerCapture(e.pointerId); }catch(err){ /* o arraste segue enquanto o cursor estiver no tile */ }
+    tile.classList.add('zoom-drag');
+  });
+  tile.addEventListener('pointermove', (e) => {
+    if(!drag || e.pointerId !== drag.id) return;
+    const rect = tile.getBoundingClientRect();
+    if(Math.hypot(e.clientX - drag.startX, e.clientY - drag.startY) > 4) drag.moved = true;
+    apply({ scale: view.scale, x: drag.x + (e.clientX - drag.startX) / rect.width, y: drag.y + (e.clientY - drag.startY) / rect.height });
+  });
+  const endDrag = () => { dragged = !!(drag && drag.moved); drag = null; tile.classList.remove('zoom-drag'); };
+  tile.addEventListener('pointerup', endDrag);
+  tile.addEventListener('pointercancel', endDrag);
+  // Soltar o arraste também gera clique, e esse não pode destacar nem minimizar. Clique parado segue valendo com zoom.
+  tile.addEventListener('click', (e) => { if(dragged){ dragged = false; e.stopImmediatePropagation(); } }, true);
+  chip.addEventListener('click', (e) => { e.stopPropagation(); reset(); });
+  // Foi para a fileira de miniaturas: zoom ali não serve. Em outro tamanho, confere de novo os limites.
+  new ResizeObserver(() => {
+    if(view.scale === 1) return;
+    if(tile.closest('.filmstrip')) reset(); else apply(view);
+  }).observe(tile);
+}
+
+// Tela cheia é do tile, não do <video>: o navegador anula transform no elemento em tela cheia, o que desligaria o zoom.
+// Assim os controles do tile também ficam na tela, então somem com o mouse parado, senão cobririam a imagem o tempo todo.
+const TILE_FS_IDLE_MS = 2500;
+function setupTileFullscreen(tile){
+  const btn = tile.querySelector('.fs-btn');
+  let idleTimer = null;
+  const wake = () => {
+    clearTimeout(idleTimer);
+    tile.classList.remove('fs-idle');
+    if(document.fullscreenElement === tile) idleTimer = setTimeout(() => tile.classList.add('fs-idle'), TILE_FS_IDLE_MS);
+  };
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if(document.fullscreenElement === tile) document.exitFullscreen();
+    else if(tile.requestFullscreen) tile.requestFullscreen().catch((err) => console.warn('[sinal] tela cheia falhou:', err));
+  });
+  tile.addEventListener('fullscreenchange', () => {
+    const label = document.fullscreenElement === tile ? 'Sair da tela cheia' : 'Tela cheia';
+    btn.title = label;
+    btn.setAttribute('aria-label', label);
+    wake();
+  });
+  tile.addEventListener('pointermove', () => { if(document.fullscreenElement === tile) wake(); });
+}
+
 function addTile(id, name, stream){
   removeTile(id);
   const isSelf = !!(room && room.localParticipant && (id === room.localParticipant.identity || id === room.localParticipant.identity + ':cam'));
@@ -2884,6 +3089,7 @@ function addTile(id, name, stream){
     <div class="pip-overlay"><span class="mono">Em janela flutuante</span></div>
     <div class="tile-stats mono" hidden></div>
     <button class="fs-btn" title="Tela cheia" aria-label="Tela cheia">${ICON_FULLSCREEN_SVG}</button>
+    <button type="button" class="zoom-chip mono" title="Voltar ao tamanho normal" aria-label="Voltar ao tamanho normal" hidden></button>
     ${!isSelf && document.pictureInPictureEnabled ? `<button class="pip-btn" title="Janela flutuante">${ICON_PIP}</button>` : ''}
     ${isSelf ? '' : `
     <div class="tile-controls">
@@ -2902,10 +3108,8 @@ function addTile(id, name, stream){
   `;
   const video = tile.querySelector('video');
   video.srcObject = stream;
-  tile.querySelector('.fs-btn').addEventListener('click', (e) => {
-    e.stopPropagation();
-    video.requestFullscreen && video.requestFullscreen();
-  });
+  setupTileFullscreen(tile);
+  setupTileZoom(tile, video);
   // Janela flutuante (picture-in-picture nativo do Chromium): o <video>
   // continua sendo esse mesmo elemento, só é desenhado numa janela por cima
   // de tudo — áudio, volume e mudo continuam no tile. Uma por vez (limite
@@ -2939,7 +3143,8 @@ function addTile(id, name, stream){
       }, 250);
     });
   }
-  tile.addEventListener('click', () => togglePin(id));
+  // Em tela cheia, mover o tile de lugar derrubaria a tela cheia.
+  tile.addEventListener('click', () => { if(document.fullscreenElement !== tile) togglePin(id); });
 
   if(!isSelf){
     const muteBtn = tile.querySelector('.mute-btn');
@@ -3849,7 +4054,7 @@ function loginWithDiscord(){
   // costuma estar logada no Discord) e volta pelo sinal://auth — ver "Login
   // pelo navegador" abaixo. No navegador comum (e no app antigo) segue na mesma aba.
   if(hasAppLogin()){ startAppLogin(); return; }
-  const sala = document.getElementById('joinCodeInput').value.trim().toUpperCase();
+  const sala = parseJoinInput(document.getElementById('joinCodeInput').value).toUpperCase();
   window.location.href = '/api/discord-login' + (sala ? ('?sala=' + encodeURIComponent(sala)) : '');
 }
 
@@ -5788,10 +5993,35 @@ const CSS_RETRY_TIMEOUT_MS = 8000;
 function cssApplied(){ return getComputedStyle(document.documentElement).getPropertyValue('--css-carregado').trim() === '1'; }
 function shouldReloadForCss(now, lastAttempt){ return !(lastAttempt > 0 && now - lastAttempt < CSS_RELOAD_WINDOW_MS); }
 
+// O que o navegador registrou do download do style.css. Separa as hipóteses da página sem CSS: resposta de erro,
+// arquivo vazio ou cortado, e por qual protocolo veio. Status 0 ou tamanho 0 sem erro = não veio da rede. Pura (testada).
+function describeCssTiming(entry){
+  if(!entry) return 'download sem registro';
+  return `status ${entry.responseStatus || '?'}, tamanho ${entry.decodedBodySize != null ? entry.decodedBodySize : '?'}, protocolo ${entry.nextHopProtocol || '?'}`;
+}
+
 function describeCssState(link){
   let rules = 'sem acesso';
   try{ rules = link && link.sheet ? link.sheet.cssRules.length : 'sem folha'; }catch(e){ /* folha indisponível */ }
-  return `regras ${rules}, online ${navigator.onLine}, service worker ${navigator.serviceWorker && navigator.serviceWorker.controller ? 'ativo' : 'não'}`;
+  let timing = null;
+  try{ timing = performance.getEntriesByType('resource').filter((r) => /\/style\.css(\?|$)/.test(r.name)).pop(); }catch(e){ /* sem o registro: segue */ }
+  return `regras ${rules}, ${describeCssTiming(timing)}, online ${navigator.onLine}, service worker ${navigator.serviceWorker && navigator.serviceWorker.controller ? 'ativo' : 'não'}`;
+}
+
+// Troca o style.css do cache HTTP antes de recarregar: sem isso, o reload podia reaproveitar a mesma cópia ruim.
+// Com limite de tempo, porque um pedido parado não pode impedir o reload.
+async function refreshStylesheetCache(){
+  const abort = new AbortController();
+  const timer = setTimeout(() => abort.abort(), CSS_RETRY_TIMEOUT_MS);
+  try{
+    const res = await fetch('style.css', { cache: 'reload', signal: abort.signal });
+    const body = await res.text();
+    appLog(`[sinal] style.css baixado de novo: status ${res.status}, tamanho ${body.length}`);
+  }catch(e){
+    appLog(`[sinal] style.css não veio: ${e && e.name}`);
+  }finally{
+    clearTimeout(timer);
+  }
 }
 
 function retryStylesheet(oldLink){
@@ -5823,12 +6053,14 @@ async function ensureStylesLoaded(){
     return;
   }
   try{ sessionStorage.setItem(CSS_RELOAD_KEY, String(now)); }catch(e){ return; } // sem a marca, recarregar podia virar ciclo
+  await refreshStylesheetCache();
   appLog('[sinal] recarregando a página pra recuperar o CSS');
   window.location.reload();
 }
 
 window.addEventListener('DOMContentLoaded', () => {
   ensureStylesLoaded();
+  document.getElementById('joinCodeInput').addEventListener('keydown', (e) => { if(e.key === 'Enter') joinRoom(); });
   // Marca pro CSS esconder coisa que só faz sentido no navegador normal
   // (descrição de "o que é isso"/compatibilidade, botão de instalar PWA) —
   // dentro do Electron isso só lembra que é um site, não um app de verdade.

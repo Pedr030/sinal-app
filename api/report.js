@@ -23,8 +23,29 @@ function json(status, data){
 // Texto livre de quem reporta vai pra mensagem do Discord: tira crases (não
 // quebrar a formatação) e limita tamanho. Menções já ficam desligadas pelo
 // allowed_mentions abaixo.
+// Também desarma links: a mensagem cai num canal do Discord onde link vira clicável, e o texto vem de qualquer um.
 function clean(value, max){
-  return (typeof value === 'string' ? value : '').replace(/`/g, "'").trim().slice(0, max);
+  return (typeof value === 'string' ? value : '')
+    .replace(/`/g, "'")
+    .replace(/\]\(/g, '] (')
+    .replace(/https?:\/\//gi, (m) => 'hxxp' + m.slice(4))
+    .trim().slice(0, max);
+}
+
+// Lê o corpo até o teto e para: o cabeçalho content-length pode faltar (ou mentir), e request.json() leria tudo.
+async function readBodyLimited(request, maxBytes){
+  if(!request.body) return '';
+  const reader = request.body.getReader();
+  const chunks = [];
+  let total = 0;
+  for(;;){
+    const { done, value } = await reader.read();
+    if(done) break;
+    total += value.byteLength;
+    if(total > maxBytes){ try{ await reader.cancel(); }catch(e){} return null; }
+    chunks.push(value);
+  }
+  return Buffer.concat(chunks.map((c) => Buffer.from(c))).toString('utf8');
 }
 
 export async function POST(request){
@@ -37,7 +58,9 @@ export async function POST(request){
   const now = Date.now();
 
   let body;
-  try{ body = await request.json(); }catch(e){ return json(400, { error: 'corpo-invalido' }); }
+  const rawBody = await readBodyLimited(request, MAX_BODY_BYTES);
+  if(rawBody === null) return json(413, { error: 'corpo-grande-demais' });
+  try{ body = JSON.parse(rawBody); }catch(e){ return json(400, { error: 'corpo-invalido' }); }
   if(!body || typeof body !== 'object' || Array.isArray(body)) return json(400, { error: 'corpo-invalido' });
 
   const description = clean(body.description, MAX_DESCRIPTION);

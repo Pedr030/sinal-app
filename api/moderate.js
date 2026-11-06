@@ -1,6 +1,6 @@
 // Ações de moderação (expulsar, desligar tela/câmera de alguém) — só quem
 // tem o grant roomAdmin no próprio token do LiveKit (ver api/get-token.js e
-// lib/adminProof.js) consegue passar da verificação abaixo. O navegador
+// lib/rooms.js, isModeratorToken) consegue passar da verificação abaixo. O navegador
 // manda o MESMO token que já usa pra falar com o LiveKit (não inventamos
 // uma segunda credencial) — TokenVerifier confirma a assinatura e o grant
 // antes de qualquer coisa rodar.
@@ -79,6 +79,14 @@ export async function POST(request){
     // está abaixo (admin do Sinal > dono > administrador > gerencia o servidor). O nível de
     // cada um vem do metadata gravado pelo get-token (sessão assinada), não do cliente.
     const people = await roomService.listParticipants(room);
+    // Quem pede precisa AINDA estar na sala: o token dura 6 h, e quem saiu, foi expulso ou perdeu o cargo não pode
+    // continuar moderando com ele (HANDOFF §82). Quem entra de novo recebe um token novo, com o cargo de agora.
+    if(!people.some((p) => p.identity === claims.sub)){
+      return new Response(JSON.stringify({ error: 'fora-da-sala' }), {
+        status: 403,
+        headers: { 'content-type': 'application/json' }
+      });
+    }
     const target = people.find((p) => p.identity === targetIdentity);
     if(!target){
       return new Response(JSON.stringify({ error: 'participante-nao-encontrado' }), {

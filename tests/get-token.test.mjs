@@ -25,8 +25,17 @@ const post = (body, ip) => POST(new Request('http://localhost/api/get-token', {
 }));
 const grantOf = async (res) => JSON.parse((await res.json()).token.split('FAKE_JWT.')[1]);
 
+// O admin do Sinal vale pela lista de AGORA (ADMIN_DISCORD_IDS), não pelo que ficou gravado na sessão (HANDOFF §82):
+// os testes montam a lista junto com cada sessão que criam.
+const adminNow = new Set();
+function markAdmin(id, admin){
+  if(admin) adminNow.add(id); else adminNow.delete(id);
+  process.env.ADMIN_DISCORD_IDS = [...adminNow].join(',');
+}
+
 // Sessão como o discord-callback montaria. `tier` do usuário no GUILD.
 function sessionFor({ id = '900000000000000001', tier = 'x', admin = false, extraGuild = false } = {}){
+  markAdmin(id, admin);
   const guilds = [{ id: GUILD, name: 'Galera', icon: 'abc', owner: tier === 'o', permissions: tier === 'a' ? '8' : tier === 'm' ? '32' : '0' }];
   if(extraGuild) guilds.push({ id: OTHER_GUILD, name: 'Outro', icon: '', owner: false, permissions: '0' });
   return buildSession({

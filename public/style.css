@@ -502,7 +502,7 @@ body.picker-quality.sharing .quality-wrap{ display:inline-flex; }
    clicável (fixar/desafixar destaque), mas não é um "zoom de imagem" de
    verdade, então a lupinha passava a ideia errada. */
 .tile.pinned, .tile.minimized{ cursor:pointer; }
-.tile video{width:100%; height:100%; object-fit:contain; background:#000; display:block;}
+.tile video{width:100%; height:100%; object-fit:contain; background:#000; display:block; transform-origin:0 0;}
 .tile .label{
   position:absolute; left:8px; bottom:8px; background:rgba(0,0,0,.7);
   padding:5px 9px; border-radius:5px; font-family:'JetBrains Mono'; font-size:11px;
@@ -572,6 +572,19 @@ body.picker-quality.sharing .quality-wrap{ display:inline-flex; }
   letter-spacing:1px; background:rgba(0,0,0,.7); padding:7px 14px; border-radius:20px; color:var(--tune);
 }
 .tile.pinned .pin-hint::before{ content:'CLIQUE PARA MINIMIZAR'; }
+/* Zoom no tile (setupTileZoom em app.js): quem aproximou quer ler a imagem, então sai a dica que escurece o vídeo. */
+.tile.zoomed{ cursor:grab; }
+.tile.zoom-drag{ cursor:grabbing; }
+.tile.zoomed .pin-hint, .tile:fullscreen .pin-hint{ display:none; }
+.tile .zoom-chip{
+  position:absolute; right:8px; bottom:8px; z-index:2; height:auto; padding:5px 9px; font-size:11px; line-height:1.2;
+  background:rgba(0,0,0,.85); border:1px solid transparent; border-radius:5px; color:var(--tune); cursor:pointer;
+}
+.tile .zoom-chip:hover{ border-color:var(--tune); }
+.tile .zoom-chip[hidden]{ display:none; }
+/* Tela cheia do tile (setupTileFullscreen em app.js): os controles somem com o mouse parado. */
+.tile:fullscreen{ border:none; border-radius:0; }
+.tile.fs-idle{ cursor:none; }
 
 .tile-controls{
   position:absolute; top:8px; left:8px; display:flex; align-items:center; gap:7px;
@@ -579,6 +592,8 @@ body.picker-quality.sharing .quality-wrap{ display:inline-flex; }
   opacity:0; transition:.15s; z-index:3;
 }
 .tile:hover .tile-controls{ opacity:1; }
+/* Precisa vir depois das regras de :hover acima: em tela cheia o mouse está sempre sobre o tile. */
+.tile.fs-idle .fs-btn, .tile.fs-idle .pip-btn, .tile.fs-idle .tile-controls, .tile.fs-idle .label, .tile.fs-idle .zoom-chip{ opacity:0; pointer-events:none; }
 .tile-controls .ctl-btn{
   width:22px; height:22px; padding:0; border:none; background:transparent; color:var(--ink);
   display:flex; align-items:center; justify-content:center; border-radius:50%; cursor:pointer; flex-shrink:0;

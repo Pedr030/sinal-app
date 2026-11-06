@@ -675,7 +675,7 @@ test('gerenciar sala: ligações no código (botão, janela, ações, evento de 
   assert.match(html, /id="manageBtn"[^>]*hidden/);                                   // nasce escondido
   for(const action of ['rename', 'set-password', 'close']) assert.match(appJs, new RegExp(`action: '${action}'`), action);
   assert.match(appJs, /RoomEvent\.RoomMetadataChanged[\s\S]*?refreshRoomChip\(\);[\s\S]*?updateManageButton\(\)/); // nome e botões acompanham o metadata
-  assert.match(appJs, /DisconnectReason\.ROOM_DELETED[\s\S]*?A sala foi encerrada\./);                          // quem estava dentro entende o que houve
+  assert.match(appJs, /setEntryStatus\(disconnectMessage\(reason, LivekitClient\.DisconnectReason\)\);/);          // quem estava dentro entende o que houve (texto testado no U4)
   assert.match(appJs, /askConfirm\(\{\s*title: 'Encerrar a sala'[\s\S]*?danger: true/);                          // encerrar sempre pede confirmação
   assert.match(appJs, /function leaveRoom\(\)\{[\s\S]*?manageBtn'\)\.hidden = true;[\s\S]*?closeManage\(\)/);    // sair da sala fecha tudo
 });
@@ -1195,16 +1195,186 @@ test('resumo da recepção: fps recebido (médio e mínimo), perda em %, congela
   assert.equal(diag.summarizeRecvSamples([{ seconds: 4, received: -3, decoded: 0, bytes: 0 }]), null);
 });
 
-test('gargalo provável: separa captura de quem transmite, CPU/upload dele, rede e o PC de quem assiste', () => {
+test('gargalo provável: separa captura de quem transmite, CPU/upload dele, o caminho e o PC de quem assiste', () => {
   const recvLow = { recvFps: 18, decodedFps: 18, lossPct: 0, freezeSeconds: 0 };
   assert.equal(diag.streamBottleneck({ recvFps: 58, decodedFps: 58, lossPct: 0, freezeSeconds: 0 }, { target: 60, fps: 58 }), 'ok');
   assert.equal(diag.streamBottleneck(recvLow, { target: 60, fps: 19, cap: 20, lim: 'none' }), 'captura no PC de quem transmite');
   assert.equal(diag.streamBottleneck(recvLow, { target: 60, fps: 19, cap: 58, lim: 'cpu' }), 'CPU de quem transmite');
   assert.equal(diag.streamBottleneck(recvLow, { target: 60, fps: 19, cap: 58, lim: 'bandwidth' }), 'upload de quem transmite');
-  assert.equal(diag.streamBottleneck({ ...recvLow, lossPct: 4 }, { target: 60, fps: 58, cap: 59, lim: 'none' }), 'rede (perda de pacotes)');
+  assert.equal(diag.streamBottleneck({ ...recvLow, lossPct: 4 }, { target: 60, fps: 58, cap: 59, lim: 'none' }), 'indeterminado'); // sem "perda no envio"
   assert.equal(diag.streamBottleneck({ recvFps: 40, decodedFps: 20, lossPct: 0, freezeSeconds: 0 }, { target: 60, fps: 58 }), 'decodificação no seu PC');
   assert.equal(diag.streamBottleneck(recvLow, null), 'sem dados de quem transmite'); // site antigo: meta assumida 30
-  assert.equal(diag.streamBottleneck(recvLow, { target: 60, fps: 58, cap: 58 }), 'rede ou servidor');
+  assert.equal(diag.streamBottleneck(recvLow, { target: 60, fps: 58, cap: 58 }), 'servidor ou caminho até você');
+});
+
+test('gargalo provável (F4): perda vem antes de fps baixo, régua de 40 em 60 fps e tela parada não é problema', () => {
+  // linha real de 05/11: perda 6,5%, emissor 44 de 60. Antes saía "captura" e a perda sumia
+  const real = { recvFps: 44, decodedFps: 44, lossPct: 6.5, freezeSeconds: 3 };
+  assert.equal(diag.streamBottleneck(real, { target: 60, fps: 44, cap: 44, lim: 'none', upLoss: 6 }), 'perda antes do servidor');
+  assert.equal(diag.streamBottleneck(real, { target: 60, fps: 44, cap: 44, lim: 'none', upLoss: 0.1 }), 'servidor ou caminho até você');
+  // perda vence até com captura baixa de verdade
+  assert.equal(diag.streamBottleneck({ recvFps: 18, decodedFps: 18, lossPct: 3, freezeSeconds: 0 }, { target: 60, fps: 19, cap: 20, lim: 'none', upLoss: 3 }), 'perda antes do servidor');
+  assert.equal(diag.streamBottleneck(real, null), 'indeterminado');
+  // Jogos normal: 44 de 60 sem perda nem congelamento não é gargalo (antes dava "captura", 167 minutos)
+  assert.equal(diag.streamBottleneck({ recvFps: 44, decodedFps: 44, lossPct: 0, freezeSeconds: 0 }, { target: 60, fps: 44, cap: 44, lim: 'none' }), 'ok');
+  assert.equal(diag.streamBottleneck({ recvFps: 39, decodedFps: 39, lossPct: 0, freezeSeconds: 0 }, { target: 60, fps: 39, cap: 39, lim: 'none' }), 'captura no PC de quem transmite');
+  // em 30 fps a régua continua 75%
+  assert.equal(diag.streamBottleneck({ recvFps: 23, decodedFps: 23, lossPct: 0, freezeSeconds: 0 }, { target: 30, fps: 23, cap: 23 }), 'ok');
+  assert.equal(diag.streamBottleneck({ recvFps: 22, decodedFps: 22, lossPct: 0, freezeSeconds: 0 }, { target: 30, fps: 22, cap: 22, lim: 'none' }), 'captura no PC de quem transmite');
+  // tela parada: poucos quadros, quase nenhum dado, nada travando. Se travar, volta a ser problema
+  const parada = { recvFps: 3, decodedFps: 3, lossPct: 0, freezeSeconds: 0 };
+  assert.equal(diag.streamBottleneck(parada, { target: 30, fps: 3, cap: 3, kbps: 120, lim: 'none' }), 'ok');
+  assert.equal(diag.streamBottleneck({ ...parada, freezeSeconds: 4 }, { target: 30, fps: 3, cap: 3, kbps: 120, lim: 'none' }), 'captura no PC de quem transmite');
+  assert.equal(diag.streamBottleneck(parada, { target: 30, fps: 3, cap: 3, kbps: 3000, lim: 'none' }), 'captura no PC de quem transmite');
+});
+
+test('resumo da recepção (F3): ida e volta e buffer de jitter com pico, pedidos de quadro-chave e retransmissão, relay', () => {
+  const sum = diag.summarizeRecvSamples([
+    recvSample({ rttMs: 40, jitterDelayMs: 50, pli: 1, nack: 10, relay: false }),
+    recvSample({ rttMs: 120, jitterDelayMs: 210, pli: 2, nack: 5, relay: true })
+  ]);
+  assert.equal(sum.rttMs, 80);
+  assert.equal(sum.rttMax, 120);
+  assert.equal(sum.jitterDelayMax, 210);
+  const line = diag.recvSummaryLine('ab12', sum, {}, null);
+  assert.match(line, /ida e volta 80ms \(pico 120\) · buffer de jitter 130ms \(pico 210\) · pedidos de quadro-chave 3 · pedidos de retransmissão 15 · conexão por relay/);
+  // sem esses dados (amostra do painel do tile ou navegador sem o campo) nada aparece
+  const plain = diag.recvSummaryLine('ab12', diag.summarizeRecvSamples([recvSample({})]), {}, null);
+  assert.doesNotMatch(plain, /ida e volta|buffer de jitter|quadro-chave|retransmissão|relay/);
+});
+
+const pathFns = new Function(['recvPathInfo', 'jitterDelayMs'].map((n) => extractFunction(appJs, n)).join('\n') + '; return { recvPathInfo, jitterDelayMs };')();
+
+test('caminho da recepção: ida e volta e relay saem do par de candidatos escolhido; sem par, volta vazio', () => {
+  const report = new Map([
+    ['p0', { type: 'candidate-pair', state: 'failed', nominated: true, currentRoundTripTime: 9, localCandidateId: 'c1' }],
+    ['p1', { type: 'candidate-pair', state: 'succeeded', nominated: true, currentRoundTripTime: 0.045, localCandidateId: 'c2' }],
+    ['c1', { type: 'local-candidate', candidateType: 'host' }],
+    ['c2', { type: 'local-candidate', candidateType: 'relay' }]
+  ]);
+  assert.deepEqual(pathFns.recvPathInfo(report), { rttMs: 45, relay: true });
+  report.set('c2', { type: 'local-candidate', candidateType: 'srflx' });
+  assert.equal(pathFns.recvPathInfo(report).relay, false);
+  assert.deepEqual(pathFns.recvPathInfo(new Map()), { rttMs: null, relay: null });
+});
+
+test('buffer de jitter: média do trecho a partir dos contadores acumulados; sem quadro novo, sem dado', () => {
+  assert.equal(pathFns.jitterDelayMs({ jitterDelay: 10, jitterEmitted: 100 }, { jitterDelay: 16, jitterEmitted: 200 }), 60);
+  assert.equal(pathFns.jitterDelayMs({ jitterDelay: 10, jitterEmitted: 100 }, { jitterDelay: 10, jitterEmitted: 100 }), null);
+});
+
+const disconnectMessage = new Function(extractFunction(appJs, 'disconnectMessage') + '; return disconnectMessage;')();
+
+test('desconexão (U4): removido e sala encerrada não parecem queda de rede', () => {
+  const R = { UNKNOWN_REASON: 0, DUPLICATE_IDENTITY: 2, SERVER_SHUTDOWN: 3, PARTICIPANT_REMOVED: 4, ROOM_DELETED: 5, ROOM_CLOSED: 10 };
+  assert.equal(disconnectMessage(R.ROOM_DELETED, R), 'A sala foi encerrada.');
+  assert.equal(disconnectMessage(R.ROOM_CLOSED, R), 'A sala foi encerrada.');
+  assert.equal(disconnectMessage(R.PARTICIPANT_REMOVED, R), 'Você foi removido da sala.');
+  assert.match(disconnectMessage(R.DUPLICATE_IDENTITY, R), /outra janela/);
+  assert.match(disconnectMessage(R.SERVER_SHUTDOWN, R), /servidor reiniciou/);
+  assert.equal(disconnectMessage(R.UNKNOWN_REASON, R), 'Você foi desconectado da sala.');
+  assert.equal(disconnectMessage(undefined, R), 'Você foi desconectado da sala.');
+  assert.equal(disconnectMessage(4, undefined), 'Você foi desconectado da sala.'); // sem a lista do LiveKit: nada de chute
+});
+
+const captureErrorMessage = new Function(extractFunction(appJs, 'captureErrorMessage') + '; return captureErrorMessage;')();
+
+test('erro de captura (U5/U6): cancelar fica em silêncio, cada falha tem frase própria e o texto cru não vai pra tela', () => {
+  const err = (name, message = 'detalhe interno') => Object.assign(new Error(message), { name });
+  assert.equal(captureErrorMessage(err('NotAllowedError', 'Permission denied'), 'tela'), null);
+  assert.equal(captureErrorMessage(err('AbortError', 'Invalid capture constraints'), 'tela', true), null); // seletor do app cancelado (medido na 44.9.1)
+  assert.match(captureErrorMessage(err('AbortError', 'Error starting capture'), 'tela', false), /Não consegui abrir a tela/); // no navegador é falha de verdade
+  assert.match(captureErrorMessage(err('NotAllowedError', 'Permission denied by system'), 'tela'), /sistema bloqueou o acesso à tela/);
+  assert.match(captureErrorMessage(err('NotAllowedError', 'Permission denied'), 'câmera'), /Sem permissão para usar a câmera/);
+  assert.match(captureErrorMessage(err('AbortError'), 'câmera'), /Não consegui abrir a câmera/);
+  assert.match(captureErrorMessage(err('NotFoundError'), 'câmera'), /nenhuma câmera/);
+  assert.match(captureErrorMessage(err('NotReadableError'), 'tela'), /Outro programa/);
+  assert.match(captureErrorMessage(err('DeviceUnsupportedError'), 'tela'), /navegador não consegue/);
+  for(const name of ['TypeError', 'NotReadableError', 'NotFoundError']) assert.doesNotMatch(captureErrorMessage(err(name), 'tela'), /detalhe interno/);
+  assert.match(captureErrorMessage(null, 'tela'), /Tente de novo/);
+  assert.doesNotMatch(appJs, /setRoomStatus\([^\n]*e\.message/); // texto cru só no registro
+});
+
+const parseJoinInput = new Function(extractFunction(appJs, 'parseJoinInput') + '; return parseJoinInput;')();
+
+test('campo de código (U13): aceita código, link do site, link sinal:// e sala de servidor; Enter entra', () => {
+  assert.equal(parseJoinInput('  abc123 '), 'abc123');
+  assert.equal(parseJoinInput('https://sinal.test/?sala=ABC123'), 'ABC123');
+  assert.equal(parseJoinInput('sinal.test/?x=1&sala=ABC123#fim'), 'ABC123');
+  assert.equal(parseJoinInput('sinal://join?sala=ABC123'), 'ABC123');
+  assert.equal(parseJoinInput('https://sinal.test/?sala=s123456789012345678-abc123'), 's123456789012345678-abc123');
+  assert.equal(parseJoinInput('https://sinal.test/?sala=%E0%A4%A'), '%E0%A4%A'); // codificação quebrada não derruba
+  assert.equal(parseJoinInput(''), '');
+  assert.doesNotMatch(readFileSync(join(ROOT, 'public/index.html'), 'utf8'), /id="joinCodeInput"[^>]*maxlength/);
+  assert.match(appJs, /getElementById\('joinCodeInput'\)\.addEventListener\('keydown', \(e\) => \{ if\(e\.key === 'Enter'\) joinRoom\(\); \}\);/);
+});
+
+const roomNotFoundMessage = new Function(extractFunction(appJs, 'roomNotFoundMessage') + '; return roomNotFoundMessage;')();
+
+test('sala não encontrada (U14): quem volta pelo último código ouve que a sala fechou, não que errou', () => {
+  assert.equal(roomNotFoundMessage('ABC123', 'join', 'ABC123'), 'Essa sala já fechou.');
+  assert.equal(roomNotFoundMessage('s1-abc', 'server-join', null), 'Essa sala já fechou.');
+  assert.match(roomNotFoundMessage('XYZ999', 'join', 'ABC123'), /^Sala não encontrada\. Ela pode já ter fechado/);
+  assert.match(roomNotFoundMessage('XYZ999', 'join', null), /^Sala não encontrada/);
+});
+
+const tileZoom = new Function(['tileContentBox', 'clampTileZoom', 'zoomTileAt', 'tileZoomLabel'].map((n) => extractFunction(appJs, n)).join('\n') + '; return { tileContentBox, clampTileZoom, zoomTileAt, tileZoomLabel };')();
+
+test('zoom no tile: o ponto sob o cursor fica parado, de 1× a 4×, e perto de 1× volta ao normal', () => {
+  const start = { scale: 1, x: 0, y: 0 };
+  const two = tileZoom.zoomTileAt(start, 0.25, 0.75, 2);
+  assert.equal(two.scale, 2);
+  assert.equal(0.25 * two.scale + two.x, 0.25); // o que estava em 25% continua em 25%
+  assert.equal(0.75 * two.scale + two.y, 0.75);
+  assert.equal(tileZoom.zoomTileAt(start, 0.5, 0.5, 9).scale, 4);
+  assert.equal(tileZoom.zoomTileAt(two, 0.5, 0.5, 0.5).scale, 1);
+  assert.equal(tileZoom.zoomTileAt(two, 0.5, 0.5, 1.01).scale, 1);
+  assert.equal(tileZoom.tileZoomLabel(2), '2,0×');
+  assert.equal(tileZoom.tileZoomLabel(1.55), '1,6×');
+});
+
+test('zoom no tile: a imagem nunca sai do tile, nem com faixas pretas de vídeo em outra proporção', () => {
+  const full = { w: 1, h: 1 };
+  assert.deepEqual(tileZoom.clampTileZoom({ scale: 1, x: 0.3, y: -0.3 }, full), { scale: 1, x: 0, y: 0 });
+  const corner = tileZoom.clampTileZoom({ scale: 2, x: 0.5, y: -5 }, full);
+  assert.equal(corner.x + 0, 0); // + 0 tira o -0 da conta, que dá na mesma no CSS
+  assert.equal(corner.y, -1);
+  assert.deepEqual(tileZoom.clampTileZoom({ scale: 2, x: -0.4, y: -0.6 }, full), { scale: 2, x: -0.4, y: -0.6 });
+  // vídeo 4:3 num tile 16:9: ocupa 75% da largura
+  const box = tileZoom.tileContentBox(1600, 900, 1440, 1080);
+  assert.deepEqual(box, { w: 0.75, h: 1 });
+  // em 1,2× a imagem (90%) ainda cabe na largura: fica no meio do tile
+  assert.ok(Math.abs(tileZoom.clampTileZoom({ scale: 1.2, x: 0.9, y: 0 }, box).x - -0.1) < 1e-9);
+  // em 2× a imagem (150%) passa do tile: a borda esquerda da imagem é o limite, não a do elemento
+  const edge = tileZoom.clampTileZoom({ scale: 2, x: 0.9, y: 0 }, box);
+  assert.ok(Math.abs(edge.x + 2 * 0.125) < 1e-9);
+  assert.ok(Math.abs(tileZoom.clampTileZoom({ scale: 2, x: -9, y: 0 }, box).x - (1 - 2 * 0.875)) < 1e-9);
+  // vídeo largo: faixas em cima e embaixo. Sem tamanho ainda: considera o tile inteiro
+  assert.deepEqual(tileZoom.tileContentBox(1600, 900, 3200, 900), { w: 1, h: 0.5 });
+  assert.deepEqual(tileZoom.tileContentBox(1600, 900, 0, 0), full);
+});
+
+test('zoom no tile: ligações (Ctrl + roda sem aumentar a página, arraste não conta como clique, tela cheia é do tile)', () => {
+  assert.match(appJs, /if\(!e\.ctrlKey\) return;\s*e\.preventDefault\(\);/);
+  assert.match(appJs, /\}, \{ passive: false \}\);/);
+  assert.match(appJs, /if\(document\.fullscreenElement !== tile\) togglePin\(id\);/); // com zoom, clique parado continua minimizando
+  assert.match(appJs, /if\(dragged\)\{ dragged = false; e\.stopImmediatePropagation\(\); \}/);
+  assert.ok(appJs.indexOf('setupTileZoom(tile, video);') < appJs.indexOf('togglePin(id); });')); // o filtro do arraste vem antes de minimizar
+  assert.match(appJs, /tile\.requestFullscreen\(\)/);
+  assert.doesNotMatch(appJs, /video\.requestFullscreen/); // no <video> o navegador anularia o zoom
+  const css = readFileSync(join(ROOT, 'public/style.css'), 'utf8');
+  assert.ok(css.indexOf('.tile.fs-idle .tile-controls') > css.indexOf('.tile:hover .tile-controls')); // mesma força: a regra que vem depois vence
+  assert.match(css, /\.tile \.zoom-chip\[hidden\]\{ display:none; \}/); // sem isso o display do botão venceria o hidden
+});
+
+const describeCssTiming = new Function(extractFunction(appJs, 'describeCssTiming') + '; return describeCssTiming;')();
+
+test('página sem CSS (R1): o registro diz status, tamanho e protocolo, e o reload vem depois de baixar o CSS de novo', () => {
+  assert.equal(describeCssTiming({ responseStatus: 503, decodedBodySize: 0, nextHopProtocol: 'h2' }), 'status 503, tamanho 0, protocolo h2');
+  assert.equal(describeCssTiming({ responseStatus: 0, nextHopProtocol: '' }), 'status ?, tamanho ?, protocolo ?');
+  assert.equal(describeCssTiming(undefined), 'download sem registro');
+  assert.match(appJs, /fetch\('style\.css', \{ cache: 'reload', signal: abort\.signal \}\)/);
+  assert.match(appJs, /await refreshStylesheetCache\(\);\s*appLog\('\[sinal\] recarregando a página pra recuperar o CSS'\);\s*window\.location\.reload\(\);/);
 });
 
 test('linha de recepção junta o lado de quem transmite e o palpite; marca curta e estável, sem nome', () => {
@@ -1406,13 +1576,13 @@ test('estatísticas no tile: o gargalo usa os ~12 s recebidos (mesma janela de q
   // print do dono (Tchelou na 0.3.21): envio 45 de 60, congelando, codificador por software se limitando = não é a rede
   const tch = { recvFps: 46, decodedFps: 46, kbps: 4200, lossPct: 0, freezeSeconds: 1.2 };
   assert.equal(tileStatsLines(tch, { target: 60, fps: 45, cap: 54, hw: false, lim: 'bandwidth' }, tch)[3], 'Gargalo provável: upload de quem transmite');
-  assert.equal(tileStatsLines(tch, { target: 60, fps: 45, cap: 54, hw: false, lim: 'none' }, tch)[3], 'Gargalo provável: rede ou servidor');
+  assert.equal(tileStatsLines(tch, { target: 60, fps: 45, cap: 54, hw: false, lim: 'none' }, tch)[3], 'Gargalo provável: servidor ou caminho até você');
   // Marcelo no Nítido (placa da NVIDIA): 29 -> 18 -> 12 -> 9 com "cpu" = corte do WebRTC, não a captura
   const mar = { recvFps: 9, decodedFps: 9, kbps: 3600, lossPct: 0, freezeSeconds: 0 };
   assert.equal(tileStatsLines(mar, { target: 30, fps: 9, cap: 9, hw: true, lim: 'cpu' }, mar)[3], 'Gargalo provável: corte automático de quadros (placa ocupada com o jogo)');
   assert.equal(tileStatsLines(mar, { target: 30, fps: 9, cap: 9, hw: false, lim: 'cpu' }, mar)[3], 'Gargalo provável: captura no PC de quem transmite');
   assert.equal(tileStatsLines(mar, { target: 30, fps: 9, cap: 9, hw: true, lim: 'none' }, mar)[3], 'Gargalo provável: captura no PC de quem transmite');
-  assert.equal(tileStatsLines(now, sender)[3], 'Gargalo provável: rede ou servidor'); // sem a janela longa, culparia a rede
+  assert.equal(tileStatsLines(now, sender)[3], 'Gargalo provável: servidor ou caminho até você'); // sem a janela longa, culparia o caminho
   assert.match(appJs, /summarizeRecvSamples\(st\.samples\.slice\(-TILE_STATS_NOW_SAMPLES\)\)/);
   assert.match(appJs, /tileStatsLines\(sum, sender, sumLong\)/);
 });
@@ -1521,12 +1691,12 @@ test('perda no envio: resumo, mensagem pra quem assiste e veredito de que lado e
   assert.equal(msg.upLoss, 2);
   assert.equal(diag.parseSendStats(msg, 'd1-aaaaaa').upLoss, 2);
   assert.equal(diag.parseSendStats({ ...msg, upLoss: 400 }, 'd1-aaaaaa').upLoss, null);   // absurdo vira "sem dado"
-  // quem assiste vê 5% de perda: se o upload de quem transmite perde 4%, o problema é dele; se perde 0,2%, é do caminho até você
+  // quem assiste vê 5% de perda: com 4% já na chegada ao servidor, a perda vem de antes dele; com 0,2%, vem do servidor ou do caminho
   const recv = { recvFps: 50, decodedFps: 50, kbps: 7000, lossPct: 5, freezeSeconds: 2 };
   const s = (upLoss) => ({ target: 60, fps: 50, cap: 50, hw: true, lim: 'none', upLoss });
-  assert.equal(diag.streamBottleneck(recv, s(4)), 'upload de quem transmite (perdendo pacotes)');
-  assert.equal(diag.streamBottleneck(recv, s(0.2)), 'internet entre o servidor e você');
-  assert.equal(diag.streamBottleneck(recv, s(null)), 'rede (perda de pacotes)');          // quem transmite com site antigo
+  assert.equal(diag.streamBottleneck(recv, s(4)), 'perda antes do servidor');
+  assert.equal(diag.streamBottleneck(recv, s(0.2)), 'servidor ou caminho até você');
+  assert.equal(diag.streamBottleneck(recv, s(null)), 'indeterminado');                    // quem transmite com site antigo
   assert.match(diag.recvSummaryLine('ab12', { seconds: 60, recvFps: 50, recvMin: 40, decodedFps: 50, kbps: 7000, lossPct: 5, freezes: 2, freezeSeconds: 2 }, { codec: 'H.264', width: 1280, height: 720 },
     { quality: 'Jogos', codec: 'H.264', fps: 50, fpsMin: 40, target: 60, cap: 50, capMin: 45, lim: 'none', hw: true, enc: 'NVIDIA', upLoss: 4 }), /perda no envio 4\.0%/);
   // a coleta usa o relatório do servidor (remote-inbound-rtp) ligado ao envio
