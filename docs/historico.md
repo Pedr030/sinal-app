@@ -1693,3 +1693,37 @@ Mesmo código do app (pasta `electron/` atual), dois binários: 44.9.1 (Chromium
 - **O que não prova:** só placa AMD (nada sobre NVIDIA ou a GTX 1650 do Marcelo), carga sintética no lugar de jogo, sessões curtas (no máximo uns 4 minutos de captura somados). Sem regressão visível não é aprovação.
 
 **Decisão sugerida:** o alerta de segurança já está fechado na 44.9.1, então não há pressa para o 45. Ele só vale se o dono quiser; antes disso, uma passada curta com jogo real. A branch `electron-45` está atrás da `main` (parte da 0.3.24) e precisaria ser atualizada antes de qualquer release.
+
+## 86. Um dono para o fim da transmissão (2026-11-06, site 0.8.87)
+
+Uma transmissão podia acabar de vários jeitos, e cada um limpava um pedaço diferente. O que sobrava de um virava bug no seguinte. Agora tudo passa por `endShare(reason)`.
+
+**Observado antes de construir** (duas abas no navegador interno, LiveKit de verdade):
+
+- Sair transmitindo deixava qualidade, codec e marcador velhos, e a recuperação de tela preta recusava dizendo "transmitindo" com zero publicações (B2).
+- Dois pedidos seguidos faziam 2 capturas e 2 publicações (B3).
+- Moderador desligava só o vídeo: o áudio seguia no ar, sem aviso nenhum (B4).
+- Falha do áudio depois do vídeo deixava publicação de vídeo órfã (B6).
+- Sair perdia o último minuto do registro (B11).
+- **Bug novo:** num `full-reconnect` o LiveKit republica a tela sozinho, com ID novo, e o site entendia como fim. A pessoa seguia no ar com o botão dizendo "Compartilhar minha tela".
+
+**Ordem dos eventos (medida):** numa queda, `LocalTrackUnpublished` chega antes do `Disconnected`, com a sala ainda `connected`. Por isso a captura fechada espera uma microtarefa: o `Disconnected` roda antes e decide o motivo. Sem isso, a queda virava `captura-fechada` e apagava o marcador.
+
+**Como ficou:**
+
+- `shareEndPlan(reason)` diz o que cada motivo decide. Só `queda` mantém o marcador de retomar; só `moderador` tem mensagem nova.
+- `shareEndReasonFor` traduz o `DisconnectReason`. Decisão de alguém nunca vira `queda`.
+- `endShare` limpa primeiro e tira do ar por último, para os eventos em cascata encontrarem tudo zerado. Até o unpublish é síncrono, por isso `leaveRoom` chama sem esperar, com `skipUnpublish`. Tira do ar pela lista de publicações, porque no app podem existir dois áudios de tela.
+- `shareBusy` em `toggleShare`: um pedido por vez. `startRoom` impede publicar na sala errada se a pessoa trocou de sala com o seletor aberto.
+- `roomReconnecting` liga em `Reconnecting` e `SignalReconnecting`. Enquanto ligado, `LocalTrackUnpublished` e `TrackMuted` locais são ignorados. Na volta, `reconcileAfterReconnect` confere a publicação: se existe, segue; se o ID mudou, zera os contadores e a lista de quem assiste; se sumiu, `endShare('queda')`. Vale também para a câmera.
+- `degradationPreference` entra em `publishOptions`, para a republicação usar o valor certo.
+
+- Na republicação, `gamesDegradation` volta a `null`. O sender novo nasce com a regra da publicação, e sem isso `adjustGamesDegradation` achava que nada tinha mudado: quem codifica pela placa perderia o "sem corte automático" até parar. Achado no app real (`maintain-framerate-and-resolution` caía para `maintain-resolution`).
+
+**Provado no LiveKit de verdade** (captura sintética, `toggleShare` real): começar e parar, pedido duplo, `signal-reconnect`, `full-reconnect` com troca de qualidade, moderador, voltar a transmitir depois do moderador, captura fechada, falha do áudio, sair (com a linha de resumo de 40 s), `SERVER_SHUTDOWN` (mantém o marcador), remoção e sala apagada.
+
+**Provado no app real** (captura de verdade, AMD, perfil temporário): começar e parar, pedido duplo, `full-reconnect` mantendo H.264 High (`64001f`) pela placa a 29 fps, moderador derrubando vídeo e áudio isolado. A regra da placa também voltou sozinha no app: `maintain-framerate-and-resolution`, cai para `maintain-resolution` logo depois da reconexão e volta no ciclo seguinte.
+
+**Não provado:** `DUPLICATE_IDENTITY`, queda física de rede, moderador pela interface real.
+
+**Alarme falso, para não repetir:** com imagem sintética de 360p, o `degradationPreference` "volta sozinho" em até 7 s depois de trocar para Jogos. Não é bug: é o piso de 720p do `adjustGamesDegradation` (registro: "resolução chegou ao piso"). Testar regra de adaptação com imagem de pelo menos 720p.
