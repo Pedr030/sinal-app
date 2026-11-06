@@ -1,5 +1,15 @@
 [
   {
+    "id": "2026-11-06-reiniciar-apos-queda",
+    "date": "2026-11-06",
+    "title": "Mais estabilidade no app",
+    "site": "0.8.84",
+    "app": "0.3.25",
+    "items": [
+      "Se o vídeo do app cair por um problema na placa, o Sinal oferece reiniciar antes de você transmitir."
+    ]
+  },
+  {
     "id": "2026-11-06-volume-e-visual",
     "date": "2026-11-06",
     "title": "Correções",

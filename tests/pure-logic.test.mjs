@@ -1295,9 +1295,9 @@ test('captura pela placa: ligada por padrão (0.3.23), só booleano, liga as dua
   assert.match(main, /trustedIpc\.handle\('sinal:get-settings', \(\) => settingsForSite\(\)\);/);
   assert.match(main, /return \{ \.\.\.appSettings, gpuCaptureSupported, gpuCaptureActive \};/);
   assert.match(main, /captura pela placa de vídeo: \$\{gpuCaptureActive \? 'ligada' : 'desligada'\}/); // o registro diz se está valendo
-  assert.match(main, /trustedIpc\.on\('sinal:relaunch', \(\) => \{\s*isQuitting = true;\s*app\.relaunch\(\);\s*app\.quit\(\);/);
+  assert.match(main, /trustedIpc\.on\('sinal:relaunch', \(event, roomCode\) => \{\s*isQuitting = true;[\s\S]*?app\.relaunch\(\{ args: keep \}\);\s*app\.quit\(\);/);
   const preload = readFileSync(join(ROOT, 'electron/src/preload.js'), 'utf8');
-  assert.match(preload, /relaunchApp: \(\) => ipcRenderer\.send\('sinal:relaunch'\),/);
+  assert.match(preload, /relaunchApp: \(roomCode\) => ipcRenderer\.send\('sinal:relaunch', typeof roomCode === 'string' \? roomCode : undefined\),/);
 });
 
 test('captura pela placa nas Configurações: só onde o app conhece a chave; cinza sem suporte; avisa e oferece reiniciar quando ainda não vale', () => {
@@ -1576,4 +1576,25 @@ test('volume do tile: nenhum <video> sobra tocando e o áudio acompanha o vídeo
   assert.match(appJs, /if\(tile\.isConnected && !tile\.classList\.contains\('render-off'\)\) video\.play\(\)/);
   // Religar só o vídeo mantém o áudio inscrito: o tile novo precisa pegar essa faixa.
   assert.match(extractFunction(appJs, 'handleTrackAdded'), /stream\.getAudioTracks\(\)\.includes\(audioTrack\)/);
+});
+
+test('depois da queda do vídeo do Chromium, oferece reiniciar o app antes de transmitir', () => {
+  const shouldOfferGpuRestart = new Function(extractFunction(appJs, 'shouldOfferGpuRestart') + '; return shouldOfferGpuRestart;')();
+  assert.equal(shouldOfferGpuRestart(0, 0, true), false);          // nunca caiu
+  assert.equal(shouldOfferGpuRestart(1, 0, true), true);           // caiu e ainda não perguntou
+  assert.equal(shouldOfferGpuRestart(1, 1, true), false);          // já perguntou por essa queda
+  assert.equal(shouldOfferGpuRestart(2, 1, true), true);           // caiu de novo depois da pergunta
+  assert.equal(shouldOfferGpuRestart(1, 0, false), false);         // janela escondida (atalho em jogo): a pergunta ficaria invisível
+  assert.equal(shouldOfferGpuRestart(undefined, 0, true), false);  // app antigo ou resposta estranha
+  // a pergunta vem antes de abrir o seletor de tela, e o site antigo/app antigo só pulam a checagem
+  assert.match(appJs, /if\(await offerRestartAfterGpuCrash\(\)\) return;\s*\/\/ Captura e publicação separadas/);
+  assert.match(extractFunction(appJs, 'offerRestartAfterGpuCrash'), /typeof api\.getGpuState !== 'function'/);
+  // app: conta só queda do processo de vídeo, entrega ao site e reabre voltando para a sala
+  const main = readFileSync(join(ROOT, 'electron/src/main.js'), 'utf8');
+  assert.match(main, /details\.type === 'GPU' && details\.reason !== 'clean-exit'\) gpuCrashCount\+\+/);
+  assert.match(main, /trustedIpc\.handle\('sinal:get-gpu-state'/);
+  assert.match(main, /RESUME_ARG \+ roomCode/);
+  assert.match(main, /arg !== HIDDEN_LAUNCH_ARG/);
+  const preload = readFileSync(join(ROOT, 'electron/src/preload.js'), 'utf8');
+  assert.match(preload, /getGpuState: \(\) => ipcRenderer\.invoke\('sinal:get-gpu-state'\)/);
 });

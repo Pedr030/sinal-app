@@ -265,6 +265,7 @@ function settingsForSite(){
 // mesmo depois de reinstalar. Em dev (npm start) não mexe — registraria o
 // electron.exe cru pra abrir no boot.
 const HIDDEN_LAUNCH_ARG = '--hidden';
+const RESUME_ARG = '--resume-room='; // relançamento que volta para a sala (sinal:relaunch com o código)
 
 function applyLoginItemSetting(){
   if(!app.isPackaged) return;
@@ -395,7 +396,7 @@ function showOfflinePage(failedUrl){
 
 trustedIpc.on('sinal:retry-connection', () => { tryReconnect({ manual: true }); });
 
-function createMainWindow(initialRoomCode, startHidden){
+function createMainWindow(initialRoomCode, startHidden, resumeRoom){
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 800,
@@ -411,8 +412,9 @@ function createMainWindow(initialRoomCode, startHidden){
     }
   });
 
+  // resumeRoom: reabertura pedida pelo próprio site (volta direto para a sala, como depois de uma queda da página).
   const startUrl = initialRoomCode
-    ? `${SINAL_URL}/?sala=${encodeURIComponent(initialRoomCode)}`
+    ? `${SINAL_URL}/?sala=${encodeURIComponent(initialRoomCode)}${resumeRoom ? '&retomar=1' : ''}`
     : SINAL_URL;
   mainWindow.loadURL(startUrl);
 
@@ -1161,9 +1163,15 @@ app.on('render-process-gone', (event, webContents, details) => {
 });
 // GPU/áudio/rede do Chromium: ele mesmo reinicia, mas anotar é o que conta
 // pra achar padrão (ex: codificador da placa de vídeo quebrando com jogo).
+// Quantas vezes o processo de vídeo (GPU) do Chromium caiu nesta abertura do app. Depois de uma queda, o codificador
+// da placa pode não voltar (relato de 2026-11-05: transmissão preta até reabrir o app), então o site oferece reiniciar
+// antes de a pessoa transmitir de novo (sinal:get-gpu-state, HANDOFF §80).
+let gpuCrashCount = 0;
 app.on('child-process-gone', (event, details) => {
   console.error('[sinal] processo do Chromium caiu:', details);
+  if(details && details.type === 'GPU' && details.reason !== 'clean-exit') gpuCrashCount++;
 });
+trustedIpc.handle('sinal:get-gpu-state', () => ({ crashes: gpuCrashCount }));
 trustedIpc.handle('sinal:get-update-state', () => updateState);
 trustedIpc.handle('sinal:check-for-updates', () => { checkForUpdates({ manual: true }); return updateState; });
 trustedIpc.on('sinal:install-update', () => {
@@ -1274,7 +1282,9 @@ app.whenReady().then(() => {
   // normal mesmo com "minimizado" ligado.
   const startHidden = process.argv.includes(HIDDEN_LAUNCH_ARG) && !!appSettings.startMinimized;
   if(!startHidden) createSplashWindow();
-  createMainWindow(extractRoomCodeFromProtocolUrl(launchUrl), startHidden);
+  const resumeArg = process.argv.find((arg) => arg.startsWith(RESUME_ARG));
+  const resumeRoom = resumeArg && /^[A-Za-z0-9_-]{1,64}$/.test(resumeArg.slice(RESUME_ARG.length)) ? resumeArg.slice(RESUME_ARG.length) : null;
+  createMainWindow(resumeRoom || extractRoomCodeFromProtocolUrl(launchUrl), startHidden, !!resumeRoom);
   createTray();
   setupAutoUpdater();
 
@@ -1375,9 +1385,12 @@ trustedIpc.handle('sinal:set-settings', (event, partial) => {
 });
 
 // "Reiniciar agora" (Configurações, depois de ligar/desligar a captura pela placa): fecha e abre o app de novo.
-trustedIpc.on('sinal:relaunch', () => {
+// Com o código da sala, o app reabre e volta para ela sozinho (RESUME_ARG, lido na abertura).
+trustedIpc.on('sinal:relaunch', (event, roomCode) => {
   isQuitting = true;
-  app.relaunch();
+  const keep = process.argv.slice(1).filter((arg) => !arg.startsWith(RESUME_ARG) && arg !== HIDDEN_LAUNCH_ARG);
+  if(typeof roomCode === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(roomCode)) keep.push(RESUME_ARG + roomCode);
+  app.relaunch({ args: keep });
   app.quit();
 });
 

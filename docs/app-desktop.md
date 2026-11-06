@@ -2,7 +2,7 @@
 
 O app é o **mesmo site** (o de produção, ou `SINAL_DEV_URL` em desenvolvimento) dentro de uma janela do Electron, com recursos nativos por cima. Mudanças no site chegam ao app só de recarregar; mudanças em `electron/` precisam de instalador novo. Histórico: [historico.md](historico.md) §15–§29, §34, §37, §45, §52, §58, §66–§75.
 
-Versão atual: **0.3.24** · Electron 44.5.1 · Chromium 152.0.7977.130.
+Versão atual: **0.3.25** · Electron 44.5.1 · Chromium 152.0.7977.130.
 
 ## Peças
 
@@ -38,6 +38,7 @@ Versão atual: **0.3.24** · Electron 44.5.1 · Chromium 152.0.7977.130.
 
 - **Página caiu** (`render-process-gone`): recarrega e volta para a sala com `?retomar=1`; duas quedas em 5 minutos recarregam só a tela inicial. O site oferece retomar a transmissão.
 - **Processo da GPU caiu** (`child-process-gone`): anotado no registro; o site se recupera sozinho da tela preta (ver [video.md](video.md)).
+  - O main conta as quedas (`gpuCrashCount`, `sinal:get-gpu-state`). Antes de transmitir, o site oferece **reiniciar o app** (quem transmite não se recupera sozinho: sai preto, §80). `sinal:relaunch` aceita o código da sala e reabre com `--resume-room=` voltando para ela.
 - **Registro**: `sinal.log` na pasta `logs` dos dados do app (gira em 1 MB para `sinal.old.log`). O site escreve nele com `appLog`. "Enviar relatório" manda o final do registro + o texto da pessoa para o webhook privado.
 - Instância única: abrir de novo (ou um link `sinal://join?sala=...`) foca o app que já está aberto.
 

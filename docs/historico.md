@@ -1618,3 +1618,17 @@ Relato do dono: assistindo um amigo, o volume e o mudo do tile não mudavam nada
 **Bug vizinho, também reproduzido.** Religar só o vídeo (`restartTileVideo`) criava o tile novo sem áudio, porque o evento do áudio não vem de novo.
 
 **Correção.** `releaseTileVideo` solta o `<video>` em `removeTile` e `leaveRoom`; a saída da janela flutuante só dá `play()` em tile que está na página; `handleTrackAdded` devolve a faixa de áudio já inscrita ao tile novo; `reportIneffectiveMute` grava "mudo sem efeito" no registro, para um próximo caso por outro caminho aparecer.
+
+## 80. Transmissão preta depois da queda do vídeo do Chromium (2026-11-06, site 0.8.84 e app 0.3.25)
+
+Relato do dono: um amigo começou a transmitir e a tela ficou preta para todos, e o app dele piscava branco. O registro dele (botão "Enviar relatório") conta a noite inteira:
+
+- 17h: transmissões normais, codificador da placa AMD (`MediaFoundationVideoEncodeAccelerator`).
+- 18:13: o processo de vídeo do Chromium caiu (`type GPU`, `exitCode 34`) no meio de uma live que já estava a 6 fps. A transmissão acabou na hora.
+- O app ficou aberto. Às 19:02 a transmissão morreu em menos de 1 s; às 23:24 o codificador passou a ser `OpenH264 (software)` com ~1 kbps (imagem preta), e as 4 tentativas seguintes falharam igual.
+
+Leitura: quem **assiste** se recupera da queda sozinho (§72), quem **transmite** não, e nada avisava. Fechar e abrir o app resolve. O piscar branco é compatível, mas o registro não prova. A versão do Windows dele (10.0.26300) parece de testes da Microsoft: pode pesar, não se sabe.
+
+**Correção (app 0.3.25 + site):** o processo principal conta as quedas do processo GPU (`gpuCrashCount`, ignora `clean-exit`) e entrega ao site (`getGpuState`). Antes de abrir o seletor de tela, `toggleShare` chama `offerRestartAfterGpuCrash`: se caiu desde a última pergunta e a janela está visível e focada, pergunta "Reiniciar o Sinal?" (Reiniciar agora / Transmitir assim mesmo). Reiniciar usa `relaunchApp(roomCode)`: o app reabre com `--resume-room=<código>` e volta para a sala (`?retomar=1`). Pelo atalho global com a janela escondida não pergunta (a pergunta ficaria invisível e a transmissão nunca abriria). Site novo com app antigo: pula a checagem.
+
+**Testado:** a lógica no navegador interno com `sinalElectron` simulado (sem queda, recusa, mesma queda, queda nova, janela escondida, app antigo) e no app real em modo dev: derrubar a GPU pelo CDP (`Browser.crashGpuProcess`), contar a queda, perguntar, recusar sem repetir, perguntar de novo na queda seguinte e reiniciar voltando para a sala com `--resume-room` (17 conferências, sala simulada). **Não testado:** o codificador da placa voltando a funcionar depois do reinício no PC de quem teve o problema.
