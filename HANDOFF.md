@@ -66,7 +66,7 @@ Compartilhamento de tela ao vivo para um grupo de amigos, usado **ao lado** da c
 4. **Captura em luta pesada (Marcelo/Tchelou, GTX 1650)**: a captura ainda cai quando a placa satura com o jogo. Não há alavanca no app; a saída é limitar o fps do jogo no PC dele.
 5. **Tela preta**: a recuperação foi provada derrubando a GPU pelo CDP, não com atualização de driver de verdade. Se acontecer de novo, o registro de quem assiste deve mostrar "o processo de vídeo do Chromium reiniciou" → "religando o vídeo" → "recarregando a página pra recuperar o vídeo".
 
-**Pendente de publicação** (em `development`, sem commit): recuperação da página aberta sem CSS (§78 do histórico). **Em teste, sem commit:** Electron 45.2.3 na branch local `electron-45` (precisa de teste com jogo real antes de publicar; ver §78).
+**Pendente de publicação** (em `development`): recuperação da página aberta sem CSS (§78 do histórico, com commit) e volume e mudo sem efeito (§79, sem commit). **Em teste:** Electron 45.2.3 na branch local `electron-45`, com commit (precisa de teste com jogo real antes de publicar; ver §78).
 
 ## Decidido e não reabrir sem o dono pedir
 

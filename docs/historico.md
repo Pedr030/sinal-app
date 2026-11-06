@@ -1606,3 +1606,15 @@ XSS no site (todo dado de outra pessoa passa por `escapeHtml`/`textContent`/DOM;
 - **Conferido no navegador interno:** tirando o CSS da página, ela se recuperou sem recarregar; forçando a falha, recarregou uma vez e na segunda não recarregou.
 - **Electron 45 (branch local `electron-45`, sem commit):** 45.2.3 / Chromium 156.0.8078.80 / Node 24.22.2. Conferido sem abrir janela: o addon carrega, as duas opções da captura pela placa existem no binário e os testes passam. Novidade: `electron_wer.dll` precisa do nome do executável; `tools/after-pack.cjs` renomeia para `Sinal_wer.dll`. **Falta teste com janela e jogo real** (captura pela placa, H.264 High, áudio isolado, seletor, atualização) antes de publicar.
 - **Bug aberto no Electron 43–45 ([#55180](https://github.com/electron/electron/issues/55180)):** cada sessão de captura vaza memória de vídeo no processo principal, e `WebRtcAllowWgcUsingTexture` vazaria também a cada quadro no processo da GPU. Nas 6 transmissões em Jogos de 40+ minutos do registro do dono (até 66 min) a captura não caiu de forma consistente com o tempo; o teste de memória de vídeo ainda não foi feito.
+
+## 79. Volume e mudo sem efeito até reabrir o app (2026-11-05)
+
+Relato do dono: assistindo um amigo, o volume e o mudo do tile não mudavam nada, o som ficava cheio. Fechar e abrir o app resolveu.
+
+**Mecanismo, reproduzido em duas abas escondidas.** O nível `audioLevel` do `inbound-rtp` é medido depois do volume, então serve de medidor. Com um segundo `<video>` tocando a mesma faixa, 100%, 25% e mudo deram o mesmo nível no tile. O Chromium soma o volume de todos os elementos que tocam a faixa, e o LiveKit reaproveita a mesma faixa de áudio entre inscrições, então o elemento que sobra volta a tocar quando a transmissão reabre. Só recarregar a página limpa.
+
+**Como sobra um `<video>`.** O único caminho achado no código é a janela flutuante: `removeTile` sai da janela, e 250 ms depois o `leavepictureinpicture` dava `play()` num elemento que já tinha saído da página. Ele precisa ter ficado com o áudio no stream, o que acontece quando o vídeo sai antes do áudio. **Não confirmado** que foi isso na sessão do dono: o registro não anota janela flutuante, e a janela em si não foi testada, o `play()` foi simulado.
+
+**Bug vizinho, também reproduzido.** Religar só o vídeo (`restartTileVideo`) criava o tile novo sem áudio, porque o evento do áudio não vem de novo.
+
+**Correção.** `releaseTileVideo` solta o `<video>` em `removeTile` e `leaveRoom`; a saída da janela flutuante só dá `play()` em tile que está na página; `handleTrackAdded` devolve a faixa de áudio já inscrita ao tile novo; `reportIneffectiveMute` grava "mudo sem efeito" no registro, para um próximo caso por outro caminho aparecer.

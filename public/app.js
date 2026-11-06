@@ -530,6 +530,11 @@ function handleTrackAdded(track, publication, participant){
   stream.addTrack(track.mediaStreamTrack);
 
   if(track.kind === 'video'){
+    // Religar só o vídeo (restartTileVideo) deixa o áudio inscrito, e o evento dele não vem de novo: sem isso o tile
+    // novo nasce sem som e sem nada para o volume controlar.
+    const audioPub = isCamera ? null : participant.getTrackPublication(Track.Source.ScreenShareAudio);
+    const audioTrack = audioPub && audioPub.isSubscribed && audioPub.track && audioPub.track.mediaStreamTrack;
+    if(audioTrack && !stream.getAudioTracks().includes(audioTrack)) stream.addTrack(audioTrack);
     const displayName = participant.name || participant.identity;
     const label = isCamera ? displayName + ' (câmera)' : displayName;
     addTile(tileId, label, stream);
@@ -2843,7 +2848,7 @@ function addTile(id, name, stream){
       setTimeout(() => {
         const kind = pipLeaveKind(byCode, video.paused, performance.now() - lastPauseAt);
         // De volta no tile, tem que continuar ao vivo (o X pausou).
-        if(!tile.classList.contains('render-off')) video.play().catch(() => {});
+        if(tile.isConnected && !tile.classList.contains('render-off')) video.play().catch(() => {});
         // "Expandir" tem que trazer o app de volta (o Electron só fecha a janelinha).
         if(kind === 'expanded') focusAppWindow();
       }, 250);
@@ -2867,6 +2872,7 @@ function addTile(id, name, stream){
       e.stopPropagation();
       setTileMuted(tile, !video.muted);
       refreshMuteAllBtn();
+      if(video.muted) setTimeout(() => reportIneffectiveMute(id, video), 1500);
     });
     volSlider.addEventListener('click', (e) => e.stopPropagation());
     tile.querySelector('.stats-btn').addEventListener('click', (e) => {
@@ -2930,6 +2936,16 @@ function addTile(id, name, stream){
   renderViewers(id);
 }
 
+// Um <video> fora da página não pode continuar tocando: a faixa de áudio é reaproveitada entre inscrições e o Chromium
+// soma o volume de todos os elementos que tocam a mesma faixa. Um que sobrasse em 100% deixava o tile sem efeito (volume
+// e mudo), mesmo reabrindo a transmissão, até recarregar a página (relato de 2026-11-05, HANDOFF §79).
+function releaseTileVideo(el){
+  const video = el.querySelector('video');
+  if(!video) return;
+  video.pause();
+  video.srcObject = null;
+}
+
 function removeTile(id){
   const el = tiles.get(id);
   // Transmissão acabou ou parei de assistir — a janela flutuante não pode
@@ -2939,7 +2955,7 @@ function removeTile(id){
   }
   const statsState = tileStatsState.get(id);
   if(statsState){ clearInterval(statsState.timer); tileStatsState.delete(id); }
-  if(el) el.remove();
+  if(el){ el.remove(); releaseTileVideo(el); }
   tiles.delete(id);
   dismissedPending.delete(id); // a transmissão acabou (ou virou ao vivo): se voltar, volta a aparecer
   const idx = pinnedOrder.indexOf(id);
@@ -3012,6 +3028,21 @@ function saveVolume(key, percent){
   const keys = Object.keys(all);
   while(keys.length > MAX_SAVED_VOLUMES) delete all[keys.shift()];
   try{ localStorage.setItem(VOLUMES_KEY, JSON.stringify(all)); }catch(e){ /* sem localStorage: só não lembra */ }
+}
+
+// O Chromium aplica o volume antes de medir o nível da faixa: mudo com nível acima de zero quer dizer que outra coisa
+// ainda toca esse áudio. Só registra, para o próximo caso aparecer no relatório.
+async function reportIneffectiveMute(tileId, video){
+  if(!video.muted || !video.isConnected || !room) return;
+  const participant = room.remoteParticipants.get(tileId);
+  const pub = participant && participant.getTrackPublication(LivekitClient.Track.Source.ScreenShareAudio);
+  if(!pub || !pub.track) return;
+  try{
+    const report = await pub.track.getRTCStatsReport();
+    let level = 0;
+    if(report) report.forEach((s) => { if(s.type === 'inbound-rtp' && s.kind === 'audio') level = s.audioLevel || 0; });
+    if(level > 0) appLog(`[sinal] mudo sem efeito #${streamTag(tileId)}: o áudio continua tocando (nível ${level.toFixed(3)})`);
+  }catch(e){ /* sem estatística: não dá para saber */ }
 }
 
 // Estado de "mudo" de um tile de quem assiste, sempre pelo mesmo caminho (botão do tile, silenciar tudo, preferência).
@@ -3506,7 +3537,7 @@ function leaveRoom(){
   tileViewers.clear();
   myWatching.clear();
   exitPip();
-  tiles.forEach(el => el.remove());
+  tiles.forEach((el) => { el.remove(); releaseTileVideo(el); });
   tiles.clear();
   dismissedPending.clear();
   document.getElementById('hiddenPanel').hidden = true;

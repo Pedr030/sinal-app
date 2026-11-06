@@ -1566,3 +1566,14 @@ test('página sem CSS: confere a última regra do arquivo, baixa de novo e recar
   assert.match(appJs, /link\.href = `style\.css\?recarga=\$\{Date\.now\(\)\}`;/);
   assert.match(appJs, /sessionStorage\.setItem\(CSS_RELOAD_KEY, String\(now\)\); \}catch\(e\)\{ return; \}/); // sem a marca, não recarrega
 });
+
+test('volume do tile: nenhum <video> sobra tocando e o áudio acompanha o vídeo religado', () => {
+  // Faixa de áudio é reaproveitada e o Chromium soma o volume de quem toca a mesma faixa: tile removido solta o <video>.
+  assert.match(appJs, /if\(el\)\{ el\.remove\(\); releaseTileVideo\(el\); \}/);
+  assert.match(appJs, /tiles\.forEach\(\(el\) => \{ el\.remove\(\); releaseTileVideo\(el\); \}\);/);
+  assert.match(extractFunction(appJs, 'releaseTileVideo'), /video\.srcObject = null/);
+  // A saída da janela flutuante não pode dar play num <video> que já saiu da página.
+  assert.match(appJs, /if\(tile\.isConnected && !tile\.classList\.contains\('render-off'\)\) video\.play\(\)/);
+  // Religar só o vídeo mantém o áudio inscrito: o tile novo precisa pegar essa faixa.
+  assert.match(extractFunction(appJs, 'handleTrackAdded'), /stream\.getAudioTracks\(\)\.includes\(audioTrack\)/);
+});
