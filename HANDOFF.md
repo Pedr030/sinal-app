@@ -4,7 +4,7 @@ Ponto de partida para quem for mexer no projeto (pessoa ou outra instância de I
 
 > Comentários no código que citam **"HANDOFF §NN"** apontam para a seção de mesmo número em `docs/historico.md`.
 
-Atualizado em 2026-11-06 · site **0.8.86** · app desktop **0.3.26**.
+Atualizado em 2026-11-06 · site **0.8.87** · app desktop **0.3.26**.
 
 ## O que é
 
@@ -25,7 +25,7 @@ Compartilhamento de tela ao vivo para um grupo de amigos, usado **ao lado** da c
 | [docs/servidor.md](docs/servidor.md) | VM do LiveKit, painel de consumo, **capacidade medida** (quantas transmissões cabem) |
 | [docs/testes.md](docs/testes.md) | Testes automáticos, testes no app real (CDP), testes pelo navegador interno e as regras de quando pedir permissão |
 | [docs/publicacao.md](docs/publicacao.md) | Passo a passo de publicar site e app (versões, Novidades, PR, instalador, release) |
-| [docs/historico.md](docs/historico.md) | Histórico completo §1–§83 (o "porquê" de tudo, inclusive o que foi descartado) |
+| [docs/historico.md](docs/historico.md) | Histórico completo §1–§86 (o "porquê" de tudo, inclusive o que foi descartado) |
 | [README.md](README.md) | Apresentação pública do projeto |
 
 ## Estado atual em uma página
@@ -66,12 +66,13 @@ Compartilhamento de tela ao vivo para um grupo de amigos, usado **ao lado** da c
 4. **Captura em luta pesada (Marcelo/Tchelou, GTX 1650)**: a captura ainda cai quando a placa satura com o jogo. Não há alavanca no app; a saída é limitar o fps do jogo no PC dele.
 5. **Tela preta**: a recuperação foi provada derrubando a GPU pelo CDP, não com atualização de driver de verdade. Se acontecer de novo, o registro de quem assiste deve mostrar "o processo de vídeo do Chromium reiniciou" → "religando o vídeo" → "recarregando a página pra recuperar o vídeo".
 
-**Rodada de 2026-11-06 (site 0.8.83 a 0.8.86, app 0.3.25):**
+**Rodada de 2026-11-06 (site 0.8.83 a 0.8.87, app 0.3.25 e 0.3.26):**
 
 - 0.8.83: recuperação da página aberta sem CSS (§78) e volume e mudo sem efeito (§79).
 - 0.8.84 e app 0.3.25: oferta de reiniciar o app depois da queda do vídeo do Chromium (§80).
 - 0.8.85: sala de servidor fechada se o LiveKit não responde, diagnóstico extra do envio e coletor da VM com contadores de descarte, já instalado (§81).
 - 0.8.86: fase 1 do roadmap (segurança, service worker, gargalo, recepção e mensagens, §82) e zoom no tile com a tela cheia passando a ser do tile (§83; o Esc para sair ainda não foi provado).
+- 0.8.87: um dono para o fim da transmissão (`endShare`), trava de início (`shareBusy`) e guard de reconexão, que corrige a transmissão que seguia no ar com o botão dizendo "Compartilhar minha tela" depois de uma reconexão completa (§86). Falta a faixa "Reconectando" e o tile de quem assiste voltar sozinho (0.8.88), e depois a volta automática à sala.
 
 **Pendente:**
 
