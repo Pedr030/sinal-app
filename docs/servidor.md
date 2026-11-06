@@ -16,6 +16,7 @@ Histórico: [historico.md](historico.md) §12 (migração para self-host), §31 
 ## Painel de consumo
 
 - Na VM, o serviço `sinal-stats` (Python, só leitura de `/proc`, cgroups e API do LiveKit; sem porta aberta; teto de 40 MB e 5% de CPU) grava média e pico a cada 10 s (3 dias, `raw-*.jsonl`) e a cada minuto (30 dias, `min-*.jsonl`) em `/var/lib/sinal-stats/`. Contagens do LiveKit são só números (salas, pessoas, telas, câmeras), nunca nomes.
+- Descartes de pacote (§81): o coletor também grava, por janela, `udpRcvbuf` (buffer UDP cheio), `snDrop` (fila da placa) e `txDrop`/`rxDrop`, mais os acumulados `cum` desde o boot. Gráfico "Pacotes descartados" no painel. Linha de base em 2026-11-06: `RcvbufErrors` 0,61% dos datagramas recebidos.
 - No PC: `npm run vm` abre o painel em `127.0.0.1:4173` (histórico por `query.py <segundos> <pontos>` via SSH; ao vivo por `live.json`). Detalhes em `tools/vm-dashboard/README.md`.
 - **O número que mostra o limite é o `steal`** (tempo que a Oracle segura a CPU da VM). Uso + steal subindo juntos = limite da máquina.
 
