@@ -1669,3 +1669,13 @@ Do Lote A de funcionalidades, o dono escolheu só o zoom. Atalhos globais novos,
 - **Tela cheia mudou (`setupTileFullscreen`):** agora é do tile, não do `<video>`, porque o navegador anula `transform` no elemento em tela cheia. Com isso os controles do tile aparecem em tela cheia, e por isso eles, o nome e o cursor somem depois de 2,5 s de mouse parado. O botão vira "Sair da tela cheia".
 
 **Testado:** suíte automática. No Electron fora da tela, com roda e arraste reais (`sendInputEvent`): zoom, arraste e prints em dois tamanhos. No navegador interno: ponto sob o cursor parado, limites, etiqueta, clique com e sem zoom e reset na fileira. No app real (o navegador interno recusa tela cheia): entrar e sair pelo botão, zoom mantido ao entrar, roda e arraste em tela cheia, etiqueta, clique sem efeito e sumiço com o mouse parado. Esse teste achou o controle de volume ficando na tela, porque a regra de `.fs-idle` vinha antes da de `:hover`. **Não testado:** Esc para sair, porque a tecla enviada pelo CDP não saiu da tela cheia, o que não diz se a tecla de verdade sai.
+
+## 84. App 0.3.26: Electron 44.9.1 (2026-11-06)
+
+Fecha o alerta de segurança alto do Electron 44.5.1 (a correção está na 44.9.1) e leva junto os PRs do Dependabot #57 (`undici`) e #58 (`fast-uri`). O 45.2.3 segue na branch `electron-45`, sem teste com jogo.
+
+**Provado, no app real em modo dev (sem jogo):** Chromium 152.0.7977.167; o seletor entrega a janela do Sinal; a faixa fica viva, a 30 fps; o `<video>` da página recebe 30 fps e o codificador da placa (`MediaFoundationVideoEncodeAccelerator`, AMD, hardware) manda 30 fps em 20 s. A captura pela placa está ativa (`gpuCaptureActive`). Tela cheia do tile e Esc **real** (apertado pelo dono) saindo da tela cheia, com o tile de volta ao normal. O instalador empacotado abre, carrega o site em produção com CSS e informa app 0.3.26 e 0 quedas do vídeo.
+
+**Não provado:** jogo real (placa saturada, captura em luta) e sessão longa com memória de vídeo, que só se vê com jogo; o Electron 45. O log do Chromium com `--vmodule=*wgc*` saiu vazio no teste, então a textura da placa foi confirmada só pelo estado do app (`gpuCaptureActive`), não pelo log.
+
+**Instalador:** gerado fora da pasta do projeto; o `app.asar` traz o código novo e a versão 0.3.26. Release `desktop-v0.3.26` (`.exe`, `.blockmap`, `latest.yml`). A entrada do app nas Novidades só entrou no site depois que a release existia.

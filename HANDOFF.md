@@ -4,7 +4,7 @@ Ponto de partida para quem for mexer no projeto (pessoa ou outra instância de I
 
 > Comentários no código que citam **"HANDOFF §NN"** apontam para a seção de mesmo número em `docs/historico.md`.
 
-Atualizado em 2026-11-06 · site **0.8.86** · app desktop **0.3.25** no ar (0.3.26 pronto no código, sem instalador).
+Atualizado em 2026-11-06 · site **0.8.86** · app desktop **0.3.26**.
 
 ## O que é
 
@@ -66,7 +66,18 @@ Compartilhamento de tela ao vivo para um grupo de amigos, usado **ao lado** da c
 4. **Captura em luta pesada (Marcelo/Tchelou, GTX 1650)**: a captura ainda cai quando a placa satura com o jogo. Não há alavanca no app; a saída é limitar o fps do jogo no PC dele.
 5. **Tela preta**: a recuperação foi provada derrubando a GPU pelo CDP, não com atualização de driver de verdade. Se acontecer de novo, o registro de quem assiste deve mostrar "o processo de vídeo do Chromium reiniciou" → "religando o vídeo" → "recarregando a página pra recuperar o vídeo".
 
-**Publicado na 0.8.83:** recuperação da página aberta sem CSS (§78) e volume e mudo sem efeito (§79). **Publicado na 0.8.84 / app 0.3.25:** oferta de reiniciar o app depois da queda do vídeo do Chromium (§80). **Publicado na 0.8.85 (§81):** sala de servidor fechada se o LiveKit não responde (SEC1), diagnóstico extra do envio (E1); coletor da VM com contadores de descarte (S1) já instalado. **Publicado na 0.8.86 (§82):** fase 1 do roadmap (segurança, service worker, gargalo, recepção e mensagens). **App 0.3.26:** Electron 44.9.1 (decisão do dono) já no código, falta a passada com jogo real antes do instalador; a entrada do app nas Novidades entra junto com ele. **Também na 0.8.86 (§83):** zoom no tile, com a tela cheia passando a ser do tile; só o Esc para sair ainda não foi provado. **Em teste:** Electron 45.2.3 na branch local `electron-45`, com commit (precisa de teste com jogo real antes de publicar; ver §78).
+**Rodada de 2026-11-06 (site 0.8.83 a 0.8.86, app 0.3.25):**
+
+- 0.8.83: recuperação da página aberta sem CSS (§78) e volume e mudo sem efeito (§79).
+- 0.8.84 e app 0.3.25: oferta de reiniciar o app depois da queda do vídeo do Chromium (§80).
+- 0.8.85: sala de servidor fechada se o LiveKit não responde, diagnóstico extra do envio e coletor da VM com contadores de descarte, já instalado (§81).
+- 0.8.86: fase 1 do roadmap (segurança, service worker, gargalo, recepção e mensagens, §82) e zoom no tile com a tela cheia passando a ser do tile (§83; o Esc para sair ainda não foi provado).
+
+**Pendente:**
+
+- **App 0.3.26 publicado** (release `desktop-v0.3.26`, Electron 44.9.1, com os PRs do Dependabot #57 e #58): captura provada no app real em 2026-11-06 (30 fps pelo codificador da placa) e Esc real saindo da tela cheia (§84). Os amigos recebem pelo atualizador. Falta só o login real do Discord com o service worker novo.
+- **Em teste:** Electron 45.2.3 na branch local `electron-45`, com commit (precisa de teste com jogo real antes de publicar; ver §78).
+- Roadmap e relatório da pesquisa ficam em `reports/` (fora do git).
 
 ## Decidido e não reabrir sem o dono pedir
 
