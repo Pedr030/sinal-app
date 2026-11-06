@@ -633,7 +633,7 @@ test('retomar transmissão e janela flutuante: ligações no código (marcador, 
   for(const id of ['resumeShare', 'resumeShareBtn', 'resumeShareDismiss']) assert.match(html, new RegExp(`id="${id}"`));
   assert.match(css, /\.resume-share\[hidden\]\{display:none;\}/);       // display:flex não pode vencer o hidden
   assert.match(appJs, /setSharingMarker\(true\)/);                        // marca ao começar a transmitir
-  assert.match(appJs, /function resetShareButton\(\)\{[\s\S]*?setSharingMarker\(false\)/); // apaga quando termina por vontade
+  assert.match(appJs, /function endShare\(reason, opts\)\{[\s\S]*?setSharingMarker\(false\)/); // apaga quando termina por vontade
   assert.match(appJs, /takeSharingMarker\(\);[\s\S]*?params\.get\('retomar'\) !== '1'/);    // lê (e apaga) antes de decidir
   assert.match(preload, /focusWindow: \(\) => ipcRenderer\.send\('sinal:focus-window'\)/);
   assert.match(main, /trustedIpc\.on\('sinal:focus-window'/);
@@ -677,7 +677,7 @@ test('gerenciar sala: ligações no código (botão, janela, ações, evento de 
   assert.match(appJs, /RoomEvent\.RoomMetadataChanged[\s\S]*?refreshRoomChip\(\);[\s\S]*?updateManageButton\(\)/); // nome e botões acompanham o metadata
   assert.match(appJs, /setEntryStatus\(disconnectMessage\(reason, LivekitClient\.DisconnectReason\)\);/);          // quem estava dentro entende o que houve (texto testado no U4)
   assert.match(appJs, /askConfirm\(\{\s*title: 'Encerrar a sala'[\s\S]*?danger: true/);                          // encerrar sempre pede confirmação
-  assert.match(appJs, /function leaveRoom\(\)\{[\s\S]*?manageBtn'\)\.hidden = true;[\s\S]*?closeManage\(\)/);    // sair da sala fecha tudo
+  assert.match(appJs, /function leaveRoom\(shareEndReason\)\{[\s\S]*?manageBtn'\)\.hidden = true;[\s\S]*?closeManage\(\)/);    // sair da sala fecha tudo
 });
 
 // ---------- trocar acesso e passar a sala (HANDOFF §54): lista de candidatos e ligações ----------

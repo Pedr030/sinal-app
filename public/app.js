@@ -56,7 +56,10 @@ let room = null;           // LivekitClient.Room atual
 let myName = 'Você';
 let roomCode = null;
 let myAccessToken = null;  // token do LiveKit da sessão atual, reusado nas ações de moderação (api/moderate.js)
-let selfInitiatedUnpublish = false; // true durante o unpublishTrack() do próprio toggleShare()/toggleCamera() — evita reagir ao TrackMuted que isso pode emitir como parte do processo
+let selfInitiatedUnpublish = false; // true durante o unpublishTrack() do próprio endShare()/toggleCamera() — evita reagir ao TrackMuted que isso pode emitir como parte do processo
+let shareBusy = false; // começar ou parar em andamento: o segundo pedido é ignorado (ver toggleShare)
+let roomReconnecting = false; // o LiveKit está reconectando: faixas somem e voltam sozinhas, não é fim de transmissão (HANDOFF §86)
+let shareSidAtReconnect = null; // a publicação de tela de antes da reconexão: se mudou, ela foi republicada com ID novo
 const tileStreams = new Map(); // tileId -> MediaStream (junta vídeo+áudio da mesma fonte, ex: tela+áudio da guia)
 const tileVideoTracks = new Map(); // tileId -> Track de vídeo do LiveKit (pra amostrar getRTCStatsReport())
 
@@ -405,7 +408,16 @@ function wireRoomEvents(liveRoom){
   });
   // Depois de uma queda e volta, mensagens podem ter se perdido no meio —
   // reenvia o estado completo pra sala toda.
-  liveRoom.on(RoomEvent.Reconnected, () => { if(isCurrent()) sendWatchSync(); });
+  liveRoom.on(RoomEvent.Reconnected, () => {
+    if(!isCurrent()) return;
+    roomReconnecting = false;
+    reconcileAfterReconnect();
+    sendWatchSync();
+  });
+  // SignalReconnecting é a reconexão leve (a mídia segue); Reconnecting é a completa, em que o LiveKit republica tudo
+  // sozinho, com ID novo. Medido em 2026-11-06 (HANDOFF §86).
+  liveRoom.on(RoomEvent.Reconnecting, () => { if(isCurrent()) noteRoomReconnecting(); });
+  liveRoom.on(RoomEvent.SignalReconnecting, () => { if(isCurrent()) noteRoomReconnecting(); });
   liveRoom.on(RoomEvent.TrackPublished, (publication, participant) => {
     if(!isCurrent()) return;
     renderAvatars();
@@ -433,9 +445,11 @@ function wireRoomEvents(liveRoom){
   });
   // Cobre parar de compartilhar pelo controle nativo do navegador ("Parar
   // apresentação"), não só pelo nosso próprio botão.
+  // Numa queda este evento chega ANTES do Disconnected, com a sala ainda "connected" (medido, HANDOFF §86): a microtarefa
+  // deixa o Disconnected rodar primeiro e decidir o motivo certo. Sobrou transmissão só quando a captura fechou mesmo.
   liveRoom.on(RoomEvent.LocalTrackUnpublished, (publication) => {
-    if(!isCurrent()) return;
-    if(publication.source === Track.Source.ScreenShare){ resetShareButton(); clearViewers(liveRoom.localParticipant.identity); }
+    if(!isCurrent() || roomReconnecting) return;
+    if(publication.source === Track.Source.ScreenShare) queueMicrotask(() => { if(isCurrent()) endShare('captura-fechada'); });
     if(publication.source === Track.Source.Camera){ resetCameraButton(); clearViewers(liveRoom.localParticipant.identity + ':cam'); }
   });
   // Reação a mute forçado por admin (api/moderate.js) — 3ª tentativa
@@ -450,7 +464,9 @@ function wireRoomEvents(liveRoom){
   liveRoom.on(RoomEvent.TrackMuted, (publication, participant) => {
     if(!isCurrent()) return;
     if(participant === liveRoom.localParticipant){
-      if(selfInitiatedUnpublish) return;
+      if(selfInitiatedUnpublish || roomReconnecting) return;
+      // Tela: desliga tudo, inclusive o áudio, que antes ficava no ar (B4). O site nunca muta a própria tela: só vem do servidor.
+      if(publication.source === Track.Source.ScreenShare){ endShare('moderador'); return; }
       const track = publication.videoTrack || publication.track;
       if(track){
         liveRoom.localParticipant.unpublishTrack(track).catch((e) => console.error('[sinal] unpublish forçado (mute de admin) falhou:', e));
@@ -521,6 +537,7 @@ function wireRoomEvents(liveRoom){
   });
   liveRoom.on(RoomEvent.Disconnected, (reason) => {
     if(!isCurrent()) return;
+    roomReconnecting = false;
     // Chega aqui em qualquer desconexão que NÃO foi a gente mesmo chamando
     // leaveRoom() (isso já limpa `room` antes, então isCurrent() dá false e
     // esse handler nem roda) — inclui ser expulso por um admin, queda de
@@ -528,9 +545,19 @@ function wireRoomEvents(liveRoom){
     // sala sem conseguir fazer nada (bug real, achado em teste); agora volta
     // pra tela inicial de verdade, igual sair por conta própria.
     appLog(`[sinal] desconectado da sala (motivo ${reason})`);
-    leaveRoom();
+    leaveRoom(shareEndReasonFor(reason, LivekitClient.DisconnectReason));
     setEntryStatus(disconnectMessage(reason, LivekitClient.DisconnectReason));
   });
+}
+
+// Qual fim de transmissão é cada queda. Decisão de alguém nunca vira 'queda': é ela que mantém o "Retomar transmissão".
+// reasons = LivekitClient.DisconnectReason; sem motivo é o SDK desistindo de reconectar (medido, HANDOFF §86). Pura (testada).
+function shareEndReasonFor(reason, reasons){
+  const r = reasons || {};
+  if(reason == null) return 'queda';
+  if(reason === r.ROOM_DELETED || reason === r.ROOM_CLOSED) return 'sala-encerrada';
+  if(reason === r.PARTICIPANT_REMOVED || reason === r.DUPLICATE_IDENTITY) return 'removido';
+  return 'queda';
 }
 
 // O que dizer a quem caiu da sala. reasons = LivekitClient.DisconnectReason. Pura (testada).
@@ -1127,6 +1154,7 @@ async function changeActiveShareQuality(q){
     (track.encodings || []).forEach((e) => { e.maxBitrate = enc.maxBitrate; e.maxFramerate = enc.maxFramerate; });
     if(track.publishOptions){
       track.publishOptions.screenShareEncoding = { ...enc };
+      track.publishOptions.degradationPreference = preset.contentHint === 'motion' ? 'maintain-framerate' : 'maintain-resolution'; // a republicação da reconexão lê daqui
       if(track.publishOptions.backupCodec && typeof track.publishOptions.backupCodec === 'object'){
         track.publishOptions.backupCodec.encoding = { ...preset.vp8 };
       }
@@ -1533,34 +1561,23 @@ async function offerRestartAfterGpuCrash(){
   return true;
 }
 
+// Um pedido por vez: o atalho apertado de novo com o seletor aberto capturava e publicava duas vezes (B3, HANDOFF §86).
 async function toggleShare(){
   if(!room) return;
+  if(shareBusy){ appLog('[sinal] pedido de transmissão ignorado: já tem outro em andamento'); return; }
+  shareBusy = true;
+  try{ await toggleShareOnce(); }
+  finally{ shareBusy = false; }
+}
+
+async function toggleShareOnce(){
   const { Track } = LivekitClient;
   const pub = room.localParticipant.getTrackPublication(Track.Source.ScreenShare);
   if(pub){
-    // setScreenShareEnabled(false) só MUTA a track (ela continua publicada,
-    // com o mesmo trackSid) — confirmado em log real (2026-08-24): isso
-    // deixava getTrackPublication() sempre "verdadeiro", então o próximo
-    // clique caía de novo aqui (desligar já-mutado) em vez de religar, e a
-    // tela ficava "presa" aberta pros outros (nunca disparava
-    // TrackUnsubscribed pra sumir o tile deles). unpublishTrack desliga de
-    // verdade.
-    const audioPub = room.localParticipant.getTrackPublication(Track.Source.ScreenShareAudio);
-    selfInitiatedUnpublish = true;
-    try{
-      if(pub.videoTrack) await room.localParticipant.unpublishTrack(pub.videoTrack);
-      if(audioPub && audioPub.audioTrack) await room.localParticipant.unpublishTrack(audioPub.audioTrack);
-    }catch(e){
-      console.error('[sinal] unpublish da tela falhou:', e);
-      appLog(`[sinal] desligar a tela falhou: ${e && e.name}: ${e && e.message}`);
-      setRoomStatus('Não consegui desligar a tela. Saia e entre de novo na sala.', true);
-    }finally{
-      selfInitiatedUnpublish = false;
-    }
-    if(window.sinalElectron) teardownElectronIsolatedAudio();
-    resetShareButton();
+    await endShare('parou', { force: true });
     return;
   }
+  const startRoom = room; // o seletor pode ficar aberto: a pessoa pode sair ou trocar de sala nesse tempo
   if(await offerRestartAfterGpuCrash()) return;
   // Captura e publicação separadas (antes era setScreenShareEnabled, que faz
   // as duas juntas): no app desktop a qualidade é escolhida no seletor de
@@ -1586,6 +1603,7 @@ async function toggleShare(){
       surfaceSwitching: 'include'
     });
   }catch(e){
+    if(window.sinalElectron) teardownElectronIsolatedAudio(); // no app, o áudio isolado começa na escolha do seletor
     const message = captureErrorMessage(e, 'tela', !!window.sinalElectron);
     if(message){
       appLog(`[sinal] captura da tela falhou: ${e && e.name}: ${e && e.message}`);
@@ -1603,6 +1621,11 @@ async function toggleShare(){
     }catch(e){ /* fica com o padrão */ }
   }
   await applyCaptureQuality(videoTrack, quality);
+  if(room !== startRoom){
+    localTracks.forEach((t) => t.stop());
+    if(window.sinalElectron) teardownElectronIsolatedAudio();
+    return;
+  }
   activeShareQuality = quality;
   gamesDegradation = null;
   // Jogos/Fluido no app: a oferta da publicação (e as próximas, enquanto durar a transmissão) põe o H.264 High na frente,
@@ -1620,6 +1643,11 @@ async function toggleShare(){
     appLog(`[sinal] publicar a tela falhou: ${e && e.name}: ${e && e.message}`);
     localTracks.forEach((t) => t.stop());
     setRoomStatus('Não consegui transmitir a tela. Tente de novo.', true);
+    await endShare('falha-ao-publicar'); // se o áudio falhou depois do vídeo, tira do ar o vídeo que já tinha entrado (B6)
+    return;
+  }
+  if(room !== startRoom || !activeShareQuality){ // saiu da sala ou a transmissão já acabou enquanto publicava
+    localTracks.forEach((t) => t.stop());
     return;
   }
 
@@ -1645,7 +1673,7 @@ async function toggleShare(){
   const screenPub = room.localParticipant.getTrackPublication(Track.Source.ScreenShare);
   if(!screenPub || !screenPub.videoTrack){
     setRoomStatus('A captura começou mas a publicação falhou. Pare e tente de novo.', true);
-    resetShareButton();
+    await endShare('falha-ao-publicar');
     return;
   }
   const selfStream = new MediaStream([screenPub.videoTrack.mediaStreamTrack]);
@@ -1675,7 +1703,33 @@ async function toggleShare(){
   renderAvatars();
 }
 
-function resetShareButton(){
+// O que cada fim de transmissão decide. Só a queda mantém o marcador de retomar: é o único motivo que não foi decisão de
+// ninguém. reason: parou, saiu, captura-fechada, moderador, removido, sala-encerrada, falha-ao-publicar, queda. Pura (testada).
+function shareEndPlan(reason){
+  return {
+    keepMarker: reason === 'queda',
+    message: reason === 'moderador' ? 'Um moderador desligou a sua tela' : ''
+  };
+}
+
+// Único jeito de acabar uma transmissão (HANDOFF §86). Limpa primeiro e tira do ar por último: assim os eventos em cascata
+// do unpublish encontram tudo zerado e não fazem nada. Até o unpublish é síncrono, por isso leaveRoom pode chamar sem esperar.
+// opts.skipUnpublish: quem chama já vai desconectar, e o disconnect solta as faixas.
+// opts.force: a publicação existe mas o estado sumiu; o botão de parar ainda precisa funcionar.
+async function endShare(reason, opts){
+  const { skipUnpublish, force } = opts || {};
+  if(!activeShareQuality && !force) return;
+  const plan = shareEndPlan(reason);
+  const liveRoom = room;
+  appLog(`[sinal] transmissão encerrada (${reason})`);
+  flushSendSummary(20);
+  if(window.sinalElectron) teardownElectronIsolatedAudio();
+  sendStatsPrev = null; senderDetailPrev = null;
+  loggedEncoderFor = null;
+  activeShareQuality = null;
+  activeShareCodec = null;
+  shareWantsHighProfile = false;
+  gamesDegradation = null;
   const btn = document.getElementById('shareBtn');
   setBtnLabel(btn, 'Compartilhar minha tela');
   btn.classList.remove('active-share');
@@ -1683,19 +1737,68 @@ function resetShareButton(){
   document.getElementById('audioToggleBtn').disabled = false;
   document.getElementById('selfPreview').style.display = 'none';
   document.getElementById('selfStatus').textContent = 'Assistindo';
-  if(activeShareQuality) appLog('[sinal] transmissão encerrada');
-  setSharingMarker(false);
-  flushSendSummary(20);
-  sendStatsPrev = null; senderDetailPrev = null;
-  activeShareQuality = null;
-  activeShareCodec = null;
-  shareWantsHighProfile = false;
-  gamesDegradation = null;
   document.body.classList.remove('sharing');
   toggleQualityMenu(false);
   updateQualityBtn();
-  if(room) removeTile(room.localParticipant.identity);
+  if(liveRoom){
+    removeTile(liveRoom.localParticipant.identity);
+    clearViewers(liveRoom.localParticipant.identity);
+  }
   renderAvatars();
+  if(!plan.keepMarker) setSharingMarker(false);
+  if(plan.message) setRoomStatus(plan.message, true);
+  if(skipUnpublish || !liveRoom) return;
+
+  // setScreenShareEnabled(false) só MUTA a track (ela continua publicada, com o mesmo trackSid), confirmado em log real
+  // (2026-08-24): a tela ficava "presa" aberta pros outros. unpublishTrack desliga de verdade. Pela lista, e não por
+  // getTrackPublication: no app podem existir dois áudios de tela (o da aba e o isolado).
+  const { Source } = LivekitClient.Track;
+  const pubs = [...liveRoom.localParticipant.trackPublications.values()].filter((p) => p.source === Source.ScreenShare || p.source === Source.ScreenShareAudio);
+  selfInitiatedUnpublish = true;
+  for(const pub of pubs){
+    const track = pub.track;
+    if(!track) continue;
+    try{
+      await liveRoom.localParticipant.unpublishTrack(track);
+    }catch(e){
+      console.error('[sinal] unpublish da tela falhou:', e);
+      appLog(`[sinal] desligar a tela falhou: ${e && e.name}: ${e && e.message}`);
+      setRoomStatus('Não consegui desligar a tela. Saia e entre de novo na sala.', true);
+    }
+    track.stop();
+  }
+  selfInitiatedUnpublish = false;
+  if(room === liveRoom) renderAvatars();
+}
+
+// Marca a reconexão e guarda qual publicação de tela existia, pra saber na volta se ela foi republicada.
+function noteRoomReconnecting(){
+  if(roomReconnecting) return;
+  roomReconnecting = true;
+  const pub = room.localParticipant.getTrackPublication(LivekitClient.Track.Source.ScreenShare);
+  shareSidAtReconnect = pub ? pub.trackSid : null;
+}
+
+// Na volta: o LiveKit republica sozinho (mesma faixa, ID novo), então a transmissão segue. Prévia, qualidade e codec continuam
+// valendo; só os contadores recomeçam e quem assistia perdeu a inscrição. Se a publicação não voltou, acabou de verdade.
+function reconcileAfterReconnect(){
+  const { Source } = LivekitClient.Track;
+  const local = room.localParticipant;
+  if(activeShareQuality){
+    const pub = local.getTrackPublication(Source.ScreenShare);
+    if(!pub){
+      endShare('queda');
+    }else if(pub.trackSid !== shareSidAtReconnect){
+      appLog('[sinal] transmissão republicada depois da reconexão');
+      sendStatsPrev = null; senderDetailPrev = null;
+      gamesDegradation = null; // o sender novo nasce com a regra da publicação: o próximo ciclo reaplica a certa (ex.: sem corte, pela placa)
+      clearViewers(local.identity);
+    }
+  }
+  if(document.getElementById('cameraBtn').classList.contains('active-share') && !local.getTrackPublication(Source.Camera)){
+    resetCameraButton();
+    clearViewers(local.identity + ':cam');
+  }
 }
 
 // Frase para quem tentou capturar a tela ou a câmera, a partir do erro do navegador. O texto cru vai só pro registro.
@@ -2566,7 +2669,7 @@ async function sampleOwnScreenStats(){
   let report;
   try{ report = await track.getRTCStatsReport(); }catch(e){ return; }
   // parou de compartilhar enquanto esperava as estatísticas — não sobrescreve
-  // o "Assistindo" que resetShareButton() acabou de colocar
+  // o "Assistindo" que endShare() acabou de colocar
   if(!room || room.localParticipant.getTrackPublication(Track.Source.ScreenShare) !== pub || !report) return;
 
   let outbound = null;
@@ -3796,7 +3899,10 @@ function renderRosterPanel(){
   });
 }
 
-function leaveRoom(){
+// shareEndReason: por que a transmissão acabou, se tinha uma (ver endShare). Sem motivo, foi a pessoa que saiu.
+function leaveRoom(shareEndReason){
+  endShare(shareEndReason || 'saiu', { skipUnpublish: true });
+  roomReconnecting = false;
   if(window.sinalElectron && window.sinalElectron.setInRoom) window.sinalElectron.setInRoom(false);
   // Sair da sala compartilhando não passa pelo toggleShare() (que é quem
   // normalmente desliga isso) — sem isso aqui, a captura nativa de áudio
