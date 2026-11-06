@@ -66,7 +66,7 @@ Compartilhamento de tela ao vivo para um grupo de amigos, usado **ao lado** da c
 4. **Captura em luta pesada (Marcelo/Tchelou, GTX 1650)**: a captura ainda cai quando a placa satura com o jogo. Não há alavanca no app; a saída é limitar o fps do jogo no PC dele.
 5. **Tela preta**: a recuperação foi provada derrubando a GPU pelo CDP, não com atualização de driver de verdade. Se acontecer de novo, o registro de quem assiste deve mostrar "o processo de vídeo do Chromium reiniciou" → "religando o vídeo" → "recarregando a página pra recuperar o vídeo".
 
-Nada pendente de publicação em 2026-10-16 (a última leva, site 0.8.82 e app 0.3.24, trouxe o seletor de tela com as 4 qualidades numa linha e o texto da sala próprio do app — §77 do histórico).
+**Pendente de publicação** (em `development`, sem commit): recuperação da página aberta sem CSS (§78 do histórico). **Em teste, sem commit:** Electron 45.2.3 na branch local `electron-45` (precisa de teste com jogo real antes de publicar; ver §78).
 
 ## Decidido e não reabrir sem o dono pedir
 

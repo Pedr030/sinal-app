@@ -1553,3 +1553,16 @@ test('texto embaixo da barra da sala: no app explica o seletor e o som isolado; 
   assert.match(appJs, /el\.replaceChildren\('Ao clicar, escolha o que compartilhar e a qualidade\. Se for transmitir jogo, use a qualidade ', b,\s*'\. Numa janela, só o som dela vai junto; na tela inteira, vai o som do PC, menos o Discord\.'\);/);
   assert.match(appJs, /setupGpuHint\(\);\s*setupShareHint\(\);/);
 });
+
+// ---------- página aberta sem o CSS (HANDOFF §78) ----------
+const shouldReloadForCss = new Function(extractFunction(appJs, 'shouldReloadForCss') + '; const CSS_RELOAD_WINDOW_MS = 60000; return shouldReloadForCss;')();
+
+test('página sem CSS: confere a última regra do arquivo, baixa de novo e recarrega só uma vez', () => {
+  assert.match(styleCss, /:root\{ --css-carregado:1; \}\s*$/);                       // precisa ser a última regra: pega arquivo cortado
+  assert.equal(shouldReloadForCss(100000, 0), true);                                  // primeira vez
+  assert.equal(shouldReloadForCss(100000, 90000), false);                             // acabou de recarregar: não entra em ciclo
+  assert.equal(shouldReloadForCss(200000, 100000), true);                             // muito depois é um problema novo
+  assert.match(appJs, /window\.addEventListener\('DOMContentLoaded', \(\) => \{\s*ensureStylesLoaded\(\);/);
+  assert.match(appJs, /link\.href = `style\.css\?recarga=\$\{Date\.now\(\)\}`;/);
+  assert.match(appJs, /sessionStorage\.setItem\(CSS_RELOAD_KEY, String\(now\)\); \}catch\(e\)\{ return; \}/); // sem a marca, não recarrega
+});

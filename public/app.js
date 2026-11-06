@@ -5661,7 +5661,58 @@ function setupSettingsPanel(){
   el.addEventListener('click', () => handler(el));
 });
 
+// ---- Página aberta sem o CSS (HANDOFF §78) ----
+// Às vezes o app abria só com o HTML cru: o JavaScript rodava, mas o style.css não aplicava (print do dono,
+// 2026-11-05; causa ainda desconhecida, e o registro não mostrava nada). O fim do style.css define --css-carregado, então
+// arquivo vazio ou cortado também é percebido. Ao abrir: baixa de novo sem cache e, se não bastar, recarrega UMA vez
+// (a marca em sessionStorage impede ciclo de recarga). Tudo vai pro registro, pra descobrir a causa.
+const CSS_RELOAD_KEY = 'sinal:cssReloadAt';
+const CSS_RELOAD_WINDOW_MS = 60000;
+const CSS_RETRY_TIMEOUT_MS = 8000;
+function cssApplied(){ return getComputedStyle(document.documentElement).getPropertyValue('--css-carregado').trim() === '1'; }
+function shouldReloadForCss(now, lastAttempt){ return !(lastAttempt > 0 && now - lastAttempt < CSS_RELOAD_WINDOW_MS); }
+
+function describeCssState(link){
+  let rules = 'sem acesso';
+  try{ rules = link && link.sheet ? link.sheet.cssRules.length : 'sem folha'; }catch(e){ /* folha indisponível */ }
+  return `regras ${rules}, online ${navigator.onLine}, service worker ${navigator.serviceWorker && navigator.serviceWorker.controller ? 'ativo' : 'não'}`;
+}
+
+function retryStylesheet(oldLink){
+  return new Promise((resolve) => {
+    const link = document.createElement('link');
+    link.rel = 'stylesheet';
+    link.href = `style.css?recarga=${Date.now()}`; // endereço novo: não reaproveita nada do cache
+    const finish = () => { clearTimeout(timer); resolve(cssApplied()); };
+    const timer = setTimeout(finish, CSS_RETRY_TIMEOUT_MS);
+    link.addEventListener('load', finish);
+    link.addEventListener('error', finish);
+    (oldLink || document.head.lastElementChild).after(link);
+  });
+}
+
+async function ensureStylesLoaded(){
+  if(cssApplied()) return;
+  const oldLink = document.querySelector('link[rel="stylesheet"][href^="style.css"]');
+  appLog(`[sinal] a página abriu sem o CSS (${describeCssState(oldLink)}); baixando de novo`);
+  if(await retryStylesheet(oldLink)){
+    appLog('[sinal] CSS recuperado sem recarregar a página');
+    return;
+  }
+  let last = 0;
+  try{ last = Number(sessionStorage.getItem(CSS_RELOAD_KEY)) || 0; }catch(e){ /* sem sessionStorage: a marca fica em 0 */ }
+  const now = Date.now();
+  if(!shouldReloadForCss(now, last)){
+    appLog('[sinal] o CSS continua sem carregar depois de recarregar a página');
+    return;
+  }
+  try{ sessionStorage.setItem(CSS_RELOAD_KEY, String(now)); }catch(e){ return; } // sem a marca, recarregar podia virar ciclo
+  appLog('[sinal] recarregando a página pra recuperar o CSS');
+  window.location.reload();
+}
+
 window.addEventListener('DOMContentLoaded', () => {
+  ensureStylesLoaded();
   // Marca pro CSS esconder coisa que só faz sentido no navegador normal
   // (descrição de "o que é isso"/compatibilidade, botão de instalar PWA) —
   // dentro do Electron isso só lembra que é um site, não um app de verdade.
