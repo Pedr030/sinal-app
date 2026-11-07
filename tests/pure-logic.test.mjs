@@ -1651,7 +1651,7 @@ test('sugestão como aviso no canto da tela: sem foco, nunca sobre jogo em tela 
 });
 
 test('entrar na sala: uma conexão por vez (cliques repetidos não criam a mesma pessoa duplicada)', () => {
-  assert.match(appJs, /async function connectToRoom\(code, name, mode, extra\)\{\s*if\(connectInFlight\) return;\s*connectInFlight = true;\s*try\{ return await connectToRoomOnce\(code, name, mode, extra\); \}\s*finally\{ connectInFlight = false; \}\s*\}/);
+  assert.match(appJs, /async function connectToRoom\(code, name, mode, extra, auto\)\{\s*if\(!auto\) cancelAutoRejoin\(\);\s*if\(connectInFlight\) return 'tentar-de-novo';\s*connectInFlight = true;\s*try\{ return await connectToRoomOnce\(code, name, mode, extra, auto\); \}\s*finally\{ connectInFlight = false; \}\s*\}/);
   // a nova tentativa depois de pedir pra entrar não pode cair na trava da própria entrada
   assert.match(appJs, /if\(await requestToJoinRoom\(code, data403\.access\)\) return connectToRoomOnce\(code, name, mode, extra\);/);
   // sobrou conexão aberta: sai antes da nova

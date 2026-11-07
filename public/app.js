@@ -60,6 +60,13 @@ let selfInitiatedUnpublish = false; // true durante o unpublishTrack() do própr
 let shareBusy = false; // começar ou parar em andamento: o segundo pedido é ignorado (ver toggleShare)
 let roomReconnecting = false; // o LiveKit está reconectando: faixas somem e voltam sozinhas, não é fim de transmissão (HANDOFF §86)
 let shareSidAtReconnect = null; // a publicação de tela de antes da reconexão: se mudou, ela foi republicada com ID novo
+// Reconexão (HANDOFF §87). A faixa só aparece depois de 3 s: o signal-reconnect e o full-reconnect medidos voltam em ~2 s.
+const RECONNECT_BANNER_DELAY_MS = 3000;
+let reconnectBannerTimer = null;
+const REWATCH_WINDOW_MS = 30000;      // quanto tempo depois de perder uma transmissão que eu assistia ainda tento reinscrever
+const AUTO_REJOIN_FIRST_MS = 3000;    // volta automática à sala: primeira tentativa...
+const AUTO_REJOIN_EVERY_MS = 5000;    // ...depois uma a cada 5 s...
+const AUTO_REJOIN_MAX_MS = 120000;    // ...até 2 min desde a queda
 const tileStreams = new Map(); // tileId -> MediaStream (junta vídeo+áudio da mesma fonte, ex: tela+áudio da guia)
 const tileVideoTracks = new Map(); // tileId -> Track de vídeo do LiveKit (pra amostrar getRTCStatsReport())
 
@@ -115,6 +122,10 @@ function focusAppWindow(){
 function showResumeShare(){ document.getElementById('resumeShare').hidden = false; }
 function hideResumeShare(){ document.getElementById('resumeShare').hidden = true; }
 function setupResumeShare(){
+  document.getElementById('connBannerCancel').addEventListener('click', () => {
+    cancelAutoRejoin();
+    setEntryStatus('');
+  });
   document.getElementById('resumeShareDismiss').addEventListener('click', hideResumeShare);
   document.getElementById('resumeShareBtn').addEventListener('click', () => {
     hideResumeShare();
@@ -249,14 +260,17 @@ function roomNotFoundMessage(code, mode, lastCode){
 // mundo e continuavam na sala até fechar o app, mesmo depois de sair (reproduzido em 2026-10-16). Cliques enquanto
 // conecta são ignorados; a nova tentativa vale quando a anterior termina (deu certo ou não).
 let connectInFlight = false;
-async function connectToRoom(code, name, mode, extra){
-  if(connectInFlight) return;
+// `auto`: é a volta automática à sala (HANDOFF §87), não um clique da pessoa. Qualquer clique dela cancela a volta.
+// Devolve o resultado da entrada: 'ok' | 'nao-achou' | 'negado' | 'tentar-de-novo' (a volta automática decide por ele).
+async function connectToRoom(code, name, mode, extra, auto){
+  if(!auto) cancelAutoRejoin();
+  if(connectInFlight) return 'tentar-de-novo';
   connectInFlight = true;
-  try{ return await connectToRoomOnce(code, name, mode, extra); }
+  try{ return await connectToRoomOnce(code, name, mode, extra, auto); }
   finally{ connectInFlight = false; }
 }
 
-async function connectToRoomOnce(code, name, mode, extra){
+async function connectToRoomOnce(code, name, mode, extra, auto){
   myName = name;
   roomCode = code || '';
   const hadSession = !!(discordUser && discordUser.session);
@@ -292,41 +306,42 @@ async function connectToRoomOnce(code, name, mode, extra){
       let lastCode = null;
       try{ lastCode = localStorage.getItem('sinal:lastRoomCode'); }catch(e){ /* sem localStorage: só não compara */ }
       setEntryStatus(roomNotFoundMessage(code, mode, lastCode));
-      return;
+      return 'nao-achou';
     }
     if(res.status === 401){
       if(!hadSession){
         setEntryStatus('Essa sala é de um servidor do Discord — entre com o Discord pra abrir.');
-        return;
+        return 'negado';
       }
       // Sessão do Discord vencida (dura 7 dias) ou inválida — limpa e pede login de novo.
       clearDiscordUser();
       renderServersUI();
       setEntryStatus('Sua sessão do Discord expirou. Entre com o Discord de novo (ou use só o nome).');
-      return;
+      return 'negado';
     }
     if(res.status === 403){
       const data403 = await res.json().catch(() => ({}));
       const why = data403.error;
-      if(why === 'sala-privada' && mode === 'server-join'){
+      if(why === 'sala-privada' && mode === 'server-join' && !auto){
         // Sala privada: oferece "pedir para entrar" (aprovação) ou a caixa de senha e, se der certo, tenta de novo (agora passa).
         setEntryStatus('');
         if(await requestToJoinRoom(code, data403.access)) return connectToRoomOnce(code, name, mode, extra);
-        return;
+        return 'negado';
       }
+      // A volta automática nunca abre pergunta nem pede senha: se a sala agora exige, ela para e avisa.
       setEntryStatus(why === 'sala-privada' ? 'Essa sala é privada.' : 'Você não faz parte desse servidor do Discord.');
-      return;
+      return 'negado';
     }
     if(res.status === 429){
       const why = (await res.json().catch(() => ({}))).error;
       setEntryStatus(why === 'muitos-pedidos'
         ? 'Muitos pedidos seguidos. Espere um instante e tente de novo.'
         : 'Esse servidor já tem 10 salas ao vivo. Entre numa delas ou espere alguma fechar.');
-      return;
+      return 'tentar-de-novo';
     }
     if(res.status === 503){
       setEntryStatus('Não deu para conferir a sala agora. Tente de novo em instantes.');
-      return;
+      return 'tentar-de-novo';
     }
     if(!res.ok) throw new Error('token-fetch-failed');
     const data = await res.json();
@@ -335,12 +350,13 @@ async function connectToRoomOnce(code, name, mode, extra){
     if(!token || !url) throw new Error('token-fetch-empty');
   }catch(e){
     setEntryStatus('Não foi possível falar com o servidor. Confira sua internet e tente de novo.');
-    return;
+    return 'tentar-de-novo';
   }
   // Guardado pra reusar nas ações de moderação (api/moderate.js) — é o mesmo
   // token que já autentica a conexão com o LiveKit, sem precisar de uma
   // segunda credencial.
   myAccessToken = token;
+  if(auto && !autoRejoin) return 'tentar-de-novo'; // a pessoa cancelou enquanto o token vinha: não entra de surpresa
 
   // Nunca duas conexões ao mesmo tempo: se sobrou uma sala aberta, ela sai antes da nova entrar.
   if(room){ const old = room; room = null; try{ old.disconnect(); }catch(e){} }
@@ -362,10 +378,18 @@ async function connectToRoomOnce(code, name, mode, extra){
     setEntryStatus('Não foi possível entrar na sala (tempo esgotado ou erro de conexão). Tente de novo.');
     try{ room.disconnect(); }catch(err){}
     room = null;
-    return;
+    return 'tentar-de-novo';
   }
 
+  if(auto && !autoRejoin){ // cancelaram enquanto conectava: desfaz a entrada, a pessoa pediu pra não voltar
+    const old = room; room = null;
+    try{ old.disconnect(); }catch(e){}
+    return 'tentar-de-novo';
+  }
+  lastEntryMode = mode;
+  lastEntryExtra = extra && extra.password ? { password: extra.password } : null; // a volta só precisa da senha, se tinha
   enterRoomUI();
+  return 'ok';
 }
 
 function wireRoomEvents(liveRoom){
@@ -411,8 +435,10 @@ function wireRoomEvents(liveRoom){
   liveRoom.on(RoomEvent.Reconnected, () => {
     if(!isCurrent()) return;
     roomReconnecting = false;
+    clearReconnectBanner();
     reconcileAfterReconnect();
     sendWatchSync();
+    rewatchLost(); // quem assiste perde a inscrição num full-reconnect: volta sozinho (HANDOFF §87)
   });
   // SignalReconnecting é a reconexão leve (a mídia segue); Reconnecting é a completa, em que o LiveKit republica tudo
   // sozinho, com ID novo. Medido em 2026-11-06 (HANDOFF §86).
@@ -442,6 +468,7 @@ function wireRoomEvents(liveRoom){
       if(tile && tile.classList.contains('pending-tile')) removeTile(tileId);
       clearViewers(tileId); // transmissão acabou — a próxima começa com ninguém assistindo
     }
+    rewatchLost(); // quem eu assistia e voltou a publicar (ID novo) é reinscrito pela pessoa e pela fonte
   });
   // Cobre parar de compartilhar pelo controle nativo do navegador ("Parar
   // apresentação"), não só pelo nosso próprio botão.
@@ -545,8 +572,11 @@ function wireRoomEvents(liveRoom){
     // sala sem conseguir fazer nada (bug real, achado em teste); agora volta
     // pra tela inicial de verdade, igual sair por conta própria.
     appLog(`[sinal] desconectado da sala (motivo ${reason})`);
+    const rejoin = autoRejoinDecision(reason, LivekitClient.DisconnectReason)
+      ? { code: roomCode, name: myName, mode: rejoinModeFor(lastEntryMode), extra: lastEntryExtra } : null;
     leaveRoom(shareEndReasonFor(reason, LivekitClient.DisconnectReason));
     setEntryStatus(disconnectMessage(reason, LivekitClient.DisconnectReason));
+    if(rejoin) startAutoRejoin(rejoin);
   });
 }
 
@@ -569,6 +599,91 @@ function disconnectMessage(reason, reasons){
   if(reason === r.DUPLICATE_IDENTITY) return 'Você entrou nessa sala em outra janela, então esta saiu.';
   if(reason === r.SERVER_SHUTDOWN) return 'O servidor reiniciou. Tente entrar de novo em instantes.';
   return 'Você foi desconectado da sala.';
+}
+
+// Quais quedas voltam sozinhas à sala (HANDOFF §87): só as que não foram decisão de ninguém e não são culpa da sala.
+// Servidor reiniciado e queda sem motivo (o SDK desistindo de reconectar). Qualquer outro motivo, inclusive remoção, sala
+// apagada e entrada em outra janela, deixa a pessoa na tela inicial. reasons = LivekitClient.DisconnectReason. Pura (testada).
+function autoRejoinDecision(reason, reasons){
+  if(reason == null) return true;
+  const r = reasons || {};
+  return reason === r.SERVER_SHUTDOWN;
+}
+
+// Voltar é entrar numa sala que já existe, nunca criar uma (recriar poderia reabrir sala que alguém fechou de propósito). Pura (testada).
+function rejoinModeFor(mode){
+  return mode === 'server-create' || mode === 'server-join' ? 'server-join' : 'join';
+}
+
+// Depois de uma tentativa: acabou bem, a sala sumiu, a sala não deixa entrar, ou tenta de novo (até os 2 min). Pura (testada).
+function autoRejoinNextStep(outcome, elapsedMs){
+  if(outcome === 'ok') return 'done';
+  if(outcome === 'nao-achou') return 'not-found';
+  if(outcome === 'negado') return 'denied';
+  return elapsedMs + AUTO_REJOIN_EVERY_MS > AUTO_REJOIN_MAX_MS ? 'timeout' : 'retry';
+}
+
+// ---- Faixa de conexão (reconectando / voltando à sala) ----
+function showConnBanner(text, withCancel){
+  const el = document.getElementById('connBanner');
+  if(!el) return;
+  el.querySelector('.conn-banner-text').textContent = text;
+  el.querySelector('.conn-banner-cancel').hidden = !withCancel;
+  el.hidden = false;
+}
+function hideConnBanner(){
+  const el = document.getElementById('connBanner');
+  if(el) el.hidden = true;
+}
+// Cancela a espera e esconde a faixa, a menos que a volta automática ainda esteja usando ela.
+function clearReconnectBanner(){
+  clearTimeout(reconnectBannerTimer);
+  reconnectBannerTimer = null;
+  if(!autoRejoin) hideConnBanner();
+}
+
+// ---- Volta automática à sala depois de a conexão cair de vez (HANDOFF §87) ----
+// Nunca retoma a transmissão sozinho: só oferece o botão. Para quando a pessoa faz qualquer outra coisa (connectToRoom
+// sem `auto` cancela), quando a sala some, quando a sala passa a exigir acesso, ou depois de 2 min.
+let autoRejoin = null; // { code, name, mode, extra, since, timer, marker }
+let lastEntryMode = 'join'; // como a pessoa entrou na sala atual: a volta usa o equivalente
+let lastEntryExtra = null;
+function startAutoRejoin(info){
+  cancelAutoRejoin();
+  // Pega o marcador de transmissão agora: ele é desta queda, e não pode sobrar para uma queda futura.
+  autoRejoin = { ...info, since: Date.now(), timer: null, marker: takeSharingMarker() };
+  appLog('[sinal] tentando voltar à sala sozinho');
+  showConnBanner('Sem sinal. Tentando voltar à sala…', true);
+  scheduleAutoRejoin(AUTO_REJOIN_FIRST_MS);
+}
+function scheduleAutoRejoin(ms){
+  const state = autoRejoin;
+  if(!state) return;
+  state.timer = setTimeout(() => runAutoRejoin(state), ms);
+}
+function cancelAutoRejoin(){
+  if(!autoRejoin) return;
+  clearTimeout(autoRejoin.timer);
+  autoRejoin = null;
+  hideConnBanner();
+}
+async function runAutoRejoin(state){
+  if(autoRejoin !== state) return;
+  const outcome = await connectToRoom(state.code, state.name, state.mode, state.extra, true);
+  if(autoRejoin !== state) return; // cancelaram no meio
+  const step = autoRejoinNextStep(outcome, Date.now() - state.since);
+  if(step === 'done'){ finishAutoRejoin(state); return; }
+  if(step === 'retry'){ scheduleAutoRejoin(AUTO_REJOIN_EVERY_MS); return; }
+  appLog(`[sinal] não voltei à sala sozinho (${step})`);
+  cancelAutoRejoin();
+  if(step === 'timeout') setEntryStatus('Não consegui voltar à sala. Entre de novo quando quiser.');
+}
+function finishAutoRejoin(state){
+  appLog('[sinal] voltei à sala sozinho');
+  autoRejoin = null;
+  hideConnBanner();
+  // A transmissão não volta sozinha: iniciar a captura é decisão da pessoa (abre o seletor de tela).
+  if(room && shouldOfferResumeShare(state.marker, roomCode)) showResumeShare();
 }
 
 // Tela ou câmera podem vir com vídeo e áudio como tracks separados (ex:
@@ -597,6 +712,7 @@ function handleTrackAdded(track, publication, participant){
     const label = isCamera ? displayName + ' (câmera)' : displayName;
     addTile(tileId, label, stream);
     tileVideoTracks.set(tileId, track); // pra amostrar getRTCStatsReport() periodicamente
+    lostWatch.delete(tileId); // voltou a ver: não precisa mais tentar
     // ConnectionQualityChanged só dispara quando a qualidade MUDA — com o
     // clique-pra-assistir o tile nasce bem depois disso, e com conexão
     // estável o evento não vem de novo nunca (a bolinha ficava cinza em
@@ -626,12 +742,15 @@ function handleTrackRemoved(track, publication, participant){
     remoteSendStats.delete(tileId);
     removeTile(tileId);
     setWatching(tileId, false);
+    // Perdi sem querer (reconexão, quem transmite reconectou): tento reinscrever por 30 s, pela pessoa e pela fonte.
+    if(stoppedByMe.delete(tileId)) lostWatch.delete(tileId); else noteLostWatch(tileId);
     // Isso dispara tanto quando a PESSOA para de compartilhar quanto quando
     // EU clico em "parar de assistir" (setSubscribed(false), ver
     // stopWatchingTile). Só nesse segundo caso a publicação ainda existe —
     // aí volta o card "clique pra assistir" em vez de sumir sem rastro.
     const sourceKind = isCamera ? Track.Source.Camera : Track.Source.ScreenShare;
     if(participant.getTrackPublication(sourceKind)) addPendingTile(tileId, participant, isCamera);
+    rewatchLost();
   }
 }
 
@@ -1777,6 +1896,8 @@ function noteRoomReconnecting(){
   roomReconnecting = true;
   const pub = room.localParticipant.getTrackPublication(LivekitClient.Track.Source.ScreenShare);
   shareSidAtReconnect = pub ? pub.trackSid : null;
+  clearTimeout(reconnectBannerTimer);
+  reconnectBannerTimer = setTimeout(() => { if(roomReconnecting) showConnBanner('Reconectando…', false); }, RECONNECT_BANNER_DELAY_MS);
 }
 
 // Na volta: o LiveKit republica sozinho (mesma faixa, ID novo), então a transmissão segue. Prévia, qualidade e codec continuam
@@ -2901,6 +3022,48 @@ const ICON_EYE_SMALL = '<svg viewBox="0 0 24 24" width="12" height="12" fill="no
 // mensagem — nunca um campo do payload — então ninguém se passa por outro.
 const tileViewers = new Map(); // tileId -> Map(identity -> nome), quem tá assistindo aquela transmissão
 const myWatching = new Set();  // tileIds remotos que EU tô assistindo agora
+// Transmissões que eu assistia e perdi sem querer (minha reconexão, ou quem transmite reconectou): tileId (pessoa + fonte, nunca
+// o ID da faixa, que muda) -> até quando ainda tento reinscrever. HANDOFF §87.
+const lostWatch = new Map();
+const stoppedByMe = new Set(); // tileIds que eu mesmo mandei parar de assistir: a perda que vem a seguir não conta
+let rewatchTimer = null;
+
+// Quem de `lost` ainda dá para reinscrever: dentro do prazo, a pessoa na sala, a fonte publicada e ainda sem inscrição. Pura (testada).
+function tilesToRewatch(lost, liveRoom, now){
+  const { Track } = LivekitClient;
+  const out = [];
+  lost.forEach((deadline, tileId) => {
+    if(deadline <= now) return;
+    const isCamera = tileId.endsWith(':cam');
+    const participant = liveRoom.remoteParticipants.get(isCamera ? tileId.slice(0, -4) : tileId);
+    const pub = participant && participant.getTrackPublication(isCamera ? Track.Source.Camera : Track.Source.ScreenShare);
+    if(pub && !pub.isSubscribed) out.push(tileId);
+  });
+  return out;
+}
+
+function noteLostWatch(tileId){
+  lostWatch.set(tileId, Date.now() + REWATCH_WINDOW_MS);
+  if(!rewatchTimer) rewatchTimer = setInterval(rewatchLost, 2000); // além dos eventos, confere de 2 em 2 s até a janela fechar
+}
+
+// Reinscreve o que eu assistia e perdi. Durante a reconexão não tenta: a inscrição pedida agora se perderia de novo.
+function rewatchLost(){
+  const now = Date.now();
+  lostWatch.forEach((deadline, tileId) => {
+    if(deadline > now) return;
+    lostWatch.delete(tileId);
+    const tile = tiles.get(tileId);
+    const hint = tile && tile.classList.contains('pending-tile') && tile.querySelector('.pending-hint');
+    if(hint) hint.textContent = 'Clique pra assistir'; // desistiu: volta o cartão normal
+  });
+  if(lostWatch.size === 0 && rewatchTimer){ clearInterval(rewatchTimer); rewatchTimer = null; }
+  if(!room || roomReconnecting) return;
+  for(const tileId of tilesToRewatch(lostWatch, room, now)){
+    appLog(`[sinal] reinscrevendo #${streamTag(tileId)} depois da perda`);
+    watchTile(tileId, tileId.endsWith(':cam'));
+  }
+}
 
 function ownerOfTile(tileId){ return tileId.endsWith(':cam') ? tileId.slice(0, -4) : tileId; }
 
@@ -3013,7 +3176,7 @@ function addPendingTile(tileId, participant, isCamera){
   tile.innerHTML = `
     <div class="pending-watch">
       ${ICON_PLAY}
-      <span class="pending-hint mono">Clique pra assistir</span>
+      <span class="pending-hint mono">${lostWatch.has(tileId) ? 'Voltando…' : 'Clique pra assistir'}</span>
     </div>
     <button type="button" class="pending-dismiss" title="Ocultar esta transmissão" aria-label="Ocultar esta transmissão">${ICON_PENDING_DISMISS}</button>
     <div class="label"><span class="led"></span>${escapeHtml(label)}</div>
@@ -3064,7 +3227,8 @@ function stopWatchingTile(tileId, isCamera){
   const participant = room.remoteParticipants.get(identity);
   if(!participant) return;
   const videoPub = participant.getTrackPublication(isCamera ? Track.Source.Camera : Track.Source.ScreenShare);
-  if(videoPub && videoPub.isSubscribed) videoPub.setSubscribed(false);
+  if(videoPub && videoPub.isSubscribed){ stoppedByMe.add(tileId); videoPub.setSubscribed(false); }
+  lostWatch.delete(tileId);
   if(!isCamera){
     const audioPub = participant.getTrackPublication(Track.Source.ScreenShareAudio);
     if(audioPub && audioPub.isSubscribed) audioPub.setSubscribed(false);
@@ -3903,6 +4067,9 @@ function renderRosterPanel(){
 function leaveRoom(shareEndReason){
   endShare(shareEndReason || 'saiu', { skipUnpublish: true });
   roomReconnecting = false;
+  clearReconnectBanner();
+  lostWatch.clear();
+  stoppedByMe.clear();
   if(window.sinalElectron && window.sinalElectron.setInRoom) window.sinalElectron.setInRoom(false);
   // Sair da sala compartilhando não passa pelo toggleShare() (que é quem
   // normalmente desliga isso) — sem isso aqui, a captura nativa de áudio
@@ -6210,7 +6377,7 @@ window.addEventListener('beforeunload', () => {
 });
 
 // PWA: versão, registro do service worker, detecção de atualização e botão de instalação
-const APP_VERSION = '0.8.87'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
+const APP_VERSION = '0.8.88'; // bump aqui (e no CACHE do sw.js) a cada publicação — semver: 0.1, 0.2 ... 1.0
 // Dentro do Electron, mostra a versão do INSTALADOR (electron/package.json),
 // não a do site — ver preload.js. Fora dele (navegador normal), continua a
 // versão do deploy de sempre.

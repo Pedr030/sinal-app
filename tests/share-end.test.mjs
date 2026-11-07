@@ -266,6 +266,8 @@ test('trava: fora da sala não faz nada', async () => {
 // ---------- guard de reconexão ----------
 function reconnectEnv(room){
   const env = endShareEnv(room);
+  // A faixa "Reconectando…" (HANDOFF §87) agenda um timer; aqui o timer é de mentira.
+  Object.assign(env, { reconnectBannerTimer: null, RECONNECT_BANNER_DELAY_MS: 3000, setTimeout: () => 1, clearTimeout(){}, showConnBanner(){} });
   Object.assign(env, load(env, 'noteRoomReconnecting', 'reconcileAfterReconnect'));
   return env;
 }
@@ -388,7 +390,7 @@ test('reconectando: Unpublished e Muted locais são ignorados', () => {
   assert.match(appJs, /RoomEvent\.SignalReconnecting, \(\) => \{ if\(isCurrent\(\)\) noteRoomReconnecting\(\); \}/);
   assert.match(appJs, /RoomEvent\.LocalTrackUnpublished, \(publication\) => \{\n\s+if\(!isCurrent\(\) \|\| roomReconnecting\) return;/);
   assert.match(appJs, /if\(selfInitiatedUnpublish \|\| roomReconnecting\) return;/);
-  assert.match(appJs, /RoomEvent\.Reconnected, \(\) => \{\n\s+if\(!isCurrent\(\)\) return;\n\s+roomReconnecting = false;\n\s+reconcileAfterReconnect\(\);\n\s+sendWatchSync\(\);/);
+  assert.match(appJs, /RoomEvent\.Reconnected, \(\) => \{\n\s+if\(!isCurrent\(\)\) return;\n\s+roomReconnecting = false;\n\s+clearReconnectBanner\(\);\n\s+reconcileAfterReconnect\(\);\n\s+sendWatchSync\(\);/);
   assert.match(appJs, /RoomEvent\.Disconnected, \(reason\) => \{\n\s+if\(!isCurrent\(\)\) return;\n\s+roomReconnecting = false;/);
   assert.match(extractFunction(appJs, 'leaveRoom'), /roomReconnecting = false;/);
 });
