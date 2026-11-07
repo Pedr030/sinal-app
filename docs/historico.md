@@ -1727,3 +1727,31 @@ Uma transmissão podia acabar de vários jeitos, e cada um limpava um pedaço di
 **Não provado:** `DUPLICATE_IDENTITY`, queda física de rede, moderador pela interface real.
 
 **Alarme falso, para não repetir:** com imagem sintética de 360p, o `degradationPreference` "volta sozinho" em até 7 s depois de trocar para Jogos. Não é bug: é o piso de 720p do `adjustGamesDegradation` (registro: "resolução chegou ao piso"). Testar regra de adaptação com imagem de pelo menos 720p.
+
+## 87. Reconexão: faixa, quem assiste volta sozinho e volta à sala (2026-11-06, site 0.8.88)
+
+Segunda metade da Fase 2. A 0.8.87 cuidou de quem transmite; aqui é a tela de quem assiste e o que fazer quando a conexão cai de vez.
+
+**Faixa de conexão** (`#connBanner`, fixa no topo, vale na sala e na tela inicial). "Reconectando…" aparece 3 s depois de `Reconnecting` ou `SignalReconnecting` e some em `Reconnected`, `Disconnected` ou `leaveRoom`. Os 2 s medidos do `signal-reconnect` e do `full-reconnect` nunca piscam. Provado no navegador interno: sem faixa no `signal-reconnect`, faixa aparece entre 2 e 4 s numa reconexão longa (forçada com os eventos, não com rede fora de verdade).
+
+**Quem assiste volta sozinho.** Quando um vídeo que eu assistia some e a causa não foi o meu "parar de assistir" (`stoppedByMe`), guardo o `tileId` em `lostWatch` por 30 s. O `tileId` é pessoa + fonte (`fulano` ou `fulano:cam`), nunca o ID da faixa, que muda. `rewatchLost` reinscreve nas três ocasiões (`Reconnected`, `TrackPublished`, sumiço com a publicação ainda lá) e num intervalo de 2 s, e nunca durante a reconexão. Enquanto espera, o cartão diz "Voltando…". `tilesToRewatch` é pura e testada com `room` falso.
+
+**Medido (LiveKit de verdade, duas abas):**
+- `full-reconnect` em quem assiste: `TrackUnsubscribed`, `Reconnecting`, `Reconnected`, e a inscrição volta 0,1 s depois, sozinha.
+- `full-reconnect` em quem transmite, visto por quem assiste: `TrackUnsubscribed`, `TrackUnpublished`, `TrackPublished` (ID novo), e a inscrição volta em 0,2 s.
+- No `full-reconnect` de quem assiste, o `ParticipantDisconnected` do outro chega antes do `Reconnected`. Por isso a lista `lostWatch` não é limpa nesse evento: quem sai de vez só deixa de ter publicação, e a entrada vence em 30 s.
+
+**Voltar à sala sozinho.** `autoRejoinDecision` é uma tabela pura: só `SERVER_SHUTDOWN` e queda sem motivo (o SDK desistindo) voltam. Remoção, sala apagada, entrada em outra janela, saída própria e qualquer outro motivo, não. O `Disconnected` decide antes de chamar `leaveRoom`.
+- Primeira tentativa em 3 s, depois a cada 5 s, até 2 min desde a queda (`autoRejoinNextStep`). Entra sempre como `join` ou `server-join`, nunca cria sala.
+- `connectToRoomOnce` agora devolve `ok`, `nao-achou`, `negado` ou `tentar-de-novo`. A tentativa automática nunca abre o pedido de aprovação nem de senha: sala que passou a exigir acesso para a volta e avisa.
+- Para quando: a sala sumiu (404, "Essa sala já fechou."), acesso negado, 2 min, botão **Cancelar** da faixa, ou qualquer entrada ou criação de sala pelo clique da pessoa (`connectToRoom` sem `auto` cancela). Se o cancelamento chegar com a conexão em andamento, a sala recém-aberta é desfeita.
+- A transmissão não volta sozinha. O marcador `sinal:wasSharing` é pego (`takeSharingMarker`) no começo da volta, para não sobrar para uma queda futura. Se a sala bate, aparece "Retomar transmissão". Isso também resolve o buraco antigo: o botão só aparecia no carregamento com `?retomar=1`.
+- Depois de voltar, os tiles ficam em "Clique pra assistir" (entrada nova, ninguém é reinscrito).
+
+**Provado no navegador interno com LiveKit de verdade:** `server-leave` (faixa, volta em ~5 s, botão "Retomar transmissão", marcador consumido), queda sem motivo (volta), sala apagada pelo servidor durante a espera (para com "Essa sala já fechou."), `PARTICIPANT_REMOVED` e `ROOM_DELETED` (sem faixa e sem tentativa), Cancelar com tentativa em andamento.
+
+**Provado no app real** (captura de verdade, perfil temporário, espectador no navegador, Nítido): antes 28 fps, depois do `full-reconnect` de quem transmite as faixas ganharam ID novo, a transmissão seguiu ativa, o espectador reinscreveu sozinho e recebeu 32 fps em 1080p. Depois do `full-reconnect` do próprio espectador, 32 fps também. A faixa "Reconectando…" apareceu na janela do app.
+
+**Não provado:** queda física de rede (o motivo e o tempo reais podem mudar), o prazo de 2 min inteiro (só a tabela) e `SERVER_SHUTDOWN` com o servidor realmente reiniciando.
+
+**Decisões do dono (2026-11-06):** só dois motivos voltam sozinhos (outros, como `JOIN_FAILURE`, `SIGNAL_CLOSE`, `CONNECTION_TIMEOUT` e `STATE_MISMATCH`, ficam de fora; é uma linha na tabela se quiser incluir); sem tile congelado "perdeu a conexão", só "Voltando…"; quem parou e recomeçou em menos de 30 s também é reinscrito.

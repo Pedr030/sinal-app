@@ -1,5 +1,16 @@
 [
   {
+    "id": "2026-11-06-reconexao-mais-clara",
+    "date": "2026-11-06",
+    "title": "Reconexão mais clara",
+    "site": "0.8.88",
+    "items": [
+      "Quando a conexão cai, uma faixa avisa que o Sinal está reconectando.",
+      "Quem estava assistindo uma transmissão volta a ver sozinho depois da reconexão.",
+      "Se a conexão cair de vez, o Sinal tenta voltar para a sala sozinho por até 2 minutos."
+    ]
+  },
+  {
     "id": "2026-11-06-transmissao-mais-firme",
     "date": "2026-11-06",
     "title": "Transmissão mais firme",
